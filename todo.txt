@@ -1,0 +1,19 @@
+causaldb/
+├── core/
+│   ├── fact.go        // Pure data structures
+│   ├── engine.go      // State + ripple propagation
+│   ├── cycles.go      // Cycle detection
+│   └── explain.go     // WHY / provenance logic
+├── store/
+│   └── journal.go     // Append-only persistence (later)
+├── api/
+│   └── server.go      // HTTP interface (later)
+├── tests/
+│   └── core_test.go   // Deterministic tests
+└── main.go
+
+
+Folder Structure Above.
+- Implement the cycle shii later
+
+i don dey confused seff
