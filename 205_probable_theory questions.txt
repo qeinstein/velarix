@@ -1,0 +1,21 @@
+Given a row verctor, R = np.array([[1, 5, 3, 2, 4]]), write the python implementation to transpose R into a column vector and calculate it's L1, L2 and Linfinity norm. Verify that the Linfinity norm of a vector is eqivalent to the max vaue of the ellements in the vector
+
+
+Show that a(v + w) = av + aw (i.e., scalar multiplication of a vector distributes across
+vector addition).
+
+
+For the matrix A = [[1, 1, 0],[0, 1, 0],[1, 0, 1]], compute the condition number and
+rank. If y = [[1],[2],[1]], get the augmented matrix [A, y].
+
+
+Let A = [[1, 0, 0],[0, 1, 0],[0, 0, 0]] and let the domain of A be R3. Characterize the
+range and nullspace of A.
+
+
+
+
+
+
+
+
