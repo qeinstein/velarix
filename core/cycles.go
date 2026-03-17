@@ -1,41 +1,60 @@
 package core
 
-import "errors"
+import (
+	"fmt"
+	"strings"
+)
 
+// CycleError represents a circular dependency error with the exact path.
+type CycleError struct {
+	Path []string
+}
+
+func (e *CycleError) Error() string {
+	return fmt.Sprintf("Justification cycle detected. Fact '%s' cannot depend on '%s' because a cycle exists: %s. Please retract one of these facts to proceed.", 
+		e.Path[len(e.Path)-1], e.Path[0], strings.Join(e.Path, " -> "))
+}
+
+// detectCycle checks if adding newFact would create a circular dependency.
+// Callers MUST hold e.mu.Lock() or e.mu.RLock().
 func (e *Engine) detectCycle(newFact *Fact) error {
 	newID := newFact.ID
 
-	for _, set := range newFact.JustificationSets{
-		for _, parentID := range set{
+	for _, set := range newFact.JustificationSets {
+		for _, parentID := range set {
 			visited := make(map[string]struct{})
-			if e.reachable(parentID, newID, visited){		//implement reachable down
-				return errors.New("cycle detected involving fact: " + newID)
+			if path := e.reachable(parentID, newID, visited); path != nil {
+				// The path goes from parentID to newID. 
+				// The cycle is newID -> parentID -> ... -> newID
+				fullPath := append([]string{newID}, path...)
+				return &CycleError{Path: fullPath}
 			}
 		}
 	}
 
 	return nil
-}		// fails first on first detected cycle and isolayes traversal per parent
+}
 
-
-func (e *Engine) reachable(fromID, targetID string, visited map[string]struct{}) bool {
-	if fromID == targetID{
-		return true
+func (e *Engine) reachable(fromID, targetID string, visited map[string]struct{}) []string {
+	if fromID == targetID {
+		return []string{targetID}
 	}
 
 	if _, seen := visited[fromID]; seen {
-		return false
+		return nil
 	}
 	visited[fromID] = struct{}{}
 
-	children := e.ChildrenIndex[fromID]
-	for childID := range children {
-		if e.reachable(childID, targetID, visited){
-			return true
+	jSets := e.ChildrenIndex[fromID]
+	for jSetID := range jSets {
+		jSet, ok := e.JustificationSets[jSetID]
+		if !ok {
+			continue
+		}
+		if subPath := e.reachable(jSet.ChildFactID, targetID, visited); subPath != nil {
+			return append([]string{fromID}, subPath...)
 		}
 	}
 
-	return false
+	return nil
 }
-
-
