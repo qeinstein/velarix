@@ -1,232 +1,40 @@
-# CausalDB
+# Velarix: The Epistemic State Layer for AI Agents
 
-### A Reactive Justification Database for AI Agents
-
-> **CausalDB is a database that stores *why* facts are true, not just *what* is true.**
-
-Traditional databases persist state.
-CausalDB persists **justified belief**.
+Stop manually passing context strings and managing messy agent memory. **Velarix** is a multi-tenant epistemic middleware that acts as a logical firewall for your agents. You visit **velarix.dev/keys** to get an API key, `pip install velarix`, and point the SDK at the hosted URL. The Velarix Orchestrator handles the entire context loop automatically—you never have to run or manage the Go server yourself.
 
 ---
 
-## The Problem
+## Quickstart in 3 Steps
 
-Modern AI systems increasingly need **memory**:
+1.  **Get your Key**: Visit [velarix.dev/keys](https://velarix.dev/keys) and enter your email to receive your unique vx_ access token.
+2.  **Install the SDK**:
+    ```bash
+    pip install velarix
+    ```
+3.  **Swap Your Import**: Replace your standard OpenAI import with the Velarix adapter.
 
-* beliefs that persist across time
-* conclusions derived from other conclusions
-* decisions that must be revisable when assumptions change
+```python
+# from openai import OpenAI
+from velarix.adapters.openai import OpenAI
 
-Today, this memory is built on top of **traditional databases** that:
+client = OpenAI(
+    api_key="your-openai-key",
+    velarix_api_key="vx_your_token_here", 
+    velarix_session_id="user_123"      # Multi-tenant isolation
+)
 
-* store values without provenance
-* overwrite conclusions instead of retracting them
-* cannot explain *why* something is believed
-* silently accumulate stale or invalid knowledge
-
-This leads to:
-
-* hallucinated long-term beliefs
-* contradictions across sessions
-* unsafe agent behavior
-* explanations that are generated after the fact, not grounded in data
-
----
-
-## The Core Idea
-
-**A fact should not exist unless its reasons still hold.**
-
-CausalDB enforces a single invariant:
-
-> **A fact is valid if and only if at least one of its justification sets is fully valid.**
-
-Everything else follows from this.
-
----
-
-## What Makes CausalDB Different
-
-CausalDB is not a SQL database, a graph database, or a vector database.
-
-It introduces **new database semantics**:
-
-| Traditional DB | CausalDB              |
-| -------------- | --------------------- |
-| Rows           | Claims                |
-| Foreign keys   | Causal justifications |
-| Delete         | Invalidate            |
-| Logs           | First-class reasoning |
-| State          | Justified belief      |
-
-Instead of overwriting data, CausalDB **invalidates assumptions** and deterministically collapses dependent beliefs.
-
----
-
-## Core Concepts
-
-### Facts
-
-A **Fact** is a claim the system may believe.
-
-Facts can be:
-
-* **Root facts** (axioms / assumptions)
-* **Derived facts** (conclusions)
-
----
-
-### Justification Sets (OR-of-ANDs)
-
-Each fact may have one or more **justification sets**.
-
-```text
-Fact B is valid if:
-  (A is valid)
-  OR
-  (C is valid AND D is valid)
+# Injection and extraction are now automatic
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "I prefer dark mode."}]
+)
 ```
 
-This solves the *Frame Problem* and allows multiple independent explanations.
+## How It Works
 
----
+1.  **Spin Up**: Start the Go server or deploy it to your cloud provider.
+2.  **Install SDK**: Add `velarix` to your Python environment.
+3.  **Swap Import**: Change your OpenAI import to `velarix.adapters.openai`.
+4.  **Initialize Session**: Pass a `velarix_session_id` to the client constructor.
 
-### Validity, Not Deletion
-
-Facts are never deleted.
-
-Instead:
-
-* root assumptions are invalidated
-* dependent facts collapse automatically
-* historical reasoning is preserved
-
-Truth is **maintained**, not mutated.
-
----
-
-## Why This Matters for AI Agents
-
-AI agents reason probabilistically, but **persist beliefs deterministically**.
-
-Without causal structure, agents:
-
-* cannot safely revise beliefs
-* cannot tell which conclusions are fragile
-* cannot explain decisions reliably
-
-CausalDB gives agents:
-
-* epistemic discipline
-* safe long-term memory
-* deterministic belief revision
-* structural explanations
-
-This does **not** make agents smarter —
-it makes them **wrong less often**.
-
----
-
-## Architecture Overview
-
-CausalDB is a **single-node causal reasoning engine** with:
-
-* deterministic ripple propagation
-* cycle-safe justification graphs
-* append-only persistence
-* structural explanation queries
-
-The engine is fully usable **without HTTP** and can be embedded directly into agent runtimes.
-
----
-
-## API (Minimal)
-
-```http
-POST   /facts                    # assert a fact
-POST   /facts/{id}/invalidate    # invalidate a root fact
-GET    /facts/{id}               # fetch a fact
-GET    /facts/{id}/why           # explain why it is valid
-GET    /facts?valid=true         # list currently valid facts
-```
-
-There are:
-
-* no updates
-* no deletes
-* no partial mutations
-
-All change flows through **invalidation + re-derivation**.
-
----
-
-## Example (Conceptual)
-
-1. An agent asserts:
-
-```json
-"User is trustworthy"
-```
-
-Because:
-
-* prior interactions
-* assumption: `identity_verified == true`
-
-2. Later, identity verification fails.
-
-3. The root assumption is invalidated.
-
-4. All dependent beliefs collapse automatically.
-
-The agent does not “forget” —
-it **understands why it no longer believes**.
-
----
-
-## What This Is (and Is Not)
-
-### This *is*:
-
-* a new database invariant
-* a reasoning-native data model
-* a foundation for AI memory, audit, and safety
-
-### This is *not*:
-
-* a SQL replacement
-* a high-throughput OLTP store
-* a distributed system (yet)
-
-CausalDB is designed to **sit beside** traditional databases, not replace them.
-
----
-
-## Status
-
-This repository contains:
-
-* a complete causal database kernel
-* deterministic propagation
-* explanation engine
-* append-only persistence
-* agent-facing HTTP API
-
-It is an MVP intended to demonstrate a **new database category**.
-
----
-
-## One-Line Summary
-
-> **CausalDB is a database where facts must justify their existence — and collapse when their reasons fail.**
-
----
-
-## Next Steps
-
-* Graph visualization of causal collapse
-* Agent SDKs
-* Persistence snapshots
-* Distributed replication (research phase)
-
----
+Velarix intercepts your LLM calls, seamlessly prepending the valid "Context Slice" to the system prompt and using automatic tool calls to extract new facts and assertions. If a schema is defined, it validates all inputs, ensuring only structured, consistent data enters the reasoning graph.
