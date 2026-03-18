@@ -1,16 +1,17 @@
 package core
 
-
 import "errors"
 
-
 type ExplanationNode struct {
-
-	FactID string
+	FactID   string
 	Children []*ExplanationNode
 }
 
+// Explain returns a tree showing why a fact is currently Valid.
 func (e *Engine) Explain(factID string) ([]*ExplanationNode, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	fact, exists := e.Facts[factID]
 	if !exists {
 		return nil, errors.New("fact not found")
@@ -44,7 +45,7 @@ func (e *Engine) explainFact(factID string, visited map[string]struct{}) []*Expl
 
 	var explanations []*ExplanationNode
 
-	// For each justification set
+	// For each justification set (using the original slices for explanation traversal)
 	for _, set := range fact.JustificationSets {
 		setValid := true
 
@@ -70,7 +71,6 @@ func (e *Engine) explainFact(factID string, visited map[string]struct{}) []*Expl
 			childExplanations := e.explainFact(parentID, visited)
 
 			// Each parent should yield exactly one explanation path
-			// (roots or derived)
 			if len(childExplanations) > 0 {
 				node.Children = append(node.Children, childExplanations[0])
 			}
@@ -81,4 +81,3 @@ func (e *Engine) explainFact(factID string, visited map[string]struct{}) []*Expl
 
 	return explanations
 }
-

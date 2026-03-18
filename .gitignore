@@ -1,1 +1,20 @@
-todo.tx
+todo.txt
+
+.venv/
+
+# CausalDB Data and Logs
+velarix.data/
+*.vlog
+*.mem
+*.data
+*.bin
+
+bin/
+*.exe
+*.test
+*.prof
+
+velarix.data/
+velarix_test_bin
+__pycache__/
+*.pyc

@@ -1,4 +1,4 @@
-causaldb/
+velarix/
 ├── core/
 │   ├── fact.go        // Pure data structures
 │   ├── engine.go      // State + ripple propagation
