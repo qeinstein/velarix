@@ -11,6 +11,25 @@ Traditional vector databases fail in healthcare because they lack a causal model
 - **Audit Provenance**: Every state change is logged with an `actor_id` and timestamp, exportable as SHA-256 verified SOC2/HIPAA compliance reports.
 - **Deterministic Reliability**: Logic-safe propagation ensures agents never act on stale or retracted medical premises.
 
+## The One-Line Swap
+
+The core promise of Velarix is that you don't have to rewrite your agent logic to get epistemic memory. Our adapters provide a drop-in replacement for standard clients.
+
+```python
+# Before: from openai import OpenAI
+from velarix.adapters.openai import OpenAI
+
+# Initialize once with a session ID
+client = OpenAI(velarix_session_id="patient_case_001")
+
+# Everything else remains standard OpenAI code. 
+# Velarix automatically injects context and extracts new facts.
+response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "The patient has a history of penicillin allergy."}]
+)
+```
+
 ## Quick Start (Under 10 Minutes)
 
 > **Looking for deep integration details?** See the [Developer Onboarding & Integration Guide in VELARIX.md](VELARIX.md#developer-onboarding--integration-guide) for examples with LangChain and LlamaIndex.
