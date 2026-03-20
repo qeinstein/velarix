@@ -171,3 +171,25 @@ func TestGlobalRevalidation(t *testing.T) {
 		t.Fatal("expected 0 passed facts")
 	}
 }
+
+func TestSnapshotCorruption(t *testing.T) {
+	engine := core.NewEngine()
+	engine.AssertFact(&core.Fact{ID: "S1", IsRoot: true, ManualStatus: core.Valid})
+
+	snap, err := engine.ToSnapshot()
+	if err != nil {
+		t.Fatalf("failed to create snapshot: %v", err)
+	}
+
+	// Corrupt the checksum
+	snap.Checksum = snap.Checksum + 1
+
+	engine2 := core.NewEngine()
+	err = engine2.FromSnapshot(snap)
+	if err == nil {
+		t.Fatal("expected snapshot recovery to fail due to checksum mismatch")
+	}
+	if err.Error() != "snapshot integrity check failed: checksum mismatch" {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}

@@ -4,8 +4,10 @@ import socket
 import subprocess
 import time
 import signal
-from typing import List, Dict, Any, Optional, Generator, Union
+import asyncio
+from typing import List, Dict, Any, Optional, Generator, Union, AsyncGenerator, Tuple
 import requests
+import httpx
 
 class VelarixRuntimeError(Exception):
     """Raised when the Velarix sidecar fails to start or crashes."""
@@ -42,9 +44,6 @@ class SidecarManager:
         self.port = self._find_free_port()
         self.url = f"http://localhost:{self.port}"
         
-        # Start the sidecar
-        # Note: We'd ideally pass the port via a flag or env var. 
-        # Assuming the Go binary supports PORT env var.
         env = os.environ.copy()
         env["PORT"] = str(self.port)
         
@@ -91,35 +90,56 @@ class VelarixSession:
     def __init__(self, client: 'VelarixClient', session_id: str):
         self.client = client
         self.session_id = session_id
-        self.base_url = f"{client.base_url}/s/{session_id}"
+        self.base_url = f"{client.base_url}/v1/s/{session_id}"
+        self._slice_cache: Dict[Tuple[str, int], Tuple[float, Any]] = {}
 
     def _headers(self):
         return self.client.headers
 
+    def _clear_cache(self):
+        self._slice_cache.clear()
+
     def observe(self, fact_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        data = {"ID": fact_id, "IsRoot": True, "ManualStatus": 1.0, "payload": payload or {}}
+        self._clear_cache()
+        data = {"id": fact_id, "is_root": True, "manual_status": 1.0, "payload": payload or {}}
         resp = requests.post(f"{self.base_url}/facts", json=data, headers=self._headers())
         resp.raise_for_status()
         return resp.json()
 
     def derive(self, fact_id: str, justifications: List[List[str]], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        data = {"ID": fact_id, "IsRoot": False, "justification_sets": justifications, "payload": payload or {}}
+        self._clear_cache()
+        data = {"id": fact_id, "is_root": False, "justification_sets": justifications, "payload": payload or {}}
         resp = requests.post(f"{self.base_url}/facts", json=data, headers=self._headers())
         resp.raise_for_status()
         return resp.json()
 
     def invalidate(self, fact_id: str) -> Dict[str, Any]:
+        self._clear_cache()
         resp = requests.post(f"{self.base_url}/facts/{fact_id}/invalidate", headers=self._headers())
         resp.raise_for_status()
         return resp.json()
 
     def get_slice(self, format: str = "json", max_facts: int = 50) -> Union[List[Dict[str, Any]], str]:
+        # Cache Check
+        if self.client.cache_ttl > 0:
+            key = (format, max_facts)
+            if key in self._slice_cache:
+                timestamp, data = self._slice_cache[key]
+                if time.time() - timestamp < self.client.cache_ttl:
+                    return data
+
         resp = requests.get(f"{self.base_url}/slice", params={"format": format, "max_facts": max_facts}, headers=self._headers())
         resp.raise_for_status()
-        if format == "markdown": return resp.text
-        return resp.json()
+        data = resp.text if format == "markdown" else resp.json()
+        
+        # Cache Update
+        if self.client.cache_ttl > 0:
+            self._slice_cache[(format, max_facts)] = (time.time(), data)
+            
+        return data
 
     def set_config(self, schema: Optional[str] = None, mode: Optional[str] = None) -> Dict[str, Any]:
+        self._clear_cache()
         data = {}
         if schema is not None: data["schema"] = schema
         if mode is not None: data["enforcement_mode"] = mode
@@ -137,16 +157,24 @@ class VelarixSession:
         resp.raise_for_status()
         return resp.json()
 
+    def revalidate(self) -> Dict[str, Any]:
+        self._clear_cache()
+        resp = requests.post(f"{self.base_url}/revalidate", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
 class VelarixClient:
     def __init__(
         self, 
         base_url: Optional[str] = None, 
         api_key: Optional[str] = None,
         embed_mode: bool = False,
-        binary_path: Optional[str] = None
+        binary_path: Optional[str] = None,
+        cache_ttl: int = 30
     ):
         self.embed_mode = embed_mode
         self.sidecar: Optional[SidecarManager] = None
+        self.cache_ttl = cache_ttl
         
         if embed_mode:
             self.sidecar = SidecarManager(binary_path=binary_path)
@@ -173,6 +201,134 @@ class VelarixClient:
         return VelarixSession(self, session_id)
 
     def get_sessions(self) -> List[Dict[str, Any]]:
-        resp = requests.get(f"{self.base_url}/sessions", headers=self.headers)
+        resp = requests.get(f"{self.base_url}/v1/sessions", headers=self.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_usage(self) -> Dict[str, Any]:
+        resp = requests.get(f"{self.base_url}/v1/org/usage", headers=self.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+class AsyncVelarixSession:
+    """An asynchronous context-bound session for interacting with Velarix."""
+    def __init__(self, client: 'AsyncVelarixClient', session_id: str):
+        self.client = client
+        self.session_id = session_id
+        self.base_url = f"{client.base_url}/v1/s/{session_id}"
+        self._slice_cache: Dict[Tuple[str, int], Tuple[float, Any]] = {}
+
+    def _headers(self):
+        return self.client.headers
+
+    def _clear_cache(self):
+        self._slice_cache.clear()
+
+    async def observe(self, fact_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self._clear_cache()
+        data = {"id": fact_id, "is_root": True, "manual_status": 1.0, "payload": payload or {}}
+        resp = await self.client.http_client.post(f"{self.base_url}/facts", json=data, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def derive(self, fact_id: str, justifications: List[List[str]], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self._clear_cache()
+        data = {"id": fact_id, "is_root": False, "justification_sets": justifications, "payload": payload or {}}
+        resp = await self.client.http_client.post(f"{self.base_url}/facts", json=data, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def invalidate(self, fact_id: str) -> Dict[str, Any]:
+        self._clear_cache()
+        resp = await self.client.http_client.post(f"{self.base_url}/facts/{fact_id}/invalidate", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_slice(self, format: str = "json", max_facts: int = 50) -> Union[List[Dict[str, Any]], str]:
+        # Cache Check
+        if self.client.cache_ttl > 0:
+            key = (format, max_facts)
+            if key in self._slice_cache:
+                timestamp, data = self._slice_cache[key]
+                if time.time() - timestamp < self.client.cache_ttl:
+                    return data
+
+        resp = await self.client.http_client.get(f"{self.base_url}/slice", params={"format": format, "max_facts": max_facts}, headers=self._headers())
+        resp.raise_for_status()
+        data = resp.text if format == "markdown" else resp.json()
+        
+        # Cache Update
+        if self.client.cache_ttl > 0:
+            self._slice_cache[(format, max_facts)] = (time.time(), data)
+            
+        return data
+
+    async def set_config(self, schema: Optional[str] = None, mode: Optional[str] = None) -> Dict[str, Any]:
+        self._clear_cache()
+        data = {}
+        if schema is not None: data["schema"] = schema
+        if mode is not None: data["enforcement_mode"] = mode
+        resp = await self.client.http_client.post(f"{self.base_url}/config", json=data, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_fact(self, fact_id: str) -> Dict[str, Any]:
+        resp = await self.client.http_client.get(f"{self.base_url}/facts/{fact_id}", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_history(self) -> List[Dict[str, Any]]:
+        resp = await self.client.http_client.get(f"{self.base_url}/history", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def revalidate(self) -> Dict[str, Any]:
+        self._clear_cache()
+        resp = await self.client.http_client.post(f"{self.base_url}/revalidate", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+class AsyncVelarixClient:
+    """An asynchronous client for interacting with Velarix."""
+    def __init__(
+        self, 
+        base_url: Optional[str] = None, 
+        api_key: Optional[str] = None,
+        embed_mode: bool = False,
+        binary_path: Optional[str] = None,
+        cache_ttl: int = 30
+    ):
+        self.embed_mode = embed_mode
+        self.sidecar: Optional[SidecarManager] = None
+        self._base_url_arg = base_url
+        self.api_key = api_key
+        self.binary_path = binary_path
+        self.cache_ttl = cache_ttl
+        self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self.base_url = (base_url or "http://localhost:8080").rstrip("/")
+        self.http_client = httpx.AsyncClient()
+
+    async def __aenter__(self):
+        if self.embed_mode:
+            self.sidecar = SidecarManager(binary_path=self.binary_path)
+            await asyncio.to_thread(self.sidecar.start)
+            self.base_url = self.sidecar.url
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.http_client.aclose()
+        if self.sidecar:
+            await asyncio.to_thread(self.sidecar.stop)
+
+    def session(self, session_id: str) -> AsyncVelarixSession:
+        return AsyncVelarixSession(self, session_id)
+
+    async def get_sessions(self) -> List[Dict[str, Any]]:
+        resp = await self.http_client.get(f"{self.base_url}/v1/sessions", headers=self.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_usage(self) -> Dict[str, Any]:
+        resp = await self.http_client.get(f"{self.base_url}/v1/org/usage", headers=self.headers)
         resp.raise_for_status()
         return resp.json()

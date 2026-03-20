@@ -1,218 +1,330 @@
-import React, { useState } from 'react';
-import { Book, ChevronRight, Menu, X, ArrowLeft, Terminal, Shield, Cpu, Zap, HelpCircle } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import {
+  ArrowLeft,
+  BookOpen,
+  ChevronRight,
+  Cpu,
+  HelpCircle,
+  Shield,
+  Terminal,
+  Zap,
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface DocsProps {
   onBack: () => void;
 }
 
-const sections = [
-  { 
-    id: 'intro', 
-    title: 'Introduction', 
-    icon: Book,
-    content: (
-      <div className="space-y-6">
-        <h1 className="text-4xl font-bold text-white mb-4">What is Velarix?</h1>
-        <p className="text-lg text-slate-400 leading-relaxed">
-          Velarix is a high-performance epistemic orchestration layer designed to solve the #1 problem in autonomous AI: <strong>Stale Context Hallucinations.</strong>
-        </p>
-        <p className="text-slate-400 leading-relaxed">
-          Unlike flat vector databases that store facts as append-only logs, Velarix treats agent memory as a dynamic dependency graph of justified beliefs. When a foundational premise changes, Velarix instantly collapses the entire tree of dependent assumptions, ensuring the agent's context window remains mathematically consistent.
-        </p>
-        <div className="p-6 bg-indigo-600/10 border border-indigo-500/20 rounded-2xl">
-          <h3 className="font-bold text-white mb-2 flex items-center gap-2"><Zap className="w-4 h-4 text-indigo-400" /> The Core Innovation</h3>
-          <p className="text-sm text-slate-400">
-            Velarix uses <strong>Dominator-based Pruning</strong> (compiler theory) to logically sever stale reasoning chains in O(1) time on the write-path.
-          </p>
-        </div>
-      </div>
-    )
-  },
-  { 
-    id: 'get-started', 
-    title: 'Getting Started', 
-    icon: Zap,
-    content: (
-      <div className="space-y-6">
-        <h1 className="text-4xl font-bold text-white mb-4">Quickstart</h1>
-        <p className="text-slate-400">Integrate Velarix into your existing AI application in under 10 minutes.</p>
-        
-        <h3 className="text-xl font-bold text-white mt-8">1. Get your API Key</h3>
-        <p className="text-sm text-slate-400">Visit <a href="#" className="text-indigo-400 hover:underline">velarix.dev/keys</a> to generate your unique access token.</p>
+type SectionId = 'intro' | 'quickstart' | 'api' | 'schema' | 'faq';
 
-        <h3 className="text-xl font-bold text-white mt-8">2. Install the SDK</h3>
-        <div className="bg-slate-900 rounded-xl p-4 font-mono text-sm border border-slate-800">
-          <span className="text-slate-500">$</span> pip install velarix
-        </div>
-
-        <h3 className="text-xl font-bold text-white mt-8">3. Swap Your Import</h3>
-        <p className="text-sm text-slate-400 mb-4">Velarix is a drop-in replacement for the OpenAI client.</p>
-        <div className="bg-slate-900 rounded-xl p-4 font-mono text-sm border border-slate-800 overflow-x-auto">
-          <pre className="text-slate-300">
-{`# from openai import OpenAI
-from velarix.adapters.openai import OpenAI
-
-client = OpenAI(
-    api_key="your-openai-key",
-    velarix_api_key="vx_...", 
-    velarix_session_id="user_123"
-)
-
-# Injection and extraction are now automatic
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "I prefer dark mode."}]
-)`}
-          </pre>
-        </div>
-      </div>
-    )
-  },
-  { 
-    id: 'api-reference', 
-    title: 'API Reference', 
-    icon: Terminal,
-    content: (
-      <div className="space-y-8">
-        <h1 className="text-4xl font-bold text-white mb-4">API Endpoints</h1>
-        
-        <div className="space-y-6">
-          <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl">
-            <div className="flex items-center gap-3 mb-4">
-              <span className="px-2 py-1 bg-blue-900/30 text-blue-400 text-[10px] font-bold rounded uppercase tracking-widest">GET</span>
-              <code className="text-white font-bold text-sm">/s/&#123;session_id&#125;/slice</code>
-            </div>
-            <p className="text-sm text-slate-400 mb-4">Generates a prompt-ready snapshot of valid context.</p>
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-              <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Query Params</p>
-              <ul className="text-xs space-y-1 text-slate-400 font-mono">
-                <li>format: "json" | "markdown"</li>
-                <li>max_facts: number (default 50)</li>
-              </ul>
-            </div>
-          </div>
-
-          <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl">
-            <div className="flex items-center gap-3 mb-4">
-              <span className="px-2 py-1 bg-emerald-900/30 text-emerald-400 text-[10px] font-bold rounded uppercase tracking-widest">POST</span>
-              <code className="text-white font-bold text-sm">/s/&#123;session_id&#125;/facts</code>
-            </div>
-            <p className="text-sm text-slate-400 mb-4">Assert a new fact or derive a belief.</p>
-          </div>
-        </div>
-      </div>
-    )
-  },
-  { 
-    id: 'schema-enforcement', 
-    title: 'Schema Enforcement', 
-    icon: Shield,
-    content: (
-      <div className="space-y-6">
-        <h1 className="text-4xl font-bold text-white mb-4">Schema Layer</h1>
-        <p className="text-slate-400 leading-relaxed">
-          Prevent "Prompt Poisoning" by enforcing structure on agent observations. Velarix supports full JSON Schema validation in two distinct modes.
-        </p>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-8">
-          <div className="p-6 bg-indigo-600/5 border border-indigo-500/20 rounded-2xl">
-            <h3 className="font-bold text-white mb-2">Strict Mode</h3>
-            <p className="text-xs text-slate-400">Outright rejects facts that violate the schema. Returns 400 Bad Request to the agent, forcing a correction loop.</p>
-          </div>
-          <div className="p-6 bg-amber-600/5 border border-amber-500/20 rounded-2xl">
-            <h3 className="font-bold text-white mb-2">Warn Mode</h3>
-            <p className="text-xs text-slate-400">Accepts the fact but flags it with validation errors in the audit trail. Useful for debugging soft hallucinations.</p>
-          </div>
-        </div>
-      </div>
-    )
-  },
-  { 
-    id: 'faq', 
-    title: 'FAQ', 
-    icon: HelpCircle,
-    content: (
-      <div className="space-y-8">
-        <h1 className="text-4xl font-bold text-white mb-4">FAQ</h1>
-        <div className="space-y-6">
-          <div>
-            <h3 className="text-white font-bold mb-2">Is this a Vector Database?</h3>
-            <p className="text-sm text-slate-400">No. Vector DBs handle similarity search. Velarix handles <strong>logical consistency</strong>. Most developers use them together: Vector DB for the long-tail of knowledge, Velarix for the agent's current plan and session state.</p>
-          </div>
-          <div>
-            <h3 className="text-white font-bold mb-2">Does this run on my infra?</h3>
-            <p className="text-sm text-slate-400">No. Velarix is a managed infrastructure layer. You point our SDK at our hosted orchestrator URL.</p>
-          </div>
-        </div>
-      </div>
-    )
-  }
+const sections: {
+  id: SectionId;
+  title: string;
+  icon: typeof BookOpen;
+  summary: string;
+}[] = [
+  { id: 'intro', title: 'Introduction', icon: BookOpen, summary: 'What Velarix is actually for.' },
+  { id: 'quickstart', title: 'Quickstart', icon: Zap, summary: 'From account to first session.' },
+  { id: 'api', title: 'API surface', icon: Terminal, summary: 'The endpoints the console relies on.' },
+  { id: 'schema', title: 'Schema policy', icon: Shield, summary: 'Strict vs warn behavior.' },
+  { id: 'faq', title: 'FAQ', icon: HelpCircle, summary: 'Scope, positioning, and caveats.' },
 ];
 
 export function Docs({ onBack }: DocsProps) {
-  const [activeSection, setActiveSection] = useState('intro');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeSection, setActiveSection] = useState<SectionId>('intro');
+
+  const content = useMemo(() => {
+    switch (activeSection) {
+      case 'intro':
+        return (
+          <motion.div key="intro" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.3 }}>
+            <Header
+              eyebrow="Product thesis"
+              title="Velarix is a reasoning integrity layer, not a generic memory bucket."
+              description="The strongest message in this product is the causal model: facts have support, support can be revoked, and the context shown to the agent should reflect that reality immediately."
+            />
+            <InfoCard title="Core proposition" description="Traditional vector memories do similarity well but logical invalidation poorly. Velarix keeps an explicit justification graph so stale downstream beliefs can be collapsed instead of silently lingering in prompt context." />
+            <GridCard
+              items={[
+                'The Go kernel owns reasoning state, support propagation, and invalidation.',
+                'The console is the observability wedge: graph view, journal replay, impact, and blame.',
+                'SDK adapters are the delivery mechanism, not the product moat on their own.',
+              ]}
+            />
+          </motion.div>
+        );
+      case 'quickstart':
+        return (
+          <motion.div key="quickstart" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.3 }}>
+            <Header
+              eyebrow="Getting started"
+              title="Use the backend routes the console is actually built around."
+              description="The console now authenticates against the backend and provisions a real API key, so the quickstart should match that reality instead of an imagined hosted flow."
+            />
+            <CodeBlock
+              title="Python adapter"
+              code={`from velarix.adapters.openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-...",
+    velarix_api_key="vx_...",
+    velarix_session_id="research_task"
+)
+
+client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Use React 18."}]
+)`}
+            />
+            <GridCard
+              items={[
+                'Create an account or log in through the console auth screen.',
+                'Use the generated API key for session reads and writes.',
+                'Open the visualizer to inspect graph state, warnings, and journal history.',
+              ]}
+            />
+          </motion.div>
+        );
+      case 'api':
+        return (
+          <motion.div key="api" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.3 }}>
+            <Header
+              eyebrow="API surface"
+              title="The console depends on a smaller set of routes than the marketing copy implies."
+              description="These are the endpoints you need to care about if you are evaluating the current implementation rather than the aspirational product story."
+            />
+            <Endpoint method="GET" path="/sessions" description="Lists in-memory sessions visible to the authenticated org." />
+            <Endpoint method="GET" path="/s/{session_id}/facts" description="Fetches facts for the active session, optionally filtered to valid facts only." />
+            <Endpoint method="GET" path="/s/{session_id}/history" description="Returns the journal used by the replay timeline and activity surfaces." />
+            <Endpoint method="GET" path="/s/{session_id}/facts/{id}/impact" description="Returns the current impact report with blast radius metrics." />
+            <Endpoint method="GET" path="/s/{session_id}/facts/{id}/why" description="Returns the explanation tree used to highlight provenance." />
+          </motion.div>
+        );
+      case 'schema':
+        return (
+          <motion.div key="schema" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.3 }}>
+            <Header
+              eyebrow="Validation"
+              title="Schema mode is the first real policy lever in the product."
+              description="This matters because it is one of the few places where the product can decisively prevent low-quality state from entering the graph."
+            />
+            <div className="grid gap-4 md:grid-cols-2">
+              <ModeCard
+                title="Strict mode"
+                tone="strict"
+                description="Rejects invalid writes immediately. Best when you want the caller to fix output structure before the fact is persisted."
+              />
+              <ModeCard
+                title="Warn mode"
+                tone="warn"
+                description="Accepts the write but annotates the issue so the operator can inspect it later in the console."
+              />
+            </div>
+          </motion.div>
+        );
+      case 'faq':
+        return (
+          <motion.div key="faq" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.3 }}>
+            <Header
+              eyebrow="FAQ"
+              title="The blunt answers matter more than the polished ones."
+              description="A product positioned for enterprise users should be explicit about scope, current implementation limits, and where the console is still immature."
+            />
+            <FaqItem question="Is Velarix a vector database?" answer="No. It is a reasoning state layer. You would pair it with another retrieval or storage system rather than expect it to replace every memory primitive in your stack." />
+            <FaqItem question="Does the current console fully match the docs?" answer="No. The project ambition is larger than the present implementation in several places, especially around polish, completeness, and consistency of behavior across the app." />
+            <FaqItem question="What is the strongest implemented differentiator right now?" answer="The explicit causal and impact model. When it works, that is the part that actually feels different from generic agent tooling." />
+          </motion.div>
+        );
+      default:
+        return null;
+    }
+  }, [activeSection]);
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden">
-      {/* Mobile Toggle */}
-      <button 
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="fixed bottom-6 right-6 z-50 p-4 bg-indigo-600 rounded-full shadow-lg md:hidden"
-      >
-        {sidebarOpen ? <X /> : <Menu />}
-      </button>
-
-      {/* Docs Sidebar */}
-      <aside className={`
-        fixed inset-0 z-40 bg-slate-950 border-r border-slate-800 transition-transform md:relative md:translate-x-0 md:w-72
-        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-      `}>
-        <div className="p-6 border-b border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 bg-indigo-600 rounded-md flex items-center justify-center">
-              <Book className="w-3.5 h-3.5 text-white" />
-            </div>
-            <span className="font-bold tracking-tight text-white uppercase text-xs tracking-widest">Documentation</span>
-          </div>
-          <button onClick={onBack} className="text-slate-500 hover:text-white transition-colors"><ArrowLeft className="w-4 h-4" /></button>
-        </div>
-
-        <nav className="p-4 space-y-1 overflow-y-auto h-full pb-24">
-          {sections.map(s => (
-            <button
-              key={s.id}
-              onClick={() => { setActiveSection(s.id); setSidebarOpen(false); }}
-              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                activeSection === s.id 
-                  ? 'bg-indigo-600/10 text-white border border-indigo-500/20' 
-                  : 'text-slate-500 hover:text-slate-300 border border-transparent'
-              }`}
-            >
-              <s.icon className={`w-4 h-4 ${activeSection === s.id ? 'text-indigo-400' : ''}`} />
-              {s.title}
-              {activeSection === s.id && <ChevronRight className="w-3.5 h-3.5 ml-auto text-indigo-500" />}
-            </button>
-          ))}
+    <div className="page-backdrop flex min-h-screen text-slate-100">
+      <aside className="surface-panel-strong hidden w-80 shrink-0 border-r border-white/8 p-6 lg:flex lg:flex-col">
+        <motion.button 
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={onBack} 
+          className="button-secondary mb-6 px-4 py-3 text-sm font-semibold shadow-lg shadow-black/20"
+        >
+          <ArrowLeft className="h-4 w-4" /> Back
+        </motion.button>
+        <div className="text-[0.72rem] uppercase tracking-[0.22em] text-slate-500">Documentation</div>
+        <div className="font-display mt-2 text-3xl font-semibold text-white">Operator manual</div>
+        <p className="mt-4 text-sm leading-7 text-slate-400">
+          This is a product-facing summary of the implementation that exists today, not an idealized future deck.
+        </p>
+        <nav className="mt-8 space-y-2 relative">
+          {sections.map((section) => {
+            const active = section.id === activeSection;
+            return (
+              <button
+                key={section.id}
+                onClick={() => setActiveSection(section.id)}
+                className={`w-full rounded-[1.4rem] px-4 py-4 text-left transition-colors relative group border ${active ? 'border-sky-300/20 text-white' : 'border-white/8 bg-black/10 hover:border-sky-300/16 hover:bg-white/[0.03] text-slate-400'}`}
+              >
+                {active && (
+                  <motion.div layoutId="docs-active-nav" className="absolute inset-0 bg-sky-400/10 rounded-[1.4rem] -z-10 shadow-inner border border-sky-400/20" transition={{ type: 'spring', bounce: 0.2, duration: 0.5 }} />
+                )}
+                <div className="flex items-center gap-3 relative z-10">
+                  <section.icon className={`h-4 w-4 transition-colors ${active ? 'text-sky-300' : 'text-slate-500 group-hover:text-sky-400'}`} />
+                  <div className={`font-medium transition-colors ${active ? 'text-white' : 'text-slate-200'}`}>{section.title}</div>
+                  {active && <ChevronRight className="ml-auto h-4 w-4 text-sky-300" />}
+                </div>
+                <p className={`mt-3 text-sm leading-7 relative z-10 transition-colors ${active ? 'text-sky-100/70' : 'text-slate-400'}`}>{section.summary}</p>
+              </button>
+            );
+          })}
         </nav>
       </aside>
 
-      {/* Docs Content */}
-      <main className="flex-1 overflow-y-auto bg-slate-950/50 relative">
-        <div className="max-w-3xl mx-auto p-8 md:p-16 py-24">
-          <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
-            {sections.find(s => s.id === activeSection)?.content}
-          </div>
-          
-          <div className="mt-24 pt-8 border-t border-slate-800 flex justify-between items-center opacity-50">
-            <div className="flex items-center gap-2">
-              <Cpu className="w-4 h-4" />
-              <span className="text-[10px] font-bold uppercase tracking-widest">Velarix Epistemic Core</span>
+      <main className="flex-1 overflow-y-auto px-6 py-8 lg:px-10">
+        <div className="mx-auto max-w-4xl space-y-6">
+          <motion.button 
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={onBack} 
+            className="button-secondary px-4 py-3 text-sm font-semibold lg:hidden shadow-lg shadow-black/20"
+          >
+            <ArrowLeft className="h-4 w-4" /> Back
+          </motion.button>
+
+          <div className="surface-panel rounded-[2rem] p-6 lg:hidden">
+            <div className="mb-4 text-[0.72rem] uppercase tracking-[0.22em] text-slate-500">Sections</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {sections.map((section) => (
+                <button
+                  key={section.id}
+                  onClick={() => setActiveSection(section.id)}
+                  className={`rounded-[1.4rem] border px-4 py-4 text-left transition-colors relative ${section.id === activeSection ? 'border-sky-300/20 bg-sky-400/10 text-white' : 'border-white/8 bg-black/10 text-slate-300'}`}
+                >
+                  <div className="font-medium">{section.title}</div>
+                  <p className="mt-2 text-sm leading-7 opacity-70">{section.summary}</p>
+                </button>
+              ))}
             </div>
-            <span className="text-[10px] font-mono">v0.1.0-alpha</span>
+          </div>
+
+          <section className="surface-panel-strong rounded-[2rem] p-8 md:p-10 relative overflow-hidden">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.05),transparent_60%)] pointer-events-none" />
+            <div className="relative z-10">
+              <AnimatePresence mode="wait">
+                {content}
+              </AnimatePresence>
+            </div>
+          </section>
+
+          <div className="flex items-center gap-3 border-t border-white/8 pt-4 text-xs uppercase tracking-[0.18em] text-slate-500 font-bold">
+            <Zap className="h-3 w-3" /> Velarix 0.1.0
           </div>
         </div>
       </main>
     </div>
+  );
+}
+
+function Header({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) {
+  return (
+    <div className="mb-10">
+      <div className="section-kicker">
+        <BookOpen className="h-3.5 w-3.5" /> {eyebrow}
+      </div>
+      <h2 className="font-display mt-6 text-3xl font-bold tracking-tight text-white md:text-4xl">{title}</h2>
+      <p className="mt-4 max-w-2xl text-lg leading-8 text-slate-300">{description}</p>
+    </div>
+  );
+}
+
+function InfoCard({ title, description }: { title: string; description: string }) {
+  return (
+    <motion.div 
+      whileHover={{ y: -4, scale: 1.01 }}
+      className="mb-8 rounded-[1.6rem] border border-sky-400/20 bg-sky-400/5 p-6 shadow-inner hover:shadow-lg hover:shadow-sky-500/10 transition-all"
+    >
+      <div className="flex items-center gap-3">
+        <Cpu className="h-5 w-5 text-sky-400" />
+        <div className="font-display text-xl font-semibold text-white">{title}</div>
+      </div>
+      <p className="mt-3 text-sm leading-7 text-sky-100/80">{description}</p>
+    </motion.div>
+  );
+}
+
+function GridCard({ items }: { items: string[] }) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-3">
+      {items.map((item, i) => (
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: i * 0.1 }}
+          whileHover={{ y: -2 }}
+          key={i} 
+          className="rounded-[1.4rem] border border-white/8 bg-black/10 p-5 text-sm leading-7 text-slate-300 hover:bg-white/[0.03] transition-colors"
+        >
+          {item}
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+function CodeBlock({ title, code }: { title: string; code: string }) {
+  return (
+    <div className="mb-8 overflow-hidden rounded-[1.6rem] border border-white/8 bg-[#050a14] shadow-inner">
+      <div className="flex items-center gap-3 border-b border-white/8 bg-white/[0.02] px-5 py-3">
+        <Terminal className="h-4 w-4 text-slate-500" />
+        <div className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400 font-bold">{title}</div>
+      </div>
+      <pre className="overflow-x-auto p-5 text-[0.8rem] leading-relaxed text-sky-200 font-mono">
+        {code}
+      </pre>
+    </div>
+  );
+}
+
+function Endpoint({ method, path, description }: { method: string; path: string; description: string }) {
+  return (
+    <motion.div 
+      whileHover={{ scale: 1.01 }}
+      className="mb-4 flex flex-col gap-4 rounded-[1.4rem] border border-white/8 bg-black/10 p-5 hover:bg-white/[0.03] transition-colors md:flex-row md:items-center"
+    >
+      <div className="flex shrink-0 items-center gap-3">
+        <span className={`rounded-full px-2.5 py-1 text-[0.6rem] uppercase tracking-[0.16em] font-bold ${method === 'GET' ? 'bg-sky-400/10 text-sky-300' : 'bg-emerald-400/10 text-emerald-300'}`}>
+          {method}
+        </span>
+        <code className="text-sm font-bold text-white tracking-wide">{path}</code>
+      </div>
+      <p className="text-sm leading-7 text-slate-400">{description}</p>
+    </motion.div>
+  );
+}
+
+function ModeCard({ title, description, tone }: { title: string; description: string; tone: 'strict' | 'warn' }) {
+  return (
+    <motion.div 
+      whileHover={{ y: -4 }}
+      className={`rounded-[1.6rem] border p-6 transition-colors shadow-sm hover:shadow-lg ${tone === 'strict' ? 'border-emerald-400/20 bg-emerald-400/5 hover:border-emerald-400/40 hover:shadow-emerald-500/10' : 'border-amber-300/20 bg-amber-300/5 hover:border-amber-300/40 hover:shadow-amber-500/10'}`}
+    >
+      <div className="flex items-center gap-3">
+        <div className={`h-2 w-2 rounded-full ${tone === 'strict' ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]'}`} />
+        <div className="font-display text-xl font-semibold text-white">{title}</div>
+      </div>
+      <p className={`mt-3 text-sm leading-7 ${tone === 'strict' ? 'text-emerald-100/70' : 'text-amber-100/70'}`}>{description}</p>
+    </motion.div>
+  );
+}
+
+function FaqItem({ question, answer }: { question: string; answer: string }) {
+  return (
+    <motion.div 
+      whileHover={{ x: 4 }}
+      className="mb-6 rounded-[1.6rem] border border-white/8 bg-black/10 p-6 hover:border-white/20 transition-colors"
+    >
+      <div className="font-display text-lg font-semibold text-white">{question}</div>
+      <p className="mt-3 text-sm leading-7 text-slate-400">{answer}</p>
+    </motion.div>
   );
 }

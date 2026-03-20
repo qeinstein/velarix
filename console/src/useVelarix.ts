@@ -1,72 +1,119 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { VelarixClient } from './lib/client';
-import type { Fact, ChangeEvent, JournalEntry, SessionInfo } from './lib/types';
+import type {
+  ChangeEvent,
+  ExplanationNode,
+  Fact,
+  ImpactReport,
+  JournalEntry,
+  SessionInfo,
+} from './lib/types';
 
-export function useVelarix(url: string = 'http://localhost:8080') {
+const EMPTY_IMPACT: ImpactReport = {
+  impacted_ids: [],
+  direct_count: 0,
+  total_count: 0,
+  action_count: 0,
+  epistemic_loss: 0,
+};
+
+function indexFacts(data: Fact[]): Record<string, Fact> {
+  return data.reduce<Record<string, Fact>>((acc, fact) => {
+    acc[fact.ID] = fact;
+    return acc;
+  }, {});
+}
+
+function flattenExplanation(nodes: ExplanationNode[], acc = new Set<string>()): Set<string> {
+  for (const node of nodes) {
+    acc.add(node.FactID);
+    if (node.Children?.length) flattenExplanation(node.Children, acc);
+  }
+  return acc;
+}
+
+export function useVelarix(url = 'http://localhost:8080/v1') {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('velarix_api_key') || '');
-  const [sessionId, setSessionId] = useState('default-session');
+  const [sessionId, setSessionId] = useState(() => localStorage.getItem('velarix_session_id') || 'default-session');
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [facts, setFacts] = useState<Record<string, Fact>>({});
   const [history, setHistory] = useState<JournalEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [authRequired, setAuthRequired] = useState(false);
+  const [authRequired, setAuthRequired] = useState(!apiKey);
 
-  const client = useMemo(() => new VelarixClient(url, apiKey), [url, apiKey]);
+  const client = useMemo(() => new VelarixClient(url, apiKey || null), [url, apiKey]);
   const session = useMemo(() => client.session(sessionId), [client, sessionId]);
 
-  const activeSessionInfo = useMemo(() => 
-    sessions.find(s => s.id === sessionId), 
-  [sessions, sessionId]);
+  const activeSessionInfo = useMemo(
+    () => sessions.find((entry) => entry.id === sessionId),
+    [sessions, sessionId],
+  );
+
+  useEffect(() => {
+    localStorage.setItem('velarix_session_id', sessionId);
+  }, [sessionId]);
 
   const refreshSessions = useCallback(async () => {
+    if (!apiKey) {
+      setSessions([]);
+      setAuthRequired(true);
+      return;
+    }
+
     try {
-      const s = await client.getSessions();
-      setSessions(Array.isArray(s) ? s : []);
+      const nextSessions = await client.getSessions();
+      setSessions(Array.isArray(nextSessions) ? nextSessions : []);
       setAuthRequired(false);
       setError(null);
-    } catch (err: any) {
-      console.error("Failed to load sessions:", err);
-      if (err.message.includes("401") || err.message.includes("unauthorized")) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load sessions';
+      if (message.includes('401') || message.toLowerCase().includes('invalid or expired api key')) {
         setAuthRequired(true);
       } else {
-        setError(err.message || "Failed to connect to backend");
+        setError(message);
       }
     }
-  }, [client]);
+  }, [apiKey, client]);
 
   const refreshHistory = useCallback(async () => {
-    try {
-      const h = await session.getHistory();
-      setHistory(Array.isArray(h) ? h : []);
-    } catch (err: any) {
-      console.error("Failed to load history:", err);
+    if (!apiKey) {
+      setHistory([]);
+      return;
     }
-  }, [session]);
+
+    try {
+      const nextHistory = await session.getHistory();
+      setHistory(Array.isArray(nextHistory) ? nextHistory : []);
+    } catch (err) {
+      console.error('Failed to load history:', err);
+    }
+  }, [apiKey, session]);
 
   const loadFacts = useCallback(async () => {
+    if (!apiKey) {
+      setFacts({});
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       const data = await session.getFacts();
-      const factMap: Record<string, Fact> = {};
-      if (Array.isArray(data)) {
-        data.forEach(f => {
-          factMap[f.ID] = f;
-        });
-      }
-      setFacts(factMap);
+      setFacts(Array.isArray(data) ? indexFacts(data) : {});
       setError(null);
-    } catch (err: any) {
-      console.error("Failed to load facts:", err);
-      if (err.message.includes("401") || err.message.includes("unauthorized")) {
+      setAuthRequired(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load facts';
+      if (message.includes('401') || message.toLowerCase().includes('invalid or expired api key')) {
         setAuthRequired(true);
       } else {
-        setError(err.message || "Failed to load facts");
+        setError(message);
       }
     } finally {
       setLoading(false);
     }
-  }, [session]);
+  }, [apiKey, session]);
 
   const connect = useCallback((key: string) => {
     localStorage.setItem('velarix_api_key', key);
@@ -75,90 +122,105 @@ export function useVelarix(url: string = 'http://localhost:8080') {
     setError(null);
   }, []);
 
-  // Initial load and session change
-  useEffect(() => {
-    refreshSessions();
-  }, [refreshSessions]);
+  const disconnect = useCallback(() => {
+    localStorage.removeItem('velarix_api_key');
+    setApiKey('');
+    setSessions([]);
+    setFacts({});
+    setHistory([]);
+    setAuthRequired(true);
+    setError(null);
+  }, []);
 
   useEffect(() => {
+    if (!apiKey) {
+      setLoading(false);
+      setAuthRequired(true);
+      setSessions([]);
+      setFacts({});
+      setHistory([]);
+      return;
+    }
+
+    refreshSessions();
+  }, [apiKey, refreshSessions]);
+
+  useEffect(() => {
+    if (!apiKey) return;
     loadFacts();
     refreshHistory();
-  }, [loadFacts, refreshHistory, sessionId]);
+  }, [apiKey, loadFacts, refreshHistory, sessionId]);
 
-  // Subscribe to real-time collapses
   useEffect(() => {
+    if (!apiKey) return undefined;
+
     let unsubscribe: (() => void) | null = null;
     try {
       unsubscribe = session.listen((event: ChangeEvent) => {
-        setFacts(prev => {
+        setFacts((prev) => {
           const target = prev[event.fact_id];
-          if (!target) return prev; 
+          if (!target) return prev;
           return {
             ...prev,
             [event.fact_id]: {
               ...target,
-              resolved_status: event.status
-            }
+              resolved_status: event.status,
+            },
           };
         });
         refreshHistory();
         refreshSessions();
       });
     } catch (err) {
-      console.error("SSE Connection failed:", err);
+      console.error('SSE connection failed:', err);
     }
 
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [session, refreshHistory, refreshSessions]);
+  }, [apiKey, refreshHistory, refreshSessions, session]);
 
   const invalidateFact = useCallback(async (id: string) => {
-    try {
-      await session.invalidate(id);
-      refreshSessions();
-    } catch (err: any) {
-      console.error("Failed to invalidate:", err);
-      alert("Failed to invalidate: " + err.message);
-    }
-  }, [session, refreshSessions]);
+    await session.invalidate(id);
+    await Promise.all([loadFacts(), refreshHistory(), refreshSessions()]);
+  }, [loadFacts, refreshHistory, refreshSessions, session]);
 
   const getImpact = useCallback(async (id: string) => {
     try {
-      const res = await session.getImpact(id);
-      return Array.isArray(res) ? res : [];
+      return await session.getImpact(id);
     } catch (err) {
-      console.error("Impact analysis failed:", err);
-      return [];
+      console.error('Impact analysis failed:', err);
+      return EMPTY_IMPACT;
     }
   }, [session]);
 
   const getWhy = useCallback(async (id: string) => {
     try {
-      const res = await session.getWhy(id);
-      return Array.isArray(res) ? res : [];
+      const tree = await session.getWhy(id);
+      return Array.from(flattenExplanation(tree));
     } catch (err) {
-      console.error("Provenance analysis failed:", err);
+      console.error('Provenance analysis failed:', err);
       return [];
     }
   }, [session]);
 
-  return { 
+  return {
     apiKey,
     connect,
+    disconnect,
     authRequired,
-    sessionId, 
-    setSessionId, 
+    sessionId,
+    setSessionId,
     sessions,
     activeSessionInfo,
-    facts, 
-    history, 
-    loading, 
-    error, 
-    invalidateFact, 
-    getImpact, 
-    getWhy, 
+    facts,
+    history,
+    loading,
+    error,
+    invalidateFact,
+    getImpact,
+    getWhy,
     refreshHistory,
-    refreshSessions
+    refreshSessions,
   };
 }

@@ -20,7 +20,7 @@ type JustificationSet struct {
 }
 
 type Fact struct {
-	ID string
+	ID string `json:"id"`
 
 	// Arbitrary belief payload (validated against user schema)
 	Payload map[string]interface{} `json:"payload,omitempty"`
@@ -29,12 +29,13 @@ type Fact struct {
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 
 	// Root control
-	IsRoot       bool
-	ManualStatus Status
+	IsRoot       bool   `json:"is_root"`
+	ManualStatus Status `json:"manual_status"`
 
 	// Computed only by the engine
-	DerivedStatus           Status
-	ValidJustificationCount int // How many JustificationSets are fully valid
+	DerivedStatus           Status `json:"derived_status"`
+	ResolvedStatus          Status `json:"resolved_status"`
+	ValidJustificationCount int    `json:"valid_justification_count"` // How many JustificationSets are fully valid
 
 	// OR-of-AND justification (for API/Journal backwards compatibility)
 	JustificationSets [][]string `json:"justification_sets,omitempty"`
@@ -43,7 +44,7 @@ type Fact struct {
 	ValidationErrors []string `json:"validation_errors,omitempty"`
 
 	// Dominator Tree
-	IDom      string // Immediate Dominator (Fact ID)
-	PreOrder  int
-	PostOrder int
+	IDom      string `json:"idom,omitempty"`
+	PreOrder  int    `json:"preOrder,omitempty"`
+	PostOrder int    `json:"postOrder,omitempty"`
 }
