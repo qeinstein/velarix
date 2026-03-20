@@ -1,15 +1,30 @@
 # Velarix Integration Guide
 
-This guide describes how to integrate Velarix into your existing AI agent workflows using our native SDKs and common LLM frameworks.
+This guide describes how to integrate Velarix into your existing AI agent workflows. Whether you want a drop-in replacement for OpenAI or a custom integration via our SDKs, Velarix is designed to be the "source of truth" for your agents.
 
-## 🐍 Python SDK
+## 🚀 The One-Line Swap (Recommended)
 
-Install the Velarix Python SDK:
-```bash
-pip install velarix-sdk
+The fastest way to get started is by using the Velarix OpenAI Adapter. This provides a drop-in replacement for the standard `openai` library.
+
+### OpenAI Adapter
+```python
+# Before: from openai import OpenAI
+from velarix.adapters.openai import OpenAI
+
+# Initialize with a Velarix Session ID
+client = OpenAI(velarix_session_id="session_123")
+
+# Standard OpenAI call - Velarix automatically handles:
+# 1. Injecting valid facts into the system prompt
+# 2. Extracting new observations into long-term memory
+# 3. Tracking justifications (causal links)
+response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Patient reports severe chest pain."}]
+)
 ```
 
-### Basic Usage
+## 🐍 Python SDK (Manual Control)
 
 Initialize the client and session:
 ```python
