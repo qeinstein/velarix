@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -200,6 +201,7 @@ func (e *Engine) propagate(queue []string) {
 }
 
 // AssertFact inserts a new fact and initializes its justification sets.
+// This operation is idempotent: if the fact already exists with identical content, it returns nil.
 func (e *Engine) AssertFact(f *Fact) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -208,8 +210,15 @@ func (e *Engine) AssertFact(f *Fact) error {
 		return fmt.Errorf("session memory cap exceeded (%d facts). please archive and start a new session", MaxFactsPerSession)
 	}
 
-	if _, exists := e.Facts[f.ID]; exists {
-		return errors.New("a fact with this ID already exists")
+	if existing, exists := e.Facts[f.ID]; exists {
+		// Idempotency Check: if content matches, return nil
+		if existing.IsRoot == f.IsRoot &&
+			existing.ManualStatus == f.ManualStatus &&
+			reflect.DeepEqual(existing.Payload, f.Payload) &&
+			reflect.DeepEqual(existing.JustificationSets, f.JustificationSets) {
+			return nil
+		}
+		return errors.New("a fact with this ID already exists with different content")
 	}
 
 	if !f.IsRoot && len(f.JustificationSets) == 0 {
@@ -349,8 +358,17 @@ func (e *Engine) GetStatus(factID string) Status {
 	return fact.DerivedStatus
 }
 
+// ImpactReport contains metrics for a potential retraction.
+type ImpactReport struct {
+	ImpactedIDs []string `json:"impacted_ids"`
+	DirectCount int      `json:"direct_count"`
+	TotalCount  int      `json:"total_count"`
+	ActionCount int      `json:"action_count"`
+	Loss        float64  `json:"epistemic_loss"`
+}
+
 // GetImpact returns a list of fact IDs that would be invalidated if factID was invalidated.
-func (e *Engine) GetImpact(factID string) []string {
+func (e *Engine) GetImpact(factID string) *ImpactReport {
 	e.mu.Lock()
 	if e.DirtyDominators {
 		e.recomputeDominators()
@@ -360,17 +378,33 @@ func (e *Engine) GetImpact(factID string) []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	var impact []string
-	for id := range e.Facts {
+	report := &ImpactReport{
+		ImpactedIDs: []string{factID},
+		TotalCount:  1,
+	}
+
+	for id, f := range e.Facts {
 		if id == factID {
 			continue
 		}
 		if e.isDominatorAncestor(factID, id) {
-			impact = append(impact, id)
+			report.ImpactedIDs = append(report.ImpactedIDs, id)
+			report.TotalCount++
+			report.Loss += float64(e.GetStatus(id))
+
+			// Direct child in dominator tree
+			if f.IDom == factID {
+				report.DirectCount++
+			}
+
+			// Check if this fact is tagged as an action
+			if f.Payload != nil && f.Payload["type"] == "action" {
+				report.ActionCount++
+			}
 		}
 	}
 
-	return impact
+	return report
 }
 
 // GetFact returns a copy of a fact, locking for safety.

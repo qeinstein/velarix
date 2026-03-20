@@ -1,28 +1,33 @@
-# Velarix Killer Demo
+# Velarix Healthcare Demo
 
-This directory contains the proof-of-concept for why Velarix is a mandatory layer for AI Agents.
+This directory contains proofs-of-concept for Velarix in high-stakes reasoning environments.
 
 ## The Problem
-When an AI agent's prompt history (managed by standard vector databases) fills up with assumptions based on a premise that is later proven false, the agent "hallucinates" and mixes old logic with new requirements.
+In healthcare, AI agents often act on temporary or conditional data (e.g., preliminary lab results or active patient consent). If that data is retracted or updated, standard "flat" agent memory fails to purge the downstream reasoning, leading to clinical safety violations or HIPAA breaches.
 
-## The Demo
-This script (`agent_pivot.py`) simulates an AI agent building a React application.
-1. The agent observes the project uses React 17.
-2. It builds a chain of thought based on React 17 (e.g., using `ReactDOM.render`).
-3. The user interrupts and says "Use React 18".
-4. We invalidate the root premise.
-5. **The Magic:** Velarix instantly collapses the *entire* dependent chain of thought in $O(1)$ time. The agent's memory is perfectly clean to pivot to React 18.
+## The Demo: Clinical Consent Retraction
+This script (`agent_pivot.py`) simulates a medical data-processing agent.
+1. The agent observes a patient has signed a **HIPAA Consent Form**.
+2. It derives multiple reasoning paths: **PHI_ACCESS_GRANTED**, **LAB_PROCESSING_ENABLED**, and **INSURANCE_VERIFICATION_ACTIVE**.
+3. The patient suddenly **withdraws consent**.
+4. We invalidate the root consent fact.
+5. **The Result:** Velarix triggers an instant $O(1)$ causal collapse. Every reasoning chain dependent on that consent is invalidated before the agent can perform its next action.
 
 ## How to run
 
 1. Start the Velarix Go Server from the project root:
 ```bash
+# Ensure encryption is set for compliance mode
+export VELARIX_ENCRYPTION_KEY="your-32-byte-secure-key-here"
+export VELARIX_ENV="dev"
 go run main.go
 ```
 
-2. Open a new terminal, install the python SDK requirements, and run the demo:
+2. Open a new terminal and run the demo:
 ```bash
-# From the project root
 pip install -e ./sdks/python
 python demo/agent_pivot.py
 ```
+
+---
+*Velarix: Building the trust layer for autonomous healthcare.*
