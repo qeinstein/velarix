@@ -52,7 +52,28 @@ Velarix is a stateful logical engine that provides a **deterministic conscience*
 
 ## 🚀 Developer Onboarding & Integration Guide
 
-Velarix is designed to integrate cleanly with your existing agents without dictating their internal reasoning loops. Use this quickstart to drop Velarix into a production LangChain or LlamaIndex application.
+Velarix is designed to integrate cleanly with your existing agents without dictating their internal reasoning loops.
+
+### 0. The One-Line Swap (Recommended)
+
+The fastest way to get started is by using our OpenAI adapter. It's a drop-in replacement that handles all the epistemic logic for you.
+
+```python
+# Before: from openai import OpenAI
+from velarix.adapters.openai import OpenAI
+
+# Initialize with a Velarix Session ID
+client = OpenAI(velarix_session_id="patient_encounter_456")
+
+# Standard OpenAI call. Velarix automatically:
+# 1. Injects valid facts into the system prompt.
+# 2. Extracts new observations into long-term memory.
+# 3. Tracks causal justifications.
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Patient reports severe chest pain."}]
+)
+```
 
 ### 1. Installation
 
