@@ -1,22 +1,42 @@
 package store
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"strings"
 	"time"
 
-	"velarix/core"
 	"github.com/dgraph-io/badger/v4"
+	"velarix/core"
 )
+
+// Merge operator for atomic uint64 addition
+func uint64Add(originalValue, newValue []byte) []byte {
+	var existing uint64
+	if len(originalValue) > 0 {
+		existing = binary.BigEndian.Uint64(originalValue)
+	}
+	added := binary.BigEndian.Uint64(newValue)
+
+	res := make([]byte, 8)
+	binary.BigEndian.PutUint64(res, existing+added)
+	return res
+}
 
 type BadgerStore struct {
 	db *badger.DB
 }
 
+const DBVersion = 1
+
 func OpenBadger(path string, encryptionKey []byte) (*BadgerStore, error) {
 	opts := badger.DefaultOptions(path).
 		WithLogger(nil).
 		WithNumVersionsToKeep(1).
+		WithSyncWrites(true).    // Critical: Ensure durable writes
 		WithValueThreshold(1024) // 1KB threshold for value log
 
 	if len(encryptionKey) > 0 {
@@ -32,7 +52,136 @@ func OpenBadger(path string, encryptionKey []byte) (*BadgerStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &BadgerStore{db: db}, nil
+	s := &BadgerStore{db: db}
+	if err := s.ensureMigrations(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *BadgerStore) ensureMigrations() error {
+	var currentVersion uint64
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("sys:version"))
+		if err == badger.ErrKeyNotFound {
+			currentVersion = 0
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			currentVersion = binary.BigEndian.Uint64(v)
+			return nil
+		})
+	})
+	if err != nil {
+		return err
+	}
+
+	if currentVersion < DBVersion {
+		// Perform migrations sequentially
+		for v := currentVersion + 1; v <= DBVersion; v++ {
+			if err := s.migrate(v); err != nil {
+				return fmt.Errorf("migration to version %d failed: %v", v, err)
+			}
+		}
+
+		// Update version key
+		return s.db.Update(func(txn *badger.Txn) error {
+			verBytes := make([]byte, 8)
+			binary.BigEndian.PutUint64(verBytes, uint64(DBVersion))
+			return txn.Set([]byte("sys:version"), verBytes)
+		})
+	}
+	return nil
+}
+
+type MigrationFunc func(txn *badger.Txn) error
+
+var migrations = map[uint64]MigrationFunc{
+	1: func(txn *badger.Txn) error {
+		// Migration to v1: Initial schema
+		// (Already assumed in initial DB state, so this can be a no-op or sanity check)
+		return nil
+	},
+}
+
+func (s *BadgerStore) migrate(version uint64) error {
+	mFunc, ok := migrations[version]
+	if !ok {
+		return fmt.Errorf("no migration found for version %d", version)
+	}
+
+	slog.Info("Running migration", "version", version)
+	return s.db.Update(func(txn *badger.Txn) error {
+		return mFunc(txn)
+	})
+}
+
+func (s *BadgerStore) DB() *badger.DB {
+	return s.db
+}
+
+// IncrementMetric atomically increments a 64-bit counter for an organization
+func (s *BadgerStore) IncrementMetric(orgID string, metric string) error {
+	key := []byte(fmt.Sprintf("org:%s:m:%s", orgID, metric))
+	return s.db.Update(func(txn *badger.Txn) error {
+		current := uint64(0)
+		if item, err := txn.Get(key); err == nil {
+			err = item.Value(func(v []byte) error {
+				if len(v) == 8 {
+					current = binary.BigEndian.Uint64(v)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, current+1)
+		return txn.Set(key, buf)
+	})
+}
+
+// GetOrgUsage retrieves all 6 metrics for an organization
+func (s *BadgerStore) GetOrgUsage(orgID string) (map[string]uint64, error) {
+	metrics := []string{
+		"api_requests",
+		"facts_asserted",
+		"schema_violations",
+		"facts_pruned",
+		"sessions_created",
+		"revalidation_runs",
+	}
+
+	result := make(map[string]uint64)
+	err := s.db.View(func(txn *badger.Txn) error {
+		for _, m := range metrics {
+			key := []byte(fmt.Sprintf("org:%s:m:%s", orgID, m))
+			item, err := txn.Get(key)
+			if err == badger.ErrKeyNotFound {
+				result[m] = 0
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			err = item.Value(func(v []byte) error {
+				if len(v) == 8 {
+					result[m] = binary.BigEndian.Uint64(v)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return result, err
 }
 
 func (s *BadgerStore) Close() error {
@@ -56,18 +205,19 @@ func (s *BadgerStore) StartGC() {
 
 // Append persists an entry and tags it by session
 func (s *BadgerStore) Append(entry JournalEntry) error {
+	now := time.Now()
 	if entry.Timestamp == 0 {
-		entry.Timestamp = time.Now().UnixMilli()
+		entry.Timestamp = now.UnixMilli()
 	}
-	
+
 	val, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
 
-	// Key: s:{session_id}:h:{timestamp}
-	// This allows O(K) range scans per session
-	key := []byte(fmt.Sprintf("s:%s:h:%d", entry.SessionID, entry.Timestamp))
+	// Key: s:{session_id}:h:{timestamp_nano}
+	// This allows O(K) range scans per session and avoids collisions
+	key := []byte(fmt.Sprintf("s:%s:h:%020d", entry.SessionID, now.UnixNano()))
 
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set(key, val)
@@ -122,16 +272,78 @@ type APIKey struct {
 	Label      string `json:"label"`
 	CreatedAt  int64  `json:"created_at"`
 	LastUsedAt int64  `json:"last_used_at"`
+	ExpiresAt  int64  `json:"expires_at"` // Add expiration for key rotation
 	IsRevoked  bool   `json:"is_revoked"`
+}
+
+type Organization struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	CreatedAt   int64  `json:"created_at"`
+	IsSuspended bool   `json:"is_suspended"`
 }
 
 type User struct {
 	Email          string   `json:"email"`
 	HashedPassword string   `json:"hashed_password"`
 	OrgID          string   `json:"org_id"`
+	Role           string   `json:"role"` // "admin" or "member"
 	Keys           []APIKey `json:"keys"`
 	ResetToken     string   `json:"reset_token,omitempty"`
 	ResetExpiry    int64    `json:"reset_expiry,omitempty"`
+}
+
+// GetOrganization retrieves an organization by ID
+func (s *BadgerStore) GetOrganization(id string) (*Organization, error) {
+	key := []byte("o:" + id)
+	var org Organization
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			return json.Unmarshal(v, &org)
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &org, nil
+}
+
+// SaveOrganization persists an organization
+func (s *BadgerStore) SaveOrganization(org *Organization) error {
+	val, err := json.Marshal(org)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte("o:"+org.ID), val)
+	})
+}
+
+// SetSessionOrganization links a session to an organization
+func (s *BadgerStore) SetSessionOrganization(sessionID, orgID string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte("s:"+sessionID+":org"), []byte(orgID))
+	})
+}
+
+// GetSessionOrganization retrieves the organization ID for a session
+func (s *BadgerStore) GetSessionOrganization(sessionID string) (string, error) {
+	var orgID string
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("s:" + sessionID + ":org"))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			orgID = string(v)
+			return nil
+		})
+	})
+	return orgID, err
 }
 
 // GetUser retrieves a user by email
@@ -159,13 +371,13 @@ func (s *BadgerStore) SaveUser(user *User) error {
 	if err != nil {
 		return err
 	}
-	
+
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Save user record
 		if err := txn.Set([]byte("u:"+user.Email), val); err != nil {
 			return err
 		}
-		
+
 		// Map every active key to this user for fast lookup in middleware
 		for _, k := range user.Keys {
 			if !k.IsRevoked {
@@ -269,12 +481,56 @@ func (s *BadgerStore) ValidateAPIKey(key string) (bool, error) {
 	return exists, err
 }
 
-// ReplayAll loads all data into memory on startup
+// GetRateLimit retrieves the list of timestamps for an API key's rate limit window
+func (s *BadgerStore) GetRateLimit(apiKey string) ([]time.Time, error) {
+	key := []byte("rl:" + apiKey)
+	var limits []time.Time
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(key)
+		if err == badger.ErrKeyNotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			return json.Unmarshal(v, &limits)
+		})
+	})
+	return limits, err
+}
+
+// SaveRateLimit persists the rate limit window timestamps for an API key
+func (s *BadgerStore) SaveRateLimit(apiKey string, limits []time.Time) error {
+	key := []byte("rl:" + apiKey)
+	val, err := json.Marshal(limits)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, val)
+	})
+}
+
+// Backup creates a full database backup
+func (s *BadgerStore) Backup(w io.Writer) (uint64, error) {
+	return s.db.Backup(w, 0)
+}
+
+// Restore loads a full database backup
+func (s *BadgerStore) Restore(r io.Reader) error {
+	return s.db.Load(r, 16)
+}
+
+// ReplayAll loads all data into memory on startup efficiently using snapshots
 func (s *BadgerStore) ReplayAll(engines map[string]*core.Engine, configs map[string][]byte) error {
+	snapshotTimestamps := make(map[string]int64)
+
 	return s.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 
+		// Pass 1: Load Snapshots and Configs
 		for it.Rewind(); it.Valid(); it.Next() {
 			item := it.Item()
 			key := string(item.Key())
@@ -294,15 +550,46 @@ func (s *BadgerStore) ReplayAll(engines map[string]*core.Engine, configs map[str
 				continue
 			}
 
-			// Handle History/Replay: s:{id}:h:{ts}
-			// We check if it matches the history prefix pattern
+			// Handle Snapshots: s:{id}:snap
+			if len(key) > 7 && key[0:2] == "s:" && strings.HasSuffix(key, ":snap") {
+				sessionID := key[2 : len(key)-5]
+				var snap core.Snapshot
+				err := item.Value(func(v []byte) error {
+					return json.Unmarshal(v, &snap)
+				})
+				if err != nil {
+					slog.Warn("Failed to decode snapshot during replay", "session_id", sessionID, "error", err)
+					continue
+				}
+
+				engine := core.NewEngine()
+				if err := engine.FromSnapshot(&snap); err == nil {
+					engines[sessionID] = engine
+					snapshotTimestamps[sessionID] = snap.Timestamp
+				} else {
+					slog.Warn("Failed to load snapshot during replay", "session_id", sessionID, "error", err)
+				}
+			}
+		}
+
+		// Pass 2: Replay History for entries AFTER snapshots
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := string(item.Key())
+
 			if len(key) > 6 && key[0:2] == "s:" && containsHistoryTag(key) {
 				var entry JournalEntry
 				err := item.Value(func(v []byte) error {
 					return json.Unmarshal(v, &entry)
 				})
 				if err != nil {
-					return err
+					slog.Warn("Skipping corrupt journal entry", "key", key, "error", err)
+					continue
+				}
+
+				// Skip if we have a newer snapshot
+				if ts, ok := snapshotTimestamps[entry.SessionID]; ok && entry.Timestamp <= ts {
+					continue
 				}
 
 				engine, ok := engines[entry.SessionID]

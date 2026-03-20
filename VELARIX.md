@@ -1,72 +1,114 @@
-# Velarix: The Epistemic Orchestration Layer
+# VELARIX: Deep Epistemic Architecture
 
-Velarix is a high-performance logic firewall for AI agents. It solves the **Stale Context Hallucination** problem by treating agent memory not as a flat log of facts, but as a dynamic dependency graph of justified beliefs.
+Velarix is a stateful logical engine that provides a **deterministic conscience** for AI agents. It bridges the gap between probabilistic LLM outputs and the strict reasoning requirements of regulated industries like healthcare.
 
-## The Problem: "Context Soup"
-Modern agents accumulate facts in append-only vector stores. When a foundational premise changes (e.g., a user pivots from React 17 to 18), the agent’s context window becomes a "soup" of old and new assumptions. The LLM then hallucinates by trying to reconcile these contradictions.
+## 🏗️ The 7 Layers of Velarix (Hardened)
 
-## The Solution: Deterministic Belief Revision
-Velarix implements **Incremental Support Accounting** and **Dominator-based Pruning**. When a premise is invalidated, Velarix logically collapses the entire downstream chain of dependent thoughts in **O(1)** time on the write-path. This ensures your agent's context window is always mathematically guaranteed to be consistent.
+1.  **Epistemic Kernel (Go)**:
+    -   Deterministic belief propagation ($AND=min, OR=max$).
+    -   Real-time cycle detection using DFS path tracing.
+    -   $O(1)$ Causal Invalidation via Dominator Tree theory, ensuring state consistency at scale.
+
+2.  **Durable Persistence (BadgerDB v4)**:
+    -   **AES-256 Encryption**: Mandatory in production, secured at rest.
+    -   **Hybrid Boot**: Optimized startup that loads the latest binary snapshot and replays only the trailing journal entries.
+    -   **Synchronous IO**: Every write is synchronized (`Sync()`) to ensure data survives system or power failures.
+
+3.  **The Interceptor Layer**:
+    -   Drop-in OpenAI & AsyncOpenAI adapters for seamless medical document processing.
+    -   Schema-enforced fact extraction via tool-forcing.
+    -   Automatic capture of model provenance and confidence metadata.
+
+4.  **Security Infrastructure**:
+    -   **Tenant Isolation**: Strict `OrgID` enforcement on every endpoint to prevent data leaks.
+    -   **Actor Tracking**: Every state-modifying action is attributed to a specific API Key or User ID.
+    -   **Admin Audit Trail**: Key lifecycle, config changes, backups, and restores are journaled with `actor_id`, timestamp, and payload.
+    -   **Persistent Rate Limiting**: Request quotas are stored in BadgerDB to prevent brute-force attacks across restarts.
+
+5.  **Observability Suite**:
+    -   **Living Neural Graph**: Visualizes dependency flows with real-time causal particle effects.
+    -   **Time-Travel Replay**: Journal-driven simulation mode for debugging complex invalidation cascades.
+    -   **Blast Radius Analysis**: Quantitative "What If" impact reports for clinical premised retractions.
+
+6.  **Integration Ecosystem**:
+    -   Native LangGraph Checkpointers for persistent healthcare agent memory.
+    -   LlamaIndex Epistemic Retrievers for belief-filtered RAG workflows.
+    -   Full Async/Sync parity across Python and TypeScript SDKs.
+
+7.  **Operations & Compliance**:
+    -   **Versioned API**: Strictly enforced `/v1` endpoints for contract stability.
+    -   **Structured Logging**: `slog`-based JSON output for enterprise log aggregation (Datadog/ELK).
+    -   **Audit Exports**: One-click SOC2 compliance reports (PDF/CSV) with SHA-256 integrity verification.
 
 ---
 
-## Architecture: The 7 Layers of Velarix
+## 🛡️ Production Principles
 
-1.  **Epistemic Kernel (Go)**: A dual-layer engine that maintains belief support counters and a secondary Dominator Tree for instant pruning.
-2.  **Multi-Tenant Partitioning**: Isolated "Reasoning Sessions" that prevent context leakage between users.
-3.  **High-Performance Persistence (BadgerDB)**: $O(K)$ session lookups via prefixed binary keys, ensuring history retrieval scales even with millions of sessions.
-4.  **Schema Enforcement Layer**: Configurable "Strict" or "Warn" modes that reject or flag malformed agent outputs before they poison the graph.
-5.  **Context Slicing API**: Dynamically generates "Prompt-Ready" snapshots of the current valid truth in JSON or Markdown.
-6.  **The LLM Interceptor (OpenAI Adapter)**: A drop-in replacement for the OpenAI client that automates context injection and fact extraction.
-7.  **Neural Graph Visualizer**: A production-grade observability dashboard for debugging and auditing agent reasoning in real-time.
+*   **Auditability by Default**: If a belief changed, we know exactly who changed it and why.
+*   **Safety Over Speed**: We sacrifice sub-microsecond latency for disk-sync durability and encryption integrity.
+*   **Zero-Drift Contracts**: The API versioning ensures that SDKs deployed in the field never experience breaking changes silently.
 
 ---
 
-## Integration in < 10 Minutes
+## 🚀 Developer Onboarding & Integration Guide
 
-### 1. Get your API Key
-Visit [velarix.dev/keys](https://velarix.dev/keys) to generate your unique access token. You point your SDK at our hosted orchestrator—no infrastructure management required.
+Velarix is designed to integrate cleanly with your existing agents without dictating their internal reasoning loops. Use this quickstart to drop Velarix into a production LangChain or LlamaIndex application.
 
-### 2. Swap Your SDK Import
-Velarix is a drop-in replacement. You don't need to refactor your reasoning loops.
+### 1. Installation
+
+Install the Python SDK into your environment:
+```bash
+pip install velarix-sdk
+```
+
+### 2. Configuration & Initialization
+
+Ensure your server is running or configure the client to spin up the sidecar locally:
 
 ```python
-# from openai import OpenAI
-from velarix.adapters.openai import OpenAI
+import os
+from velarix.client import VelarixClient
 
-# Initialize with your session ID
-client = OpenAI(
-    api_key="your-openai-key",
-    velarix_api_key="vx_...", 
-    velarix_session_id="user_456"
+# In a cloud environment, pass the URL and API Key
+client = VelarixClient(
+    base_url=os.getenv("VELARIX_URL", "http://localhost:8080/v1"), 
+    api_key=os.getenv("VELARIX_API_KEY")
 )
 ```
 
-# That's it. 
-# Injection and extraction are now automatic.
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "The database is now on Port 5432."}]
-)
+### 3. Creating a Session Boundary
+
+Wrap a discrete unit of clinical reasoning in a `session`:
+
+```python
+with client as c:
+    # We scope reasoning to a specific encounter or patient request
+    session = c.session("encounter_xyz")
+    
+    # 1. Provide the Root Premises (Inputs/Consents/Labs)
+    session.observe("patient_consent", payload={"type": "hipaa_signed"})
+    session.observe("lab_result_01", payload={"value": "elevated_WBC"})
+
+    # 2. Derive logic using your agent
+    # In a real app, an LLM call generates this insight. Velarix just records the dependency.
+    session.derive("administer_antibiotics", justifications=[["patient_consent", "lab_result_01"]])
+
+    # 3. Check State
+    # The 'slice' endpoint returns ONLY the valid facts for prompt injection context and supports `max_facts` to bound prompt size.
+    valid_context = session.get_slice(format="json")
+```
+
+### 4. Handling Clinical Retractions
+
+If a patient revokes consent or a lab result is corrected, simply invalidate the root fact. Velarix will deterministically collapse all dependent decisions instantly.
+
+```python
+# The patient revokes consent:
+session.invalidate("patient_consent")
+
+# The 'administer_antibiotics' fact automatically transitions to an invalid state.
+# Your next `session.get_slice()` call will omit it, preventing the agent from acting on retracted data.
 ```
 
 ---
-
-## Technical Status & Roadmap
-
-### Currently Deferred
-- **Client-Side Caching**: Currently, every `get_slice` is an API hit. We are deferring local LRU caching of the context slice to prioritize data consistency.
-- **AsyncIO Support**: The Python SDK is currently synchronous. Async support is prioritized for the v0.2 release.
-- **Complex Multi-Turn Extraction**: The interceptor currently handles the first tool call. Multi-step reasoning loops are handled but require manual session binding for now.
-
-### Known Limitations
-- **Memory-First**: While BadgerDB handles persistence, the active logic graph for a session is held in memory for performance. Large graphs (>100k nodes per session) may require higher memory overhead.
-- **Linear Replay**: Startup replay from BadgerDB is linear. Snapshotting is on the roadmap to accelerate cold boots.
-
-### The Roadmap
-- [ ] **v0.2**: Native LangChain & LlamaIndex integrations.
-- [ ] **v0.3**: Semantic search over the "Valid Subset" of facts.
-- [ ] **v0.4**: Cross-session "Global Knowledge" inheritance.
-- [ ] **v1.0**: Distributed consensus for high-availability clusters.
-
-**Velarix is taking compiler-grade math and weaponizing it for the age of Autonomous Agents. Stop paying for hallucinations.**
+*Velarix: Making AI reasoning auditable, reliable, and logical.*

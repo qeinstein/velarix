@@ -1,114 +1,219 @@
-import { useMemo } from 'react';
-import { 
-  ReactFlow, 
-  Controls, 
-  Background, 
-  MarkerType,
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Background,
+  Controls,
   Handle,
-  Position
+  MarkerType,
+  MiniMap,
+  Position,
+  ReactFlow,
+  BaseEdge,
+  getBezierPath,
 } from '@xyflow/react';
-import type { Node, Edge } from '@xyflow/react';
+import type { EdgeProps, Edge, Node, NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+import { motion, AnimatePresence } from 'framer-motion';
 import type { Fact } from './lib/types';
-import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// Custom Neural Node Component
-const FactNode = ({ data, selected }: any) => {
+type FactNodeData = Record<string, unknown> & {
+  label: string;
+  status: number;
+  isRoot: boolean;
+  supportCount: number;
+  hasViolations: boolean;
+  isImpacted: boolean;
+  isProvenance: boolean;
+  isWhatIf: boolean;
+  wasJustCollapsed: boolean;
+};
+
+type FactFlowNode = Node<FactNodeData, 'fact'>;
+
+function FactNode({ data, selected }: NodeProps<FactFlowNode>) {
   const isValid = data.status === 1;
-  const isViolated = data.hasViolations;
   const isImpacted = data.isImpacted;
   const isProvenance = data.isProvenance;
+  const isWhatIf = data.isWhatIf;
+  const wasJustCollapsed = data.wasJustCollapsed;
+  const hasViolations = data.hasViolations;
 
   return (
-    <div className={cn(
-      "relative px-4 py-3 rounded-xl border-2 transition-all duration-500 min-w-[180px]",
-      "bg-slate-900 shadow-2xl",
-      isValid ? "border-emerald-500/30" : "border-red-500/30",
-      isViolated && "border-violet-500/50 shadow-violet-500/20",
-      selected && "border-indigo-500 ring-4 ring-indigo-500/20 scale-105 z-50",
-      isImpacted && "ring-4 ring-red-500/40 animate-pulse scale-105 z-50",
-      isProvenance && "ring-4 ring-blue-500/40 scale-105 z-50"
-    )}>
-      {/* Neural Glow Effect */}
-      <div className={cn(
-        "absolute inset-0 rounded-xl opacity-20 blur-xl transition-opacity",
-        isValid ? "bg-emerald-500" : "bg-red-500",
-        isViolated && "bg-violet-500 opacity-40"
-      )} />
+    <motion.div
+      animate={{ y: [0, -3, 0] }}
+      transition={{ duration: 4, repeat: Infinity, ease: "easeInOut", delay: Math.random() * 2 }}
+      className={cn(
+        'relative min-w-[230px] overflow-hidden rounded-[1.4rem] border px-4 py-4 text-left shadow-[0_20px_48px_rgba(2,6,23,0.48)] transition-all duration-500',
+        'bg-[#060b16]',
+        isValid ? 'border-emerald-400/20' : 'border-rose-400/18',
+        hasViolations && 'border-amber-300/22',
+        selected && 'scale-[1.02] border-sky-400/50 shadow-[0_0_30px_rgba(56,189,248,0.2)]',
+        isImpacted && 'border-rose-400/40 shadow-[0_0_30px_rgba(251,113,133,0.2)]',
+        isProvenance && 'border-sky-400/40 shadow-[0_0_30px_rgba(56,189,248,0.2)]',
+        isWhatIf && 'border-amber-400/40 shadow-[0_0_30px_rgba(251,191,36,0.2)]',
+      )}
+    >
+      <div className={cn('absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent')} />
+      
+      {/* Pulse effect */}
+      <motion.div
+        animate={{ opacity: [0.1, 0.2, 0.1], scale: [1, 1.2, 1] }}
+        transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+        className={cn(
+          'absolute -right-4 -top-4 h-24 w-24 rounded-full blur-2xl transition-opacity',
+          isValid ? 'bg-emerald-400/20' : 'bg-rose-400/20',
+          hasViolations && 'bg-amber-400/20',
+        )}
+      />
+
+      {/* Ripple Effect for Invalidation Cascade */}
+      <AnimatePresence>
+        {wasJustCollapsed && (
+          <motion.div 
+            initial={{ scale: 0.8, opacity: 1 }}
+            animate={{ scale: 2.5, opacity: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 1, ease: "easeOut" }}
+            className={cn(
+              'absolute inset-0 rounded-full border-4 pointer-events-none -z-10',
+              hasViolations ? 'border-amber-400' : 'border-rose-500'
+            )}
+          />
+        )}
+      </AnimatePresence>
 
       <div className="relative z-10">
-        <div className="flex items-center justify-between gap-2 mb-1">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter truncate max-w-[120px]">
-            {data.label}
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[0.62rem] uppercase tracking-[0.18em] text-slate-500">
+              {data.isRoot ? 'Root premise' : 'Derived belief'}
+            </div>
+            <div className="mt-2 text-sm font-bold text-white">{data.label}</div>
           </div>
-          <div className={cn(
-            "w-2 h-2 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]",
-            isValid ? "bg-emerald-400 shadow-emerald-400/50" : "bg-red-400 shadow-red-400/50",
-            isViolated && "bg-violet-400 shadow-violet-400/50"
-          )} />
+          <div className={cn('rounded-full px-2.5 py-1 text-[0.6rem] uppercase font-bold tracking-[0.16em] shadow-inner', isValid ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20')}>
+            {isValid ? 'Valid' : 'Collapsed'}
+          </div>
         </div>
-        
-        <div className="text-[9px] font-medium text-slate-400 leading-tight line-clamp-1">
-          {data.isRoot ? "ROOT PREMISE" : "DERIVED BELIEF"}
+
+        <div className="mt-4 flex flex-wrap gap-2 text-[0.62rem] uppercase tracking-[0.16em] font-semibold text-slate-400">
+          <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Support {data.supportCount}</span>
+          {hasViolations && <span className="rounded-full border border-amber-400/20 bg-amber-500/10 px-2.5 py-1 text-amber-300">Schema warn</span>}
+          {isImpacted && <span className="rounded-full border border-rose-400/20 bg-rose-500/10 px-2.5 py-1 text-rose-300">Impact</span>}
+          {isProvenance && <span className="rounded-full border border-sky-400/20 bg-sky-500/10 px-2.5 py-1 text-sky-300">Provenance</span>}
+          {isWhatIf && <span className="rounded-full border border-amber-400/20 bg-amber-500/10 px-2.5 py-1 text-amber-300">What-if</span>}
         </div>
       </div>
 
-      <Handle type="target" position={Position.Top} className="opacity-0" />
-      <Handle type="source" position={Position.Bottom} className="opacity-0" />
-    </div>
+      <Handle type="target" position={Position.Top} className="!h-2 !w-2 !border-0 !bg-sky-400" />
+      <Handle type="source" position={Position.Bottom} className="!h-2 !w-2 !border-0 !bg-sky-400" />
+    </motion.div>
   );
-};
+}
 
-const nodeTypes = {
-  fact: FactNode,
-};
-
-// Dagre layouting for the architecture feel
-const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
-  const dagreGraph = new dagre.graphlib.Graph();
-  dagreGraph.setDefaultEdgeLabel(() => ({}));
-  dagreGraph.setGraph({ rankdir: 'TB', ranksep: 100, nodesep: 80 });
-
-  nodes.forEach((node) => {
-    dagreGraph.setNode(node.id, { width: 220, height: 80 });
+function FlowingEdge({
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style = {},
+  markerEnd,
+}: EdgeProps) {
+  const [edgePath] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
   });
 
-  edges.forEach((edge) => {
-    dagreGraph.setEdge(edge.source, edge.target);
-  });
+  return (
+    <>
+      <BaseEdge path={edgePath} markerEnd={markerEnd} style={style} />
+      <circle r="4" fill={style.stroke as string || "#38bdf8"} style={{ filter: 'drop-shadow(0px 0px 4px rgba(56,189,248,0.8))' }}>
+        <animateMotion
+          dur="2s"
+          repeatCount="indefinite"
+          path={edgePath}
+        />
+      </circle>
+    </>
+  );
+}
 
-  dagre.layout(dagreGraph);
+const nodeTypes = { fact: FactNode };
+const edgeTypes = { flowing: FlowingEdge };
 
-  const layoutedNodes = nodes.map((node) => {
-    const nodeWithPosition = dagreGraph.node(node.id);
-    return {
-      ...node,
-      position: {
-        x: nodeWithPosition.x - 110,
-        y: nodeWithPosition.y - 40,
-      },
-    };
-  });
+function getLayoutedElements(nodes: FactFlowNode[], edges: Edge[]) {
+  const graph = new dagre.graphlib.Graph();
+  graph.setDefaultEdgeLabel(() => ({}));
+  graph.setGraph({ rankdir: 'TB', ranksep: 120, nodesep: 90 });
 
-  return { nodes: layoutedNodes, edges };
-};
+  nodes.forEach((node) => graph.setNode(node.id, { width: 250, height: 120 }));
+  edges.forEach((edge) => graph.setEdge(edge.source, edge.target));
+  dagre.layout(graph);
+
+  return {
+    nodes: nodes.map((node) => {
+      const layout = graph.node(node.id);
+      return {
+        ...node,
+        position: {
+          x: layout.x - 125,
+          y: layout.y - 60,
+        },
+      };
+    }),
+    edges,
+  };
+}
 
 interface GraphProps {
   facts: Record<string, Fact>;
   onNodeClick: (factId: string) => void;
   impactedNodeIds?: Set<string>;
   provenanceNodeIds?: Set<string>;
+  whatIfNodeIds?: Set<string>;
 }
 
-export function Graph({ facts, onNodeClick, impactedNodeIds, provenanceNodeIds }: GraphProps) {
+export function Graph({ facts, onNodeClick, impactedNodeIds, provenanceNodeIds, whatIfNodeIds }: GraphProps) {
+  const prevFacts = useRef<Record<string, Fact>>({});
+  const [justCollapsed, setJustCollapsed] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    const collapsed = new Set<string>();
+
+    Object.keys(facts).forEach((id) => {
+      const previous = prevFacts.current[id];
+      const current = facts[id];
+      if (previous && previous.resolved_status === 1 && (current.resolved_status ?? 0) < 1) {
+        collapsed.add(id);
+      }
+    });
+
+    prevFacts.current = facts;
+
+    if (collapsed.size === 0) return undefined;
+
+    const showTimer = window.setTimeout(() => setJustCollapsed(collapsed), 0);
+    const clearTimer = window.setTimeout(() => setJustCollapsed(new Set()), 1800);
+
+    return () => {
+      window.clearTimeout(showTimer);
+      window.clearTimeout(clearTimer);
+    };
+  }, [facts]);
+
   const { nodes, edges } = useMemo(() => {
-    const initialNodes: Node[] = [];
+    const initialNodes: FactFlowNode[] = [];
     const initialEdges: Edge[] = [];
 
     Object.values(facts).forEach((fact) => {
@@ -116,60 +221,92 @@ export function Graph({ facts, onNodeClick, impactedNodeIds, provenanceNodeIds }
         id: fact.ID,
         type: 'fact',
         position: { x: 0, y: 0 },
-        data: { 
-          label: fact.ID, 
+        data: {
+          label: fact.ID,
           status: fact.resolved_status ?? 0,
           isRoot: fact.IsRoot,
-          hasViolations: fact.validation_errors && fact.validation_errors.length > 0,
-          isImpacted: impactedNodeIds?.has(fact.ID),
-          isProvenance: provenanceNodeIds?.has(fact.ID)
+          supportCount: fact.ValidJustificationCount,
+          hasViolations: Boolean(fact.validation_errors?.length),
+          isImpacted: Boolean(impactedNodeIds?.has(fact.ID)),
+          isProvenance: Boolean(provenanceNodeIds?.has(fact.ID)),
+          wasJustCollapsed: justCollapsed.has(fact.ID),
+          isWhatIf: Boolean(whatIfNodeIds?.has(fact.ID)),
         },
       });
 
-      if (fact.justification_sets) {
-        fact.justification_sets.forEach((set, setIndex) => {
-          set.forEach((parentId) => {
-            const isProvenance = provenanceNodeIds?.has(fact.ID) && provenanceNodeIds?.has(parentId);
-            const isImpacted = impactedNodeIds?.has(fact.ID) && impactedNodeIds?.has(parentId);
+      fact.justification_sets?.forEach((set, setIndex) => {
+        set.forEach((parentId) => {
+          const isImpacted = Boolean(impactedNodeIds?.has(fact.ID) && impactedNodeIds?.has(parentId));
+          const isProvenance = Boolean(provenanceNodeIds?.has(fact.ID) && provenanceNodeIds?.has(parentId));
+          const isWhatIf = Boolean(whatIfNodeIds?.has(fact.ID) && whatIfNodeIds?.has(parentId));
+          const accent = isProvenance ? '#38bdf8' : isImpacted ? '#fb7185' : isWhatIf ? '#fbbf24' : '#475569';
 
-            initialEdges.push({
-              id: `e-${parentId}-${fact.ID}-${setIndex}`,
-              source: parentId,
-              target: fact.ID,
-              animated: isProvenance || isImpacted,
-              markerEnd: {
-                type: MarkerType.ArrowClosed,
-                width: 15,
-                height: 15,
-                color: isProvenance ? '#3b82f6' : isImpacted ? '#ef4444' : '#334155',
-              },
-              style: {
-                strokeWidth: isProvenance || isImpacted ? 3 : 1.5,
-                stroke: isProvenance ? '#3b82f6' : isImpacted ? '#ef4444' : '#334155',
-                opacity: isProvenance || isImpacted ? 1 : 0.4
-              },
-            });
+          initialEdges.push({
+            id: `edge-${parentId}-${fact.ID}-${setIndex}`,
+            source: parentId,
+            target: fact.ID,
+            type: 'flowing', // Use custom flowing particle edge
+            style: {
+              stroke: accent,
+              strokeWidth: isImpacted || isProvenance || isWhatIf ? 2.5 : 1.4,
+              opacity: isImpacted || isProvenance || isWhatIf ? 1 : 0.46,
+            },
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              color: accent,
+            },
           });
         });
-      }
+      });
     });
 
     return getLayoutedElements(initialNodes, initialEdges);
-  }, [facts, impactedNodeIds, provenanceNodeIds]);
+  }, [facts, impactedNodeIds, provenanceNodeIds, whatIfNodeIds, justCollapsed]);
+
+  if (nodes.length === 0) {
+    return (
+      <div className="graph-canvas flex h-full items-center justify-center">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="surface-panel rounded-[2rem] px-8 py-10 text-center"
+        >
+          <div className="font-display text-2xl font-semibold text-white">No graph data yet</div>
+          <p className="mt-3 max-w-md text-sm leading-7 text-slate-400">
+            Authenticate, select a session, and load facts before expecting the graph view to prove anything.
+          </p>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
-    <div className="w-full h-full bg-[#020617]">
-      <ReactFlow
+    <div className="graph-canvas h-full w-full">
+      <ReactFlow<FactFlowNode, Edge>
+        fitView
+        minZoom={0.2}
+        maxZoom={1.75}
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        fitViewOptions={{ padding: 0.18 }}
         onNodeClick={(_, node) => onNodeClick(node.id)}
-        fitView
-        minZoom={0.05}
-        maxZoom={1.5}
       >
-        <Background color="#1e293b" gap={24} size={1} />
-        <Controls className="bg-slate-900 border-slate-800 fill-white" />
+        <Background gap={32} size={1} />
+        <MiniMap
+          pannable
+          zoomable
+          nodeColor={(node) => {
+            const data = node.data as unknown as FactNodeData | undefined;
+            if (data?.isImpacted) return '#fb7185';
+            if (data?.isProvenance) return '#38bdf8';
+            return data?.status === 1 ? '#34d399' : '#fda4af';
+          }}
+          maskColor="rgba(3, 7, 18, 0.82)"
+          style={{ background: 'rgba(5, 10, 20, 0.82)', border: '1px solid rgba(148, 163, 184, 0.14)' }}
+        />
+        <Controls showInteractive={false} />
       </ReactFlow>
     </div>
   );

@@ -1,73 +1,30 @@
-# React + TypeScript + Vite
+# Velarix Control Plane
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A world-class observability workspace for clinical reasoning and belief graphs. 
 
-Currently, two official plugins are available:
+The control plane allows operators to visualize the causal dependencies of an AI agent, replay reasoning history, and predict the blast radius of clinical premised retractions.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Features
 
-## React Compiler
+- **3D Exploded-View Architecture**: Visualizes the App, Kernel, and Storage layers with parallax depth.
+- **Living Neural Graph**: Nodes pulse with health status; edges animate flowing causal particles.
+- **Time-Travel Debugging**: Journal-driven simulation mode to scrub through reasoning cascades.
+- **Compliance Center**: One-click SHA-256 verified SOC2/HIPAA audit log exports.
+- **Blame & Provenance**: Full chronological lineage for every belief, including which LLM model provided the justification.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Technical Stack
 
-## Expanding the ESLint configuration
+- **Framework**: React 19 + TypeScript.
+- **Visuals**: Framer Motion (Interactions), React Flow (Graph).
+- **Styling**: Vanilla CSS with Vercel/Linear-inspired aesthetics.
+- **Hardening**: Versioned API integration (`/v1`), strict tenant isolation, and snake_case payloads aligned with the backend contract.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Getting Started
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+---
+*Velarix: Auditable reasoning for the regulated clinical plane.*
