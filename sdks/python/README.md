@@ -8,34 +8,25 @@ The official Python client for Velarix: the epistemic state layer for regulated 
 pip install velarix
 ```
 
-## Quick Start
+## The One-Line Swap (OpenAI Adapter)
+
+The easiest way to integrate Velarix into an existing OpenAI-based project is through our adapter.
 
 ```python
-from velarix import VelarixClient
+# Before: from openai import OpenAI
+from velarix.adapters.openai import OpenAI
 
-# Initialize client with production-grade security
-client = VelarixClient(
-    api_key="vx_healthcare_prod_...",
-    base_url="https://api.velarix.dev"
+# Specify a session ID during initialization or per-call
+client = OpenAI(velarix_session_id="session_456")
+
+# That's it. Velarix now intercepts chat completions to inject context and extract facts.
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Patient is presenting with acute shortness of breath."}]
 )
-
-# Start a clinical reasoning session
-session = client.session("patient_case_492")
-
-# 1. Assert a Root Fact (e.g., Clinical Consent)
-session.observe("hipaa_consent", payload={"status": "signed", "form": "v2.1"})
-
-# 2. Derive Beliefs (e.g., Access to Records)
-# If 'hipaa_consent' is ever invalidated, this belief collapses instantly.
-session.derive(
-    "phi_access_granted", 
-    justifications=[["hipaa_consent"]], 
-    payload={"level": "full_records"}
-)
-
-# 3. Retract & Collapse
-session.invalidate("hipaa_consent")
 ```
+
+## Manual Usage (Direct Client)
 
 ## Features
 
