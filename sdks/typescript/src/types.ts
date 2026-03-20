@@ -1,16 +1,16 @@
 export interface Fact {
-  ID: string;
+  id: string;
   payload?: Record<string, any>;
-  IsRoot: boolean;
-  ManualStatus: number;
-  DerivedStatus: number;
-  ValidJustificationCount: number;
+  is_root: boolean;
+  manual_status: number;
+  derived_status: number;
+  valid_justification_count: number;
   justification_sets?: string[][];
   resolved_status?: number;
 }
 
 export interface ExplanationNode {
-  FactID: string;
+  Factid: string;
   Children: ExplanationNode[];
 }
 

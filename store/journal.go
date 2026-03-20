@@ -13,26 +13,28 @@ import (
 type EventType string
 
 const (
-	EventAssert             EventType = "assert"
-	EventInvalidate         EventType = "invalidate"
-	EventCycleViolation     EventType = "cycle_violation"
-	EventSnapshotCorruption EventType = "snapshot_corruption"
-	EventConfidenceAdjusted EventType = "confidence_adjusted"
+	EventAssert               EventType = "assert"
+	EventInvalidate           EventType = "invalidate"
+	EventCycleViolation       EventType = "cycle_violation"
+	EventSnapshotCorruption   EventType = "snapshot_corruption"
+	EventConfidenceAdjusted   EventType = "confidence_adjusted"
 	EventRevalidationComplete EventType = "revalidation_complete"
+	EventAdminAction          EventType = "admin_action"
 )
 
 type JournalEntry struct {
-	Type      EventType   `json:"type"`
-	SessionID string      `json:"session_id"`
-	Fact      *core.Fact  `json:"fact,omitempty"`
-	FactID    string      `json:"fact_id,omitempty"`
-	Timestamp int64       `json:"timestamp"`
+	Type      EventType              `json:"type"`
+	SessionID string                 `json:"session_id"`
+	ActorID   string                 `json:"actor_id,omitempty"` // ID of the user or API key that performed the action
+	Fact      *core.Fact             `json:"fact,omitempty"`
+	FactID    string                 `json:"fact_id,omitempty"`
+	Payload   map[string]interface{} `json:"payload,omitempty"`
+	Timestamp int64                  `json:"timestamp"`
 }
 
 type Journal struct {
 	file *os.File
 }
-
 
 func OpenJournal(path string) (*Journal, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -42,7 +44,6 @@ func OpenJournal(path string) (*Journal, error) {
 
 	return &Journal{file: file}, nil
 }
-
 
 func (j *Journal) AppendAssert(sessionID string, f *core.Fact) error {
 	entry := JournalEntry{
@@ -54,7 +55,6 @@ func (j *Journal) AppendAssert(sessionID string, f *core.Fact) error {
 	return j.append(entry)
 }
 
-
 func (j *Journal) AppendInvalidate(sessionID string, factID string) error {
 	entry := JournalEntry{
 		Type:      EventInvalidate,
@@ -65,7 +65,6 @@ func (j *Journal) AppendInvalidate(sessionID string, factID string) error {
 	return j.append(entry)
 }
 
-
 func (j *Journal) append(entry JournalEntry) error {
 	entry.Timestamp = time.Now().UnixMilli()
 	bytes, err := json.Marshal(entry)
@@ -73,8 +72,10 @@ func (j *Journal) append(entry JournalEntry) error {
 		return err
 	}
 
-	_, err = j.file.Write(append(bytes, '\n'))
-	return err
+	if _, err := j.file.Write(append(bytes, '\n')); err != nil {
+		return err
+	}
+	return j.file.Sync()
 }
 
 func (j *Journal) ReadHistory() ([]JournalEntry, error) {
@@ -142,4 +143,3 @@ func Replay(path string, engines map[string]*core.Engine) error {
 
 	return scanner.Err()
 }
-

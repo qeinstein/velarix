@@ -1,0 +1,161 @@
+package tests
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+	"time"
+
+	"velarix/api"
+	"velarix/core"
+	"velarix/store"
+
+	"github.com/dgraph-io/badger/v4"
+)
+
+func setupTestServer(t *testing.T) (*api.Server, *httptest.Server) {
+	dbPath := "test_velarix.data"
+	os.RemoveAll(dbPath)
+
+	os.Setenv("VELARIX_API_KEY", "test_admin_key")
+
+	badgerStore, err := store.OpenBadger(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Failed to open test BadgerDB: %v", err)
+	}
+
+	server := &api.Server{
+		Engines:   make(map[string]*core.Engine),
+		Configs:   make(map[string]*store.SessionConfig),
+		LastAccess: make(map[string]time.Time),
+		Store:     badgerStore,
+		StartTime: time.Now(),
+	}
+
+	// Setup a default user and org for testing
+	user := &store.User{
+		Email: "test@example.com",
+		OrgID: "test_org",
+		Keys: []store.APIKey{
+			{Key: "test_key", Label: "test_actor", IsRevoked: false},
+		},
+	}
+	server.Store.SaveUser(user)
+	server.Store.SaveOrganization(&store.Organization{ID: "test_org", Name: "Test Org"})
+
+	ts := httptest.NewServer(server.Routes())
+	return server, ts
+}
+
+func TestJournalResilience(t *testing.T) {
+	server, ts := setupTestServer(t)
+	defer ts.Close()
+
+	// 1. Write a valid entry
+	server.Store.Append(store.JournalEntry{Type: store.EventAssert, SessionID: "sess_1", Fact: &core.Fact{ID: "F1", IsRoot: true}})
+	
+	// 2. Write a corrupt entry
+	err := server.Store.DB().Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte("s:sess_1:h:9999999999"), []byte(`{"type":"assert", BAD JSON THIS IS CORRUPT`))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Write another valid entry
+	server.Store.Append(store.JournalEntry{Type: store.EventAssert, SessionID: "sess_1", Fact: &core.Fact{ID: "F2", IsRoot: true}})
+
+	engines := make(map[string]*core.Engine)
+	configsRaw := make(map[string][]byte)
+	err = server.Store.ReplayAll(engines, configsRaw)
+
+	if err != nil {
+		t.Fatalf("ReplayAll failed unexpectedly: %v", err)
+	}
+
+	engine, ok := engines["sess_1"]
+	if !ok {
+		t.Fatal("Session not loaded after replay")
+	}
+
+	if _, ok := engine.GetFact("F1"); !ok {
+		t.Error("Fact F1 (before corruption) was lost")
+	}
+	if _, ok := engine.GetFact("F2"); !ok {
+		t.Error("Fact F2 (after corruption) was lost")
+	}
+}
+
+func TestE2ELifecycle(t *testing.T) {
+	_, ts := setupTestServer(t)
+	defer ts.Close()
+
+	client := &http.Client{}
+	sessionID := "e2e_session"
+
+	// 1. Assert Root Fact
+	rootFact := core.Fact{
+		ID:           "patient_consented",
+		IsRoot:       true,
+		ManualStatus: core.Valid,
+		Payload:      map[string]interface{}{"consent_type": "hipaa"},
+	}
+	body, _ := json.Marshal(rootFact)
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/v1/s/%s/facts", ts.URL, sessionID), bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test_admin_key")
+	req.Header.Set("Content-Type", "application/json")
+	
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("Failed to assert root fact: %v (Status: %d)", err, resp.StatusCode)
+	}
+
+	// 2. Assert Derived Fact
+	derivedFact := core.Fact{
+		ID: "access_granted",
+		JustificationSets: [][]string{{"patient_consented"}},
+		Payload: map[string]interface{}{"access_level": "full"},
+	}
+	body, _ = json.Marshal(derivedFact)
+	req, _ = http.NewRequest("POST", fmt.Sprintf("%s/v1/s/%s/facts", ts.URL, sessionID), bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test_admin_key")
+	
+	resp, err = client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("Failed to assert derived fact: %v (Status: %d)", err, resp.StatusCode)
+	}
+
+	// 3. Verify Status
+	req, _ = http.NewRequest("GET", fmt.Sprintf("%s/v1/s/%s/facts/access_granted", ts.URL, sessionID), nil)
+	req.Header.Set("Authorization", "Bearer test_admin_key")
+	resp, err = client.Do(req)
+	
+	var statusResp struct {
+		ResolvedStatus float64 `json:"resolved_status"`
+	}
+	json.NewDecoder(resp.Body).Decode(&statusResp)
+	if statusResp.ResolvedStatus != 1.0 {
+		t.Fatalf("Expected access_granted to be valid (1.0), got %f", statusResp.ResolvedStatus)
+	}
+
+	// 4. Invalidate Root
+	req, _ = http.NewRequest("POST", fmt.Sprintf("%s/v1/s/%s/facts/patient_consented/invalidate", ts.URL, sessionID), nil)
+	req.Header.Set("Authorization", "Bearer test_admin_key")
+	resp, err = client.Do(req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Failed to invalidate root: %d", resp.StatusCode)
+	}
+
+	// 5. Verify Invalidation Cascaded
+	req, _ = http.NewRequest("GET", fmt.Sprintf("%s/v1/s/%s/facts/access_granted", ts.URL, sessionID), nil)
+	req.Header.Set("Authorization", "Bearer test_admin_key")
+	resp, err = client.Do(req)
+	json.NewDecoder(resp.Body).Decode(&statusResp)
+	if statusResp.ResolvedStatus != 0.0 {
+		t.Fatalf("Expected access_granted to be invalid (0.0) after root invalidation, got %f", statusResp.ResolvedStatus)
+	}
+}
