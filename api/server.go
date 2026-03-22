@@ -1041,6 +1041,110 @@ func (s *Server) metricsAndLoggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) handleExplainReasoning(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+
+	factID := r.URL.Query().Get("fact_id")
+	timestampStr := r.URL.Query().Get("timestamp")
+	counterfactualFactID := r.URL.Query().Get("counterfactual_fact_id")
+
+	var engine *core.Engine
+	var err error
+	var explanationTimestamp int64
+
+	if timestampStr != "" {
+		// Parse ISO8601 timestamp with nano precision support
+		parsedTime, parseErr := time.Parse(time.RFC3339Nano, timestampStr)
+		if parseErr != nil {
+			http.Error(w, "invalid timestamp format, use ISO8601 (RFC3339)", http.StatusBadRequest)
+			return
+		}
+		explanationTimestamp = parsedTime.UnixMilli()
+
+		// Replay session state up to that point
+		history, histErr := s.Store.GetSessionHistoryBefore(sessionID, explanationTimestamp)
+		if histErr != nil {
+			http.Error(w, "failed to retrieve history: "+histErr.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Build a temporary engine from that point in time
+		engine = core.NewEngine()
+		for _, entry := range history {
+			switch entry.Type {
+			case store.EventAssert:
+				if entry.Fact != nil {
+					engine.AssertFact(entry.Fact)
+				}
+			case store.EventInvalidate:
+				engine.InvalidateRoot(entry.FactID)
+			}
+		}
+	} else {
+		explanationTimestamp = time.Now().UnixMilli()
+		var getErr error
+		engine, _, getErr = s.getEngine(sessionID, orgID)
+		if getErr != nil {
+			http.Error(w, getErr.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
+	if factID == "" {
+		facts := engine.ListFacts()
+		if len(facts) == 0 {
+			http.Error(w, "no facts in session", http.StatusNotFound)
+			return
+		}
+		// Use the last asserted fact
+		factID = facts[len(facts)-1].ID
+	}
+
+	explanation, err := engine.ExplainReasoning(factID, counterfactualFactID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	explanation.SessionID = sessionID
+	explanation.Timestamp = explanationTimestamp
+
+	// Serialize and store immutably
+	contentBytes, err := json.Marshal(explanation)
+	if err != nil {
+		http.Error(w, "failed to serialize explanation", http.StatusInternalServerError)
+		return
+	}
+
+	s.Store.SaveExplanation(sessionID, contentBytes)
+
+	writeJSON(w, http.StatusOK, explanation)
+}
+
+func (s *Server) handleGetExplanations(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+
+	// Verify org ownership
+	storedOrg, err := s.Store.GetSessionOrganization(sessionID)
+	if err != nil || storedOrg != orgID {
+		http.Error(w, "unauthorized", http.StatusForbidden)
+		return
+	}
+
+	records, err := s.Store.GetSessionExplanations(sessionID)
+	if err != nil {
+		http.Error(w, "failed to retrieve explanations: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if records == nil {
+		records = []store.ExplanationRecord{}
+	}
+
+	writeJSON(w, http.StatusOK, records)
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -1085,6 +1189,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/s/{session_id}/history", s.handleAppendHistory)
 	mux.HandleFunc("GET /v1/s/{session_id}/slice", s.handleGetSlice)
 	mux.HandleFunc("GET /v1/s/{session_id}/events", s.handleEvents)
+	mux.HandleFunc("GET /v1/s/{session_id}/explain", s.handleExplainReasoning)
+	mux.HandleFunc("GET /v1/s/{session_id}/explanations", s.handleGetExplanations)
 
 	return s.metricsAndLoggingMiddleware(s.enableCORS(s.authMiddleware(mux)))
 }
