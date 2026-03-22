@@ -11,7 +11,6 @@ import (
 
 func TestRBACEnforcement(t *testing.T) {
 	server, ts := setupTestServer(t)
-	_ = server
 	defer ts.Close()
 
 	// 1. Setup a regular member user
@@ -51,7 +50,7 @@ func TestRBACEnforcement(t *testing.T) {
 }
 
 func TestBackupRestore(t *testing.T) {
-	server, ts := setupTestServer(t)
+	_, ts := setupTestServer(t)
 	defer ts.Close()
 
 	client := &http.Client{}
@@ -78,9 +77,7 @@ func TestBackupRestore(t *testing.T) {
 
 	// 3. Clear Database by creating a new server (simulating disaster)
 	ts.Close()
-	_ = server // Keep track to ensure it was used if needed, or just discard
-	server2, ts2 := setupTestServer(t)
-	_ = server2
+	_, ts2 := setupTestServer(t)
 	defer ts2.Close()
 
 	// 4. Perform Restore

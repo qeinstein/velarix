@@ -29,6 +29,33 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "The patient has a history of penicillin allergy."}]
 )
 ```
+```
+
+## "Why did you do that?" — Audit-Ready Explanations
+
+Velarix includes a first-class **Reasoning Explanation** feature. When an agent makes a decision based on its belief state, you can ask it to justify that decision. 
+
+Through the `explain_reasoning` tool, the LLM fetches a deterministic causal chain from Velarix, ensuring it never "hallucinates" a justification.
+
+### Key Features
+- **Deterministic Causal Chains**: Re-trace exactly which root facts led to a derived belief.
+- **Confidence Weighting**: Every node in the explanation includes a confidence score (0.0 - 1.0).
+- **Historical Replay**: Ask "Why was this true at 10:00 AM?" to see the state at a specific timestamp.
+- **Counterfactual "What If" Analysis**: Predict the impact of removing a specific fact before taking action.
+- **Immutability**: All explanations are hashed with SHA-256 and stored in a tamper-evident audit log.
+
+### Using the Tool (Python SDK)
+
+```python
+# The explain_reasoning tool is automatically registered with the OpenAI adapter.
+# When the user asks "Why did you say that?", the LLM will call the tool.
+
+response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Why did you recommend antibiotics?"}],
+    velarix_session="patient_123"
+)
+```
 
 ## Quick Start (Under 10 Minutes)
 
@@ -74,6 +101,18 @@ npm install
 npm run dev
 ```
 Open `http://localhost:5173` to view the **3D Exploded-View Architecture** and retrace the lineage of every belief.
+
+## 🧩 Integration Patterns
+
+Velarix supports multiple levels of integration for AI agents, from simple drop-in replacements to complex reasoning co-processors:
+- **Level 1: OpenAI Adapter** (Zero-code migration)
+- **Level 2: Epistemic RAG** (Context injection)
+- **Level 3: Manual Fact Management** (Causal chains)
+- **Level 4: Real-time Truth Monitoring** (SSE)
+- **Level 5: Compliance & Explainability** (Audit trails)
+- **Level 6: Embedded Co-processor** (Sidecar mode)
+
+For full code examples and implementation details, see [INTEGRATION_PATTERNS.md](./INTEGRATION_PATTERNS.md).
 
 ## Hardened Architecture
 

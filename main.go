@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/joho/godotenv"
 	"velarix/api"
 	"velarix/core"
 	"velarix/store"
@@ -14,6 +15,9 @@ import (
 )
 
 func main() {
+	// Load environment variables from .env file if it exists
+	_ = godotenv.Load()
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 

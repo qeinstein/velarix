@@ -143,7 +143,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	role := "member"
+	role := "admin"
 	adminEmail := os.Getenv("VELARIX_ADMIN_EMAIL")
 	if adminEmail != "" && body.Email == adminEmail {
 		role = "admin"

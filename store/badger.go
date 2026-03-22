@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -617,4 +619,107 @@ func containsHistoryTag(key string) bool {
 		}
 	}
 	return false
+}
+
+// --- Explanation Persistence ---
+
+// ExplanationRecord stores an immutable explanation with integrity hash.
+type ExplanationRecord struct {
+	SessionID   string          `json:"session_id"`
+	Timestamp   int64           `json:"timestamp"`
+	Content     json.RawMessage `json:"content"`
+	ContentHash string          `json:"content_hash"`
+	Tampered    bool            `json:"tampered"`
+}
+
+// SaveExplanation persists an explanation with a SHA-256 integrity hash.
+func (s *BadgerStore) SaveExplanation(sessionID string, content json.RawMessage) (*ExplanationRecord, error) {
+	now := time.Now()
+	hash := sha256Hash(content)
+
+	record := ExplanationRecord{
+		SessionID:   sessionID,
+		Timestamp:   now.UnixMilli(),
+		Content:     content,
+		ContentHash: hash,
+		Tampered:    false,
+	}
+
+	val, err := json.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+
+	key := []byte(fmt.Sprintf("explanations:%s:%020d", sessionID, now.UnixNano()))
+	err = s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, val)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &record, nil
+}
+
+// GetSessionExplanations returns all stored explanations with tamper verification.
+func (s *BadgerStore) GetSessionExplanations(sessionID string) ([]ExplanationRecord, error) {
+	var records []ExplanationRecord
+	prefix := []byte(fmt.Sprintf("explanations:%s:", sessionID))
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var record ExplanationRecord
+			err := it.Item().Value(func(v []byte) error {
+				return json.Unmarshal(v, &record)
+			})
+			if err != nil {
+				continue
+			}
+
+			// Verify integrity
+			expectedHash := sha256Hash(record.Content)
+			if expectedHash != record.ContentHash {
+				record.Tampered = true
+			}
+
+			records = append(records, record)
+		}
+		return nil
+	})
+
+	return records, err
+}
+
+func (s *BadgerStore) GetSessionHistoryBefore(sessionID string, beforeTimestamp int64) ([]JournalEntry, error) {
+	history := make([]JournalEntry, 0)
+	prefix := []byte(fmt.Sprintf("s:%s:h:", sessionID))
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var entry JournalEntry
+			err := it.Item().Value(func(v []byte) error {
+				return json.Unmarshal(v, &entry)
+			})
+			if err != nil {
+				continue
+			}
+			if entry.Timestamp <= beforeTimestamp {
+				history = append(history, entry)
+			}
+		}
+		return nil
+	})
+
+	return history, err
+}
+
+func sha256Hash(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
 }
