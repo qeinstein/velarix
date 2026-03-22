@@ -1,0 +1,8 @@
+{
+  "id": "fact_invalid",
+  "is_root": true,
+  "manual_status": 1,
+  "payload": {
+    "age": 16
+  }
+}

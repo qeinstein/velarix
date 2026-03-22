@@ -116,13 +116,18 @@ export class VelarixSession {
   }
 }
 
+export interface VelarixConfig {
+  baseUrl?: string;
+  apiKey?: string | null;
+}
+
 export class VelarixClient {
   private baseUrl: string;
   private apiKey: string | null;
 
-  constructor(baseUrl: string = 'http://localhost:8080', apiKey: string | null = null) {
-    this.baseUrl = baseUrl.replace(/\/$/, '');
-    this.apiKey = apiKey;
+  constructor(config: VelarixConfig = {}) {
+    this.baseUrl = (config.baseUrl || 'http://localhost:8080').replace(/\/$/, '');
+    this.apiKey = config.apiKey || null;
   }
 
   getBaseUrl(): string {

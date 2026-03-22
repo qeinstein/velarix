@@ -25,10 +25,12 @@ Velarix is a stateful logical engine that provides a **deterministic conscience*
     -   **Admin Audit Trail**: Key lifecycle, config changes, backups, and restores are journaled with `actor_id`, timestamp, and payload.
     -   **Persistent Rate Limiting**: Request quotas are stored in BadgerDB to prevent brute-force attacks across restarts.
 
-5.  **Observability Suite**:
-    -   **Living Neural Graph**: Visualizes dependency flows with real-time causal particle effects.
-    -   **Time-Travel Replay**: Journal-driven simulation mode for debugging complex invalidation cascades.
-    -   **Blast Radius Analysis**: Quantitative "What If" impact reports for clinical premised retractions.
+5.  **Observability Suite (Audit-Ready)**:
+    -   **Neural Graph**: Visualizes dependency flows with real-time causal particle effects.
+    -   **Reasoning Explanations**: First-class `/explain` endpoint that generates deterministic causal re-tracing for any belief.
+    -   **Historical Replay**: Reconstructs engine state at any point in time from the journal to answer "Why was this true then?".
+    -   **Counterfactual Analysis**: Quantitative "What If" impact reports for clinical premised retractions (powered by Dominator Tree analysis).
+    -   **Immutability Enforcement**: Every explanation is signed with SHA-256 and stored in a tamper-evident log.
 
 6.  **Integration Ecosystem**:
     -   Native LangGraph Checkpointers for persistent healthcare agent memory.
