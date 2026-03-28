@@ -38,6 +38,7 @@ func main() {
 
 	encryptionKey := []byte(os.Getenv("VELARIX_ENCRYPTION_KEY"))
 	env := os.Getenv("VELARIX_ENV")
+	jwtSecret := os.Getenv("VELARIX_JWT_SECRET")
 	if len(encryptionKey) == 0 {
 		if env != "dev" {
 			slog.Error(" [SECURITY] CRITICAL: Encryption at rest is REQUIRED in production. Set VELARIX_ENCRYPTION_KEY (16, 24, or 32 bytes) or set VELARIX_ENV=dev to override for local development.")
@@ -46,6 +47,11 @@ func main() {
 		slog.Warn(" [SECURITY] WARNING: Encryption at rest is disabled (DEV MODE).")
 	} else {
 		slog.Info(" [SECURITY] Encryption at rest enabled", "bits", len(encryptionKey)*8)
+	}
+
+	if jwtSecret == "" && env != "dev" {
+		slog.Error(" [SECURITY] CRITICAL: JWT signing secret is REQUIRED in production. Set VELARIX_JWT_SECRET or set VELARIX_ENV=dev to override for local development.")
+		os.Exit(1)
 	}
 
 	badgerStore, err := store.OpenBadger(dbPath, encryptionKey)

@@ -28,6 +28,34 @@ response = client.chat.completions.create(
 
 ## Manual Usage (Direct Client)
 
+### Idempotent writes + decision records
+
+Velarix expects SDK writes to include `Idempotency-Key` so application retries never create duplicate records.
+
+```python
+from velarix import VelarixClient
+
+client = VelarixClient(base_url="http://localhost:8080", api_key="vx_...")
+session = client.session("s_demo")
+
+session.observe("patient.intake", {"mrn": "123"})
+session.record_decision("tool_call", {"tool": "eligibility.check", "input": {"mrn": "123"}})
+```
+
+### Gateway pattern
+
+```python
+from velarix import VelarixClient, VelarixGateway
+
+client = VelarixClient(base_url="http://localhost:8080", api_key="vx_...")
+gateway = VelarixGateway(client.session("s_demo"))
+
+def eligibility_check(input):
+    return {"eligible": True}
+
+gateway.call_tool("eligibility.check", {"mrn": "123"}, eligibility_check)
+```
+
 ## Features
 
 - **Parity**: Full support for both `sync` and `async` workflows.

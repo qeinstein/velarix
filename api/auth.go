@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,7 +22,13 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-var jwtKey = []byte("velarix_secret_console_key") // In production, load from ENV
+func jwtSigningKey() []byte {
+	if v := os.Getenv("VELARIX_JWT_SECRET"); v != "" {
+		return []byte(v)
+	}
+	// Dev fallback only. Production should set VELARIX_JWT_SECRET.
+	return []byte("velarix_dev_insecure_jwt_secret_change_me")
+}
 
 type Claims struct {
 	Email string `json:"email"`
@@ -99,8 +107,66 @@ type ResetConfirmRequest struct {
 }
 
 type GenerateKeyRequest struct {
-	Email string `json:"email" example:"user@example.com"`
-	Label string `json:"label" example:"Production"`
+	Email  string   `json:"email" example:"user@example.com"`
+	Label  string   `json:"label" example:"Production"`
+	Scopes []string `json:"scopes,omitempty" example:"read,write,export"`
+}
+
+type APIKeyView struct {
+	ID        string   `json:"id"`
+	Key       string   `json:"key,omitempty"` // only returned on create/rotate
+	KeyPrefix string   `json:"key_prefix"`
+	KeyLast4  string   `json:"key_last4"`
+	Label     string   `json:"label"`
+	CreatedAt int64    `json:"created_at"`
+	LastUsedAt int64   `json:"last_used_at"`
+	ExpiresAt int64    `json:"expires_at"`
+	IsRevoked bool     `json:"is_revoked"`
+	Scopes    []string `json:"scopes,omitempty"`
+}
+
+func keyHashHex(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func keyPrefix(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	n := 10
+	if len(raw) < n {
+		n = len(raw)
+	}
+	return raw[:n]
+}
+
+func keyLast4(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if len(raw) <= 4 {
+		return raw
+	}
+	return raw[len(raw)-4:]
+}
+
+func keyViewFromStored(k store.APIKey) APIKeyView {
+	id := k.ID
+	if id == "" {
+		id = k.KeyHash
+	}
+	return APIKeyView{
+		ID:        id,
+		KeyPrefix: k.KeyPrefix,
+		KeyLast4:  k.KeyLast4,
+		Label:     k.Label,
+		CreatedAt: k.CreatedAt,
+		LastUsedAt: k.LastUsedAt,
+		ExpiresAt: k.ExpiresAt,
+		IsRevoked: k.IsRevoked,
+		Scopes:    k.Scopes,
+	}
 }
 
 func getUserEmail(r *http.Request) string {
@@ -221,7 +287,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(jwtKey)
+	tokenString, err := token.SignedString(jwtSigningKey())
 	if err != nil {
 		http.Error(w, "token generation failure", http.StatusInternalServerError)
 		return
@@ -231,6 +297,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Name:    "token",
 		Value:   tokenString,
 		Expires: expirationTime,
+		Path:    "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   os.Getenv("VELARIX_ENV") != "dev",
 	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"token": tokenString})
@@ -320,8 +390,13 @@ func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 // @Router /keys [get]
 func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	email := getUserEmail(r)
+	role := getUserRole(r)
 	if email == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if role != "admin" {
+		http.Error(w, "forbidden: admin role required to view keys", http.StatusForbidden)
 		return
 	}
 
@@ -331,7 +406,34 @@ func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, user.Keys)
+	// Best-effort migration: if legacy keys exist (raw persisted), hash+redact them and store hash owner index.
+	changed := false
+	for i := range user.Keys {
+		k := user.Keys[i]
+		if (k.KeyHash == "" && k.ID == "") && k.Key != "" {
+			h := keyHashHex(k.Key)
+			user.Keys[i].KeyHash = h
+			user.Keys[i].ID = h
+			if user.Keys[i].KeyPrefix == "" {
+				user.Keys[i].KeyPrefix = keyPrefix(k.Key)
+			}
+			if user.Keys[i].KeyLast4 == "" {
+				user.Keys[i].KeyLast4 = keyLast4(k.Key)
+			}
+			_ = s.Store.SaveAPIKeyHash(h, email)
+			changed = true
+		}
+		// Never return raw persisted keys on list; keep the stored record (for legacy) but only expose redacted.
+	}
+	if changed {
+		go s.Store.SaveUser(user)
+	}
+
+	out := make([]APIKeyView, 0, len(user.Keys))
+	for _, k := range user.Keys {
+		out = append(out, keyViewFromStored(k))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleRevokeKey godoc
@@ -368,9 +470,22 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Accept either a raw key (legacy) or a key id (sha256 hex).
+	keyID := keyToRevoke
+	if strings.HasPrefix(keyToRevoke, "vx_") {
+		keyID = keyHashHex(keyToRevoke)
+	}
+
 	found := false
 	for i, k := range user.Keys {
-		if k.Key == keyToRevoke {
+		id := k.ID
+		if id == "" {
+			id = k.KeyHash
+		}
+		if id == "" && k.Key != "" {
+			id = keyHashHex(k.Key)
+		}
+		if id == keyID {
 			user.Keys[i].IsRevoked = true
 			found = true
 			break
@@ -387,8 +502,21 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.auditAdmin("admin", email, "revoke_key", map[string]interface{}{"key": keyToRevoke})
-	slog.Info("API Key revoked", "email", email, "key", keyToRevoke)
+	_ = s.Store.DeleteAPIKeyHash(keyID)
+	if strings.HasPrefix(keyToRevoke, "vx_") {
+		_ = s.Store.DeleteAPIKey(keyToRevoke)
+	}
+
+	s.auditAdmin("admin", email, "revoke_key", map[string]interface{}{"key_id": keyID})
+	slog.Info("API Key revoked", "email", email, "key_id", keyID)
+	s.createNotification(getOrgID(r), "keys", "API key revoked", fmt.Sprintf("Key %s revoked", keyToRevoke))
+	_ = s.Store.AppendOrgActivity(getOrgID(r), store.JournalEntry{
+		Type:      store.EventAdminAction,
+		SessionID: "admin",
+		ActorID:   email,
+		Payload:   map[string]interface{}{"action": "revoke_key", "key_id": keyID},
+		Timestamp: time.Now().UnixMilli(),
+	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "key revoked"})
 }
@@ -437,13 +565,46 @@ func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newKey := "vx_" + hex.EncodeToString(b)
+	keyID := keyHashHex(newKey)
 
 	apiKey := store.APIKey{
-		Key:       newKey,
+		Key:       "",
+		ID:        keyID,
+		KeyHash:   keyID,
+		KeyPrefix: keyPrefix(newKey),
+		KeyLast4:  keyLast4(newKey),
 		Label:     body.Label,
 		CreatedAt: time.Now().UnixMilli(),
 		ExpiresAt: time.Now().Add(30 * 24 * time.Hour).UnixMilli(),
 		IsRevoked: false,
+	}
+	if len(body.Scopes) == 0 {
+		apiKey.Scopes = []string{"read", "write", "export"}
+	} else {
+		allowed := map[string]bool{"read": true, "write": true, "export": true, "admin": true}
+		seen := map[string]bool{}
+		for _, sc := range body.Scopes {
+			sc = strings.TrimSpace(strings.ToLower(sc))
+			if sc == "" {
+				continue
+			}
+			if !allowed[sc] {
+				http.Error(w, "invalid scope: "+sc, http.StatusBadRequest)
+				return
+			}
+			if sc == "admin" && role != "admin" {
+				http.Error(w, "forbidden: admin scope requires admin role", http.StatusForbidden)
+				return
+			}
+			seen[sc] = true
+		}
+		for sc := range seen {
+			apiKey.Scopes = append(apiKey.Scopes, sc)
+		}
+		sort.Strings(apiKey.Scopes)
+		if len(apiKey.Scopes) == 0 {
+			apiKey.Scopes = []string{"read"}
+		}
 	}
 
 	user.Keys = append(user.Keys, apiKey)
@@ -453,10 +614,21 @@ func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.auditAdmin("admin", email, "generate_key", map[string]interface{}{"label": body.Label, "key": apiKey.Key})
-	slog.Info("API Key generated", "email", email, "label", body.Label, "expires_at", apiKey.ExpiresAt)
+	_ = s.Store.SaveAPIKeyHash(keyID, email)
+	s.auditAdmin("admin", email, "generate_key", map[string]interface{}{"label": body.Label, "key_id": keyID, "key_prefix": apiKey.KeyPrefix})
+	slog.Info("API Key generated", "email", email, "label", body.Label, "key_id", keyID, "expires_at", apiKey.ExpiresAt)
+	s.createNotification(getOrgID(r), "keys", "API key generated", fmt.Sprintf("Label %s", body.Label))
+	_ = s.Store.AppendOrgActivity(getOrgID(r), store.JournalEntry{
+		Type:      store.EventAdminAction,
+		SessionID: "admin",
+		ActorID:   email,
+		Payload:   map[string]interface{}{"action": "generate_key", "label": body.Label, "key_id": keyID, "key_prefix": apiKey.KeyPrefix},
+		Timestamp: time.Now().UnixMilli(),
+	})
 
-	writeJSON(w, http.StatusCreated, apiKey)
+	view := keyViewFromStored(apiKey)
+	view.Key = newKey
+	writeJSON(w, http.StatusCreated, view)
 }
 
 // handleRotateKey godoc
@@ -493,16 +665,30 @@ func (s *Server) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	oldKeyID := keyToRotate
+	if strings.HasPrefix(keyToRotate, "vx_") {
+		oldKeyID = keyHashHex(keyToRotate)
+	}
+
 	var oldLabel string
+	var oldScopes []string
 	found := false
 	for i, k := range user.Keys {
-		if k.Key == keyToRotate {
+		id := k.ID
+		if id == "" {
+			id = k.KeyHash
+		}
+		if id == "" && k.Key != "" {
+			id = keyHashHex(k.Key)
+		}
+		if id == oldKeyID {
 			if k.IsRevoked {
 				http.Error(w, "key already revoked", http.StatusBadRequest)
 				return
 			}
 			user.Keys[i].IsRevoked = true
 			oldLabel = k.Label
+			oldScopes = k.Scopes
 			found = true
 			break
 		}
@@ -519,13 +705,19 @@ func (s *Server) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newKey := "vx_" + hex.EncodeToString(b)
+	newKeyID := keyHashHex(newKey)
 
 	apiKey := store.APIKey{
-		Key:       newKey,
+		Key:       "",
+		ID:        newKeyID,
+		KeyHash:   newKeyID,
+		KeyPrefix: keyPrefix(newKey),
+		KeyLast4:  keyLast4(newKey),
 		Label:     oldLabel,
 		CreatedAt: time.Now().UnixMilli(),
 		ExpiresAt: time.Now().Add(30 * 24 * time.Hour).UnixMilli(),
 		IsRevoked: false,
+		Scopes:    oldScopes,
 	}
 
 	user.Keys = append(user.Keys, apiKey)
@@ -535,8 +727,24 @@ func (s *Server) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.auditAdmin("admin", email, "rotate_key", map[string]interface{}{"old_key": keyToRotate, "new_key": newKey})
-	slog.Info("API Key rotated", "email", email, "old_key", keyToRotate, "new_label", oldLabel)
+	_ = s.Store.DeleteAPIKeyHash(oldKeyID)
+	_ = s.Store.SaveAPIKeyHash(newKeyID, email)
+	if strings.HasPrefix(keyToRotate, "vx_") {
+		_ = s.Store.DeleteAPIKey(keyToRotate)
+	}
 
-	writeJSON(w, http.StatusCreated, apiKey)
+	s.auditAdmin("admin", email, "rotate_key", map[string]interface{}{"old_key_id": oldKeyID, "new_key_id": newKeyID, "new_key_prefix": apiKey.KeyPrefix})
+	slog.Info("API Key rotated", "email", email, "old_key_id", oldKeyID, "new_key_id", newKeyID, "new_label", oldLabel)
+	s.createNotification(getOrgID(r), "keys", "API key rotated", fmt.Sprintf("Label %s", oldLabel))
+	_ = s.Store.AppendOrgActivity(getOrgID(r), store.JournalEntry{
+		Type:      store.EventAdminAction,
+		SessionID: "admin",
+		ActorID:   email,
+		Payload:   map[string]interface{}{"action": "rotate_key", "old_key_id": oldKeyID, "new_key_id": newKeyID, "new_key_prefix": apiKey.KeyPrefix},
+		Timestamp: time.Now().UnixMilli(),
+	})
+
+	view := keyViewFromStored(apiKey)
+	view.Key = newKey
+	writeJSON(w, http.StatusCreated, view)
 }

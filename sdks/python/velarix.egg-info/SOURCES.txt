@@ -1,0 +1,9 @@
+README.md
+setup.py
+velarix/__init__.py
+velarix/client.py
+velarix.egg-info/PKG-INFO
+velarix.egg-info/SOURCES.txt
+velarix.egg-info/dependency_links.txt
+velarix.egg-info/requires.txt
+velarix.egg-info/top_level.txt
