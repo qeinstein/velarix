@@ -50,6 +50,9 @@ class VelarixCompletions:
             "Use the 'record_observation' tool whenever you derive, infer, or assert a new fact that should be "
             "remembered. If your observation depends on any current beliefs, use their exact IDs (e.g., 'fact_123') "
             "in the 'justifications' field. Use an OR-of-ANDs format: [[id1, id2], [id3]].\n\n"
+            "When the user asks you to explain a decision, justify a recommendation, or describe your reasoning, "
+            "ALWAYS use the 'explain_reasoning' tool. Never invent an explanation — narrate exactly what the tool "
+            "returns, respecting confidence tiers and provenance.\n\n"
             "## CURRENT BELIEFS (Velarix)\n"
             f"{context_markdown}\n"
             "---\n"
@@ -83,7 +86,35 @@ class VelarixCompletions:
                 }
             }
         }
+        explain_tool = {
+            "type": "function",
+            "function": {
+                "name": "explain_reasoning",
+                "description": (
+                    "Call this tool when the user asks you to explain a decision, justify a recommendation, "
+                    "or describe your reasoning at any point in the conversation."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fact_id": {
+                            "type": "string",
+                            "description": "The specific belief/fact ID to explain. If omitted, explains the most recent decision."
+                        },
+                        "timestamp": {
+                            "type": "string",
+                            "description": "ISO8601 timestamp — explain the reasoning state at that exact point in time, not the current state."
+                        },
+                        "counterfactual_fact_id": {
+                            "type": "string",
+                            "description": "A fact ID to hypothetically remove. The explanation will describe what would have been different."
+                        }
+                    }
+                }
+            }
+        }
         tools.append(observation_tool)
+        tools.append(explain_tool)
         kwargs["tools"] = tools
         if "tool_choice" not in kwargs:
             kwargs["tool_choice"] = "auto"
@@ -95,11 +126,11 @@ class VelarixCompletions:
             for tool_call in choice.message.tool_calls:
                 if tool_call.function.name == "record_observation":
                     try:
-                        args = json.loads(tool_call.function.arguments)
-                        fact_id = args.get("id")
-                        payload = args.get("payload") or {}
-                        justifications = args.get("justifications")
-                        confidence = args.get("confidence", 1.0)
+                        tc_args = json.loads(tool_call.function.arguments)
+                        fact_id = tc_args.get("id")
+                        payload = tc_args.get("payload") or {}
+                        justifications = tc_args.get("justifications")
+                        confidence = tc_args.get("confidence", 1.0)
 
                         payload["_provenance"] = {
                             "source": "openai_interceptor",
@@ -131,6 +162,29 @@ class VelarixCompletions:
                             requests.post(f"{session.base_url}/facts", json={"id": fact_id, "is_root": False, "justification_sets": justifications, "payload": payload}, headers=session._headers())
                         else:
                             requests.post(f"{session.base_url}/facts", json={"id": fact_id, "is_root": True, "manual_status": float(confidence), "payload": payload}, headers=session._headers())
+                    except Exception:
+                        pass
+
+                elif tool_call.function.name == "explain_reasoning":
+                    try:
+                        tc_args = json.loads(tool_call.function.arguments)
+                        params = {}
+                        if tc_args.get("fact_id"):
+                            params["fact_id"] = tc_args["fact_id"]
+                        if tc_args.get("timestamp"):
+                            params["timestamp"] = tc_args["timestamp"]
+                        if tc_args.get("counterfactual_fact_id"):
+                            params["counterfactual_fact_id"] = tc_args["counterfactual_fact_id"]
+
+                        explain_resp = requests.get(
+                            f"{session.base_url}/explain",
+                            params=params,
+                            headers=session._headers()
+                        )
+                        if explain_resp.ok:
+                            explanation_data = explain_resp.json()
+                            # Attach the explanation to the tool call result so the LLM can narrate it
+                            tool_call.function.arguments = json.dumps(explanation_data)
                     except Exception:
                         pass
 
@@ -180,6 +234,9 @@ class VelarixAsyncCompletions:
             "Use the 'record_observation' tool whenever you derive, infer, or assert a new fact that should be "
             "remembered. If your observation depends on any current beliefs, use their exact IDs (e.g., 'fact_123') "
             "in the 'justifications' field. Use an OR-of-ANDs format: [[id1, id2], [id3]].\n\n"
+            "When the user asks you to explain a decision, justify a recommendation, or describe your reasoning, "
+            "ALWAYS use the 'explain_reasoning' tool. Never invent an explanation — narrate exactly what the tool "
+            "returns, respecting confidence tiers and provenance.\n\n"
             "## CURRENT BELIEFS (Velarix)\n"
             f"{context_markdown}\n"
             "---\n"
@@ -213,7 +270,35 @@ class VelarixAsyncCompletions:
                 }
             }
         }
+        explain_tool = {
+            "type": "function",
+            "function": {
+                "name": "explain_reasoning",
+                "description": (
+                    "Call this tool when the user asks you to explain a decision, justify a recommendation, "
+                    "or describe your reasoning at any point in the conversation."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fact_id": {
+                            "type": "string",
+                            "description": "The specific belief/fact ID to explain. If omitted, explains the most recent decision."
+                        },
+                        "timestamp": {
+                            "type": "string",
+                            "description": "ISO8601 timestamp — explain the reasoning state at that exact point in time, not the current state."
+                        },
+                        "counterfactual_fact_id": {
+                            "type": "string",
+                            "description": "A fact ID to hypothetically remove. The explanation will describe what would have been different."
+                        }
+                    }
+                }
+            }
+        }
         tools.append(observation_tool)
+        tools.append(explain_tool)
         kwargs["tools"] = tools
         if "tool_choice" not in kwargs:
             kwargs["tool_choice"] = "auto"
@@ -225,11 +310,11 @@ class VelarixAsyncCompletions:
             for tool_call in choice.message.tool_calls:
                 if tool_call.function.name == "record_observation":
                     try:
-                        args = json.loads(tool_call.function.arguments)
-                        fact_id = args.get("id")
-                        payload = args.get("payload") or {}
-                        justifications = args.get("justifications")
-                        confidence = args.get("confidence", 1.0)
+                        tc_args = json.loads(tool_call.function.arguments)
+                        fact_id = tc_args.get("id")
+                        payload = tc_args.get("payload") or {}
+                        justifications = tc_args.get("justifications")
+                        confidence = tc_args.get("confidence", 1.0)
 
                         payload["_provenance"] = {
                             "source": "openai_interceptor_async",
@@ -259,6 +344,29 @@ class VelarixAsyncCompletions:
                         else:
                             async with httpx.AsyncClient() as http_client:
                                 await http_client.post(f"{session.base_url}/facts", json={"id": fact_id, "is_root": True, "manual_status": float(confidence), "payload": payload}, headers=session._headers())
+                    except Exception:
+                        pass
+
+                elif tool_call.function.name == "explain_reasoning":
+                    try:
+                        tc_args = json.loads(tool_call.function.arguments)
+                        params = {}
+                        if tc_args.get("fact_id"):
+                            params["fact_id"] = tc_args["fact_id"]
+                        if tc_args.get("timestamp"):
+                            params["timestamp"] = tc_args["timestamp"]
+                        if tc_args.get("counterfactual_fact_id"):
+                            params["counterfactual_fact_id"] = tc_args["counterfactual_fact_id"]
+
+                        async with httpx.AsyncClient() as http_client:
+                            explain_resp = await http_client.get(
+                                f"{session.base_url}/explain",
+                                params=params,
+                                headers=session._headers()
+                            )
+                            if explain_resp.status_code == 200:
+                                explanation_data = explain_resp.json()
+                                tool_call.function.arguments = json.dumps(explanation_data)
                     except Exception:
                         pass
 

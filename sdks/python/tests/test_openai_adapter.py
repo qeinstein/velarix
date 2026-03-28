@@ -60,9 +60,9 @@ def test_openai_interceptor_parallel_calls():
             assert len(fact_calls) == 2
             
             # obs_1 (root)
-            assert fact_calls[0].kwargs["json"]["ID"] == "obs_1"
+            assert fact_calls[0].kwargs["json"]["id"] == "obs_1"
             # obs_2 (derived)
-            assert fact_calls[1].kwargs["json"]["ID"] == "obs_2"
+            assert fact_calls[1].kwargs["json"]["id"] == "obs_2"
             assert fact_calls[1].kwargs["json"]["justification_sets"] == [["obs_1"]]
 
             print("PASS: test_openai_interceptor_parallel_calls")
@@ -104,7 +104,7 @@ def test_openai_overconfidence_downgrade():
             # Instead of calling observe, the adapter calls requests.post directly for roots with manual status
             # Check the last post call which should be the fact assertion
             fact_assertion_call = [c for c in mock_post.call_args_list if "/facts" in c.args[0]][0]
-            assert fact_assertion_call.kwargs["json"]["ManualStatus"] == 0.75
+            assert fact_assertion_call.kwargs["json"]["manual_status"] == 0.75
             
             # 4. Verify History Event
             history_call = [c for c in mock_post.call_args_list if "/history" in c.args[0]][0]

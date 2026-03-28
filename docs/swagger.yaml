@@ -8,6 +8,11 @@ definitions:
       label:
         example: Production
         type: string
+      scopes:
+        description: Optional scopes for this key (read|write|export|admin). Defaults to read,write,export.
+        items:
+          type: string
+        type: array
     type: object
   api.LoginRequest:
     properties:
@@ -123,14 +128,67 @@ definitions:
     properties:
       created_at:
         type: integer
+      expires_at:
+        type: integer
+      id:
+        description: Stable key identifier (sha256 hex of the raw key).
+        type: string
       is_revoked:
         type: boolean
       key:
+        description: Raw API key. Returned only on create/rotate; not persisted in plaintext.
+        type: string
+      key_last4:
+        description: Redacted display helper for UI/logging.
+        type: string
+      key_prefix:
+        description: Redacted display helper for UI/logging.
         type: string
       label:
         type: string
       last_used_at:
         type: integer
+      scopes:
+        description: Optional scopes for this key (read|write|export|admin).
+        items:
+          type: string
+        type: array
+    type: object
+  store.AccessLogEntry:
+    properties:
+      actor_id:
+        type: string
+      actor_role:
+        type: string
+      created_at:
+        type: integer
+      duration_ms:
+        type: integer
+      id:
+        type: string
+      ip:
+        type: string
+      method:
+        type: string
+      path:
+        type: string
+      pattern:
+        type: string
+      status:
+        type: integer
+      trace_id:
+        type: string
+      user_agent:
+        type: string
+    type: object
+  api.PagedAccessLogs:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/store.AccessLogEntry'
+        type: array
+      next_cursor:
+        type: string
     type: object
   store.EventType:
     enum:
@@ -140,6 +198,8 @@ definitions:
     - snapshot_corruption
     - confidence_adjusted
     - revalidation_complete
+    - admin_action
+    - decision_record
     type: string
     x-enum-varnames:
     - EventAssert
@@ -148,18 +208,56 @@ definitions:
     - EventSnapshotCorruption
     - EventConfidenceAdjusted
     - EventRevalidationComplete
+    - EventAdminAction
+    - EventDecisionRecord
   store.JournalEntry:
     properties:
+      actor_id:
+        type: string
       fact:
         $ref: '#/definitions/core.Fact'
       fact_id:
         type: string
+      payload:
+        additionalProperties: true
+        type: object
       session_id:
         type: string
       timestamp:
         type: integer
       type:
         $ref: '#/definitions/store.EventType'
+    type: object
+  api.ExportJob:
+    properties:
+      id:
+        type: string
+      session_id:
+        type: string
+      format:
+        type: string
+      status:
+        type: string
+      error:
+        type: string
+      created_at:
+        type: integer
+      completed_at:
+        type: integer
+      size_bytes:
+        type: integer
+      filename:
+        type: string
+      content_type:
+        type: string
+      download_url:
+        type: string
+    type: object
+  api.ExportJobCreateRequest:
+    properties:
+      format:
+        description: csv|pdf
+        type: string
     type: object
   store.SessionConfig:
     properties:
@@ -176,7 +274,7 @@ info:
     email: support@velarix.dev
     name: API Support
     url: http://velarix.dev/support
-  description: The Epistemic State Layer for AI Agents.
+  description: Epistemic middleware for regulated AI agents. Velarix sits between applications and agents, tracking beliefs and causal dependencies, enforcing what an agent is allowed to believe and act on, and producing deterministic decision records and audit exports.
   license:
     name: Apache 2.0
     url: http://www.apache.org/licenses/LICENSE-2.0.html
@@ -335,7 +433,7 @@ paths:
     get:
       consumes:
       - application/json
-      description: Retrieve all API keys associated with the user.
+      description: Retrieve all API keys associated with the user. Admin role required.
       parameters: []
       produces:
       - application/json
@@ -350,6 +448,10 @@ paths:
           description: unauthorized
           schema:
             type: string
+        '403':
+          description: forbidden
+          schema:
+            type: string
         '404':
           description: user not found
           schema:
@@ -359,17 +461,56 @@ paths:
       summary: List API keys
       tags:
       - Auth
+  /v1/org/access-logs:
+    get:
+      description: Paged access logs for the organization. Restricted to auditor/admin via `export` scope.
+      parameters:
+      - description: Pagination cursor (from previous response).
+        in: query
+        name: cursor
+        required: false
+        type: string
+      - description: Page size (max 500).
+        in: query
+        name: limit
+        required: false
+        type: integer
+      produces:
+      - application/json
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/api.PagedAccessLogs'
+        '401':
+          description: unauthorized
+          schema:
+            type: string
+        '403':
+          description: forbidden
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: List org access logs
+      tags:
+      - Org
   /v1/keys/{key}:
     delete:
       consumes:
       - application/json
       description: Mark an API key as revoked. Revoked keys return 401.
       parameters:
-      - description: API Key
-        example: '"vx_12345"'
+      - description: Key identifier (sha256 hex). For backwards compatibility, legacy raw keys may still be accepted.
+        example: '"b7c3f5...sha256hex..."'
         in: path
         name: key
         required: true
+        type: string
+      - description: Optional idempotency key for safe retries.
+        in: header
+        name: Idempotency-Key
+        required: false
         type: string
       produces:
       - application/json
@@ -400,11 +541,16 @@ paths:
       description: Revokes the old key and generates a new one with the same label.
         Requires admin role.
       parameters:
-      - description: Old API Key
-        example: '"vx_12345"'
+      - description: Old key identifier (sha256 hex). For backwards compatibility, legacy raw keys may still be accepted.
+        example: '"b7c3f5...sha256hex..."'
         in: path
         name: key
         required: true
+        type: string
+      - description: Optional idempotency key for safe retries.
+        in: header
+        name: Idempotency-Key
+        required: false
         type: string
       produces:
       - application/json
@@ -434,7 +580,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Create a new labeled API key for the user.
+      description: Create a new labeled API key for the user. Supports optional scoped keys (read|write|export|admin).
       parameters:
       - description: Key details
         in: body
@@ -442,6 +588,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/api.GenerateKeyRequest'
+      - description: Optional idempotency key for safe retries.
+        in: header
+        name: Idempotency-Key
+        required: false
+        type: string
       produces:
       - application/json
       responses:
@@ -453,10 +604,16 @@ paths:
           description: invalid request
           schema:
             type: string
+        '403':
+          description: forbidden
+          schema:
+            type: string
         '404':
           description: user not found
           schema:
             type: string
+      security:
+      - Bearer: []
       summary: Generate a new API key
       tags:
       - Auth
@@ -497,8 +654,7 @@ paths:
       - Facts
   /v1/s/{session_id}/export:
     get:
-      description: Generate a SOC2-ready CSV or PDF export of the session history
-        with SHA-256 integrity hash.
+      description: Generate a CSV or PDF export of the session history with integrity metadata (including a journal chain head). Requires export scope.
       parameters:
       - description: Session ID
         in: path
@@ -518,6 +674,111 @@ paths:
       security:
       - Bearer: []
       summary: Export audit log
+      tags:
+      - History
+  /v1/s/{session_id}/export-jobs:
+    get:
+      description: List async export jobs for a session. Requires export scope.
+      parameters:
+      - description: Session ID
+        in: path
+        name: session_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        '200':
+          description: list of export jobs
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: List export jobs
+      tags:
+      - History
+    post:
+      consumes:
+      - application/json
+      description: Create an async export job (csv|pdf). Requires export scope.
+      parameters:
+      - description: Session ID
+        in: path
+        name: session_id
+        required: true
+        type: string
+      - description: Export job create request
+        in: body
+        name: request
+        required: false
+        schema:
+          $ref: '#/definitions/api.ExportJobCreateRequest'
+      - description: Optional idempotency key for safe retries.
+        in: header
+        name: Idempotency-Key
+        required: false
+        type: string
+      produces:
+      - application/json
+      responses:
+        '201':
+          description: export job created
+          schema:
+            $ref: '#/definitions/api.ExportJob'
+      security:
+      - Bearer: []
+      summary: Create export job
+      tags:
+      - History
+  /v1/s/{session_id}/export-jobs/{id}:
+    get:
+      description: Get export job status. When done, response includes download_url. Requires export scope.
+      parameters:
+      - description: Session ID
+        in: path
+        name: session_id
+        required: true
+        type: string
+      - description: Export job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        '200':
+          description: export job status
+          schema:
+            $ref: '#/definitions/api.ExportJob'
+      security:
+      - Bearer: []
+      summary: Get export job
+      tags:
+      - History
+  /v1/s/{session_id}/export-jobs/{id}/download:
+    get:
+      description: Download an export job result (only when status=done). Requires export scope.
+      parameters:
+      - description: Session ID
+        in: path
+        name: session_id
+        required: true
+        type: string
+      - description: Export job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        '200':
+          description: exported file
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Download export job
       tags:
       - History
   /v1/s/{session_id}/facts:
@@ -563,6 +824,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/core.Fact'
+      - description: Optional idempotency key for safe retries.
+        in: header
+        name: Idempotency-Key
+        required: false
+        type: string
       produces:
       - application/json
       responses:
@@ -601,6 +867,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/store.SessionConfig'
+      - description: Optional idempotency key for safe retries.
+        in: header
+        name: Idempotency-Key
+        required: false
+        type: string
       produces:
       - application/json
       responses:
@@ -688,6 +959,11 @@ paths:
         name: id
         required: true
         type: string
+      - description: Optional idempotency key for safe retries.
+        in: header
+        name: Idempotency-Key
+        required: false
+        type: string
       responses:
         '200':
           description: status invalidated
@@ -750,7 +1026,7 @@ paths:
       tags:
       - History
     post:
-      description: Manually append a custom event to the session's audit trail.
+      description: Append an event to the session audit trail. Supports decision_record events (type=decision_record) for structured decision records.
       parameters:
       - description: Session ID
         in: path
@@ -763,6 +1039,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/store.JournalEntry'
+      - description: Optional idempotency key for safe retries.
+        in: header
+        name: Idempotency-Key
+        required: false
+        type: string
       responses:
         '201':
           description: event appended
@@ -782,6 +1063,11 @@ paths:
         in: path
         name: session_id
         required: true
+        type: string
+      - description: Optional idempotency key for safe retries.
+        in: header
+        name: Idempotency-Key
+        required: false
         type: string
       responses:
         '200':

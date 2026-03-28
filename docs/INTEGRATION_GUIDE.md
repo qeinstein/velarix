@@ -2,6 +2,8 @@
 
 This guide describes how to integrate Velarix into your existing AI agent workflows. Whether you want a drop-in replacement for OpenAI or a custom integration via our SDKs, Velarix is designed to be the "source of truth" for your agents.
 
+> **Note:** For a structured overview of all integration levels (Level 1 to 6), see [INTEGRATION_PATTERNS.md](../INTEGRATION_PATTERNS.md).
+
 ## 🚀 The One-Line Swap (Recommended)
 
 The fastest way to get started is by using the Velarix OpenAI Adapter. This provides a drop-in replacement for the standard `openai` library.
