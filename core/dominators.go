@@ -171,10 +171,8 @@ func (e *Engine) topologicalSort() []string {
 		order = append([]string{id}, order...)
 	}
 
-	for id, f := range e.Facts {
-		if f.IsRoot {
-			visit(id)
-		}
+	for id := range e.Facts {
+		visit(id)
 	}
 	return order
 }
