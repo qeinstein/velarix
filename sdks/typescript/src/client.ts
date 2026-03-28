@@ -1,5 +1,5 @@
 import { EventSourcePolyfill } from 'event-source-polyfill';
-import type { Fact, ExplanationNode, ChangeEvent, JournalEntry, DecisionRecordPayload } from './types.js';
+import type { Fact, ExplanationNode, ChangeEvent, JournalEntry, DecisionRecordPayload, ExplainOptions } from './types.js';
 
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
@@ -41,14 +41,14 @@ export class VelarixSession {
     return `idem_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   }
 
-  async observe(factId: string, payload?: Record<string, any>, idempotencyKey?: string): Promise<Fact> {
+  async observe(factId: string, payload?: Record<string, any>, idempotencyKey?: string, confidence: number = 1): Promise<Fact> {
     const res = await this.client.fetchWithRetry(`${this.baseUrl}/facts`, {
       method: 'POST',
       headers: { ...this.getHeaders(), 'Content-Type': 'application/json', 'Idempotency-Key': this.idemKey(idempotencyKey) },
       body: JSON.stringify({
         id: factId,
         is_root: true,
-        manual_status: 1,
+        manual_status: confidence,
         payload: payload || {}
       })
     });
@@ -130,13 +130,36 @@ export class VelarixSession {
 
   async recordDecision(payload: DecisionRecordPayload, idempotencyKey?: string): Promise<JournalEntry> {
     if (!payload || !payload.kind) throw new Error('recordDecision requires payload.kind');
+    return this.appendHistory('decision_record', { ...payload }, undefined, idempotencyKey);
+  }
+
+  async appendHistory(
+    type: JournalEntry['type'] | string,
+    payload?: Record<string, any>,
+    factId?: string,
+    idempotencyKey?: string
+  ): Promise<JournalEntry> {
     const res = await this.client.fetchWithRetry(`${this.baseUrl}/history`, {
       method: 'POST',
       headers: { ...this.getHeaders(), 'Content-Type': 'application/json', 'Idempotency-Key': this.idemKey(idempotencyKey) },
       body: JSON.stringify({
-        type: 'decision_record',
-        payload
+        type,
+        payload,
+        fact_id: factId
       })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async explain(options: ExplainOptions = {}): Promise<any> {
+    const params = new URLSearchParams();
+    if (options.factId) params.set('fact_id', options.factId);
+    if (options.timestamp) params.set('timestamp', options.timestamp);
+    if (options.counterfactualFactId) params.set('counterfactual_fact_id', options.counterfactualFactId);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const res = await this.client.fetchWithRetry(`${this.baseUrl}/explain${suffix}`, {
+      headers: this.getHeaders()
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();

@@ -21,7 +21,7 @@ export interface ChangeEvent {
 }
 
 export interface JournalEntry {
-  type: 'assert' | 'invalidate' | 'admin_action' | 'decision_record';
+  type: 'assert' | 'invalidate' | 'admin_action' | 'decision_record' | 'confidence_adjusted';
   session_id?: string;
   actor_id?: string;
   fact?: Fact;
@@ -33,4 +33,10 @@ export interface JournalEntry {
 export interface DecisionRecordPayload {
   kind: string;
   [k: string]: any;
+}
+
+export interface ExplainOptions {
+  factId?: string;
+  timestamp?: string;
+  counterfactualFactId?: string;
 }

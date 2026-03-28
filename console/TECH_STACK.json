@@ -1,0 +1,352 @@
+{
+  "name": "Velarix Web Source of Truth",
+  "schemaVersion": "1.0.0",
+  "lastUpdated": "2026-03-28",
+  "purpose": "Canonical implementation contract for the Velarix website in console/. This file defines the approved framework, libraries, runtime assumptions, architecture rules, performance budgets, and design-system integration points. It is intentionally strict so a junior developer can build without inventing stack decisions.",
+  "productGoals": [
+    "Ship a fast, dark-mode-only marketing and product web presence.",
+    "Optimize for static delivery first, with dynamic rendering used only where the product truly needs it.",
+    "Preserve a precise, industrial UI that maps directly to BRAND_SPEC.md.",
+    "Stay Vercel-native so preview deploys, analytics, edge delivery, and operational tooling work with minimal custom infrastructure."
+  ],
+  "approvedStack": {
+    "framework": {
+      "name": "Next.js",
+      "minimumVersion": "16.x",
+      "router": "App Router only",
+      "language": "TypeScript",
+      "renderingModel": [
+        "React Server Components by default",
+        "Client Components only for browser interactivity, animation control, or stateful UI",
+        "Streaming and Suspense allowed where they improve perceived performance"
+      ],
+      "why": [
+        "Next.js App Router is the default architecture for modern React applications and is the recommended path for new work.",
+        "The App Router provides layouts, Server Components, streaming, and colocated data access patterns that match a high-performance 2026 web stack.",
+        "The Vercel platform has first-class operational support for Next.js."
+      ],
+      "rules": [
+        "Do not use the Pages Router.",
+        "Do not create a custom Express or Fastify server.",
+        "Prefer server rendering and static prerendering over client-side data fetching.",
+        "Use Route Handlers only when a backend endpoint is actually needed."
+      ]
+    },
+    "react": {
+      "name": "React",
+      "minimumVersion": "19.x",
+      "rules": [
+        "Assume Server Components first.",
+        "Use Client Components only when required by event handling, browser APIs, Motion hooks, or client state.",
+        "Keep client boundaries shallow and intentional."
+      ]
+    },
+    "styling": {
+      "name": "Tailwind CSS",
+      "minimumVersion": "4.0",
+      "configurationModel": "CSS-first Tailwind v4 configuration with theme variables mapped to the Brand Spec tokens",
+      "fontSystem": {
+        "loading": "next/font",
+        "primarySans": "Inter",
+        "accentSerif": "Lora",
+        "rules": [
+          "Map Inter to the global font-sans token.",
+          "Map Lora to the global font-serif token.",
+          "Use serif only for headline accent words and editorial emphasis."
+        ]
+      },
+      "rules": [
+        "All visual tokens must originate from BRAND_SPEC.md and be exposed as CSS custom properties.",
+        "Tailwind utility usage is preferred over ad hoc CSS modules for standard spacing, layout, typography, borders, and color application.",
+        "Component-specific CSS is allowed only for advanced visual systems, layered backgrounds, complex masks, or animation primitives that are awkward in utilities alone.",
+        "Do not introduce a second styling system such as styled-components, Emotion, or Chakra."
+      ]
+    },
+    "uiLibrary": {
+      "name": "shadcn/ui",
+      "model": "Open-code component baseline, copied into the codebase and customized locally",
+      "rules": [
+        "Use shadcn/ui as the accessibility and composition starting point, not as an untouchable preset.",
+        "Every imported component must be restyled to match BRAND_SPEC.md before production use.",
+        "Keep the component API surface close to upstream unless the Velarix design system requires a local opinion.",
+        "Prefer shadcn primitives for dialog, sheet, popover, tooltip, dropdown, tabs, accordion, and form controls."
+      ]
+    },
+    "animations": {
+      "name": "Framer Motion",
+      "package": "motion",
+      "reactEntry": "motion/react",
+      "usage": [
+        "Hero transitions",
+        "Scroll-linked Causal Collapse visuals",
+        "Section reveals",
+        "Shared layout transitions where state changes need visual continuity"
+      ],
+      "rules": [
+        "Motion must support the brand's deterministic feel. No playful bounce or exaggerated spring defaults.",
+        "Prefer transform and opacity animation paths for performance.",
+        "Gate non-essential motion behind reduced-motion checks.",
+        "Use layout animations only when the spatial continuity is materially helpful."
+      ]
+    },
+    "icons": {
+      "name": "lucide-react",
+      "rules": [
+        "Lucide is the default icon source for the site.",
+        "Do not mix icon families in production UI.",
+        "Use consistent sizes and stroke alignment across navigation, buttons, and data views."
+      ]
+    },
+    "deployment": {
+      "platform": "Vercel",
+      "mode": "Vercel-optimized",
+      "rules": [
+        "Use Vercel preview deployments for every pull request.",
+        "Assume global edge delivery for static assets.",
+        "Use Vercel Analytics and Speed Insights in production.",
+        "Keep the app compatible with Vercel Functions and Route Handlers without custom server infrastructure."
+      ]
+    }
+  },
+  "packagePolicy": {
+    "allowedCorePackages": [
+      "next",
+      "react",
+      "react-dom",
+      "tailwindcss",
+      "@tailwindcss/postcss",
+      "motion",
+      "lucide-react",
+      "class-variance-authority",
+      "clsx",
+      "tailwind-merge"
+    ],
+    "allowedSupportingPackages": [
+      "zod",
+      "react-hook-form",
+      "@vercel/analytics",
+      "@vercel/speed-insights",
+      "next-themes only if used to hard-lock dark mode without exposing a theme switch"
+    ],
+    "disallowedPatterns": [
+      "No Material UI, Chakra UI, Mantine, or Ant Design.",
+      "No dual animation systems such as GSAP plus Motion unless a later spec explicitly approves it.",
+      "No CSS-in-JS runtime styling layer.",
+      "No heavy icon pack duplication.",
+      "No client-side router abstractions that bypass Next.js navigation."
+    ]
+  },
+  "architecture": {
+    "appDirectory": {
+      "required": true,
+      "conventions": [
+        "Place all routes under app/.",
+        "Use route groups to separate marketing, docs, and application concerns if needed.",
+        "Use colocated loading, error, and not-found files where route behavior demands it.",
+        "Keep root layout minimal and global."
+      ]
+    },
+    "suggestedFolders": {
+      "app": "Route tree and layouts.",
+      "components/ui": "Customized shadcn primitives.",
+      "components/brand": "Velarix-specific marketing and visual system components.",
+      "components/sections": "Composable page sections.",
+      "lib": "Pure utility functions, config helpers, token maps, and server-safe helpers.",
+      "styles": "Global CSS, token definitions, and advanced visual layers.",
+      "content": "Structured local content if MDX or JSON-backed content is later adopted."
+    },
+    "serverVsClient": {
+      "default": "server",
+      "clientTriggers": [
+        "DOM event handling",
+        "Browser API access",
+        "Motion hooks such as useScroll or useTransform",
+        "Ephemeral interactive state"
+      ],
+      "rules": [
+        "Never mark an entire page as client-side without a specific reason.",
+        "Push data shaping and heavy work to the server side where possible.",
+        "Keep client bundles small by isolating interactive islands."
+      ]
+    },
+    "dataStrategy": {
+      "default": "static or server-fetched",
+      "rules": [
+        "Marketing content should be statically generated whenever possible.",
+        "Use server-side fetch in Server Components for dynamic content that must remain fresh.",
+        "Cache intentionally. Avoid uncontrolled no-store usage.",
+        "If CMS integration is added later, wrap access behind typed server utilities."
+      ]
+    },
+    "contentStrategy": {
+      "initialMode": "code-managed content",
+      "rules": [
+        "Do not introduce a CMS before the site structure stabilizes.",
+        "Keep copy, navigation, social metadata, and repetitive page content in typed config objects.",
+        "Promote to MDX only if editorial workflow becomes a real requirement."
+      ]
+    }
+  },
+  "designSystemIntegration": {
+    "sourceOfTruth": "BRAND_SPEC.md",
+    "implementationRules": [
+      "Translate every color, radius, spacing, and typography rule into CSS custom properties first.",
+      "Expose those variables to Tailwind v4 theme tokens.",
+      "Override shadcn component defaults so buttons, inputs, cards, dialogs, and navigation all inherit Velarix tokens by default.",
+      "Do not hardcode brand values deep inside individual components when a token should exist."
+    ],
+    "requiredTokens": [
+      "background",
+      "surface",
+      "surface-elevated",
+      "surface-muted",
+      "border",
+      "text-primary",
+      "text-secondary",
+      "text-muted",
+      "primary-accent-chrome",
+      "logic-blue-200",
+      "logic-blue-400",
+      "logic-blue-500",
+      "logic-blue-700",
+      "radius-sm",
+      "radius-md",
+      "shadow-focus",
+      "font-sans",
+      "font-serif"
+    ],
+    "componentDefaults": {
+      "button": "4px radius, visible 1px border, compact height, deterministic hover states",
+      "card": "6px radius, always bordered, dark flat surface, no soft marketing shadow",
+      "input": "4px radius, dark fill, strong focus ring, muted placeholder",
+      "dialog": "6px radius, elevated surface, bordered shell, restrained overlay scrim",
+      "table": "Dense spacing, sharp separators, subdued zebra only if readability requires it"
+    }
+  },
+  "performanceBudgets": {
+    "principles": [
+      "Perceived speed matters as much as raw speed.",
+      "Every page should feel immediate on a cold visit.",
+      "Animation is never allowed to become the largest performance cost."
+    ],
+    "targets": {
+      "lcpSeconds": 2.0,
+      "cls": 0.05,
+      "inpMilliseconds": 200,
+      "initialClientJsGoalKbGzip": 180
+    },
+    "rules": [
+      "Prefer static rendering for top-level marketing pages.",
+      "Use next/font for local or self-hosted font loading.",
+      "Use next/image where appropriate, but do not force it for tiny decorative assets if plain img is simpler and faster.",
+      "Keep hero visuals GPU-friendly by favoring transforms, opacity, masks, and gradients over expensive filters.",
+      "Audit bundle impact before adding third-party libraries."
+    ]
+  },
+  "animationStandards": {
+    "brandName": "Causal Collapse",
+    "library": "motion/react",
+    "approvedPatterns": [
+      "scroll-linked transforms",
+      "opacity reveals",
+      "shared layout transitions",
+      "masked or clipped convergence effects",
+      "subtle parallax for structural depth"
+    ],
+    "forbiddenPatterns": [
+      "playful bounce",
+      "cartoon easing",
+      "large blur animations on every frame",
+      "looping motion that distracts from reading",
+      "autoplay sequences that cannot be reduced or paused when they become dominant"
+    ],
+    "reducedMotionPolicy": [
+      "Honor prefers-reduced-motion.",
+      "Replace movement with opacity changes or static states where possible.",
+      "Do not remove information when motion is disabled."
+    ]
+  },
+  "seoAndMetadata": {
+    "rules": [
+      "Use App Router metadata APIs for title, description, Open Graph, and Twitter metadata.",
+      "Generate per-page metadata from typed config where practical.",
+      "Keep canonical URLs explicit once production domains are defined.",
+      "Generate sitemap and robots rules inside the Next.js app when the route map stabilizes."
+    ]
+  },
+  "accessibility": {
+    "rules": [
+      "All interactive elements must be keyboard reachable and visibly focused.",
+      "Dark-mode contrast must meet WCAG AA minimums.",
+      "Semantics come before div-based composition.",
+      "Icons used alone must have accessible labels.",
+      "Motion and color must never be the sole carrier of meaning."
+    ]
+  },
+  "testingAndQuality": {
+    "minimum": [
+      "TypeScript strict mode enabled.",
+      "ESLint enabled with Next.js recommendations.",
+      "Build must pass on Vercel preview before merge."
+    ],
+    "recommended": [
+      "Playwright for critical route smoke tests.",
+      "Visual review in preview deployments for every major UI change.",
+      "Lighthouse and Web Vitals review before public launch."
+    ]
+  },
+  "deliveryWorkflow": {
+    "branching": "Feature branches with Vercel preview deploys",
+    "pullRequestChecklist": [
+      "Matches BRAND_SPEC.md tokens and component logic",
+      "No unreviewed library additions",
+      "No accidental client-only page architecture",
+      "Performance impact checked for hero and nav changes",
+      "Reduced-motion and keyboard navigation reviewed"
+    ]
+  },
+  "bootstrapChecklist": [
+    "Create a Next.js App Router application in console/ using TypeScript.",
+    "Install Tailwind CSS v4 and configure theme variables in CSS.",
+    "Install shadcn/ui and copy components locally.",
+    "Install motion, lucide-react, class-variance-authority, clsx, and tailwind-merge.",
+      "Add Inter and Lora through next/font or local self-hosted files.",
+      "Encode BRAND_SPEC.md as global CSS custom properties and Tailwind theme tokens.",
+    "Create customized base primitives before building any page sections.",
+    "Enable Vercel Analytics and Speed Insights when the app is deployed."
+  ],
+  "decisionRules": {
+    "ifUnsure": [
+      "Choose the simpler solution that preserves performance and brand precision.",
+      "Prefer built-in Next.js and platform capabilities over custom infrastructure.",
+      "Prefer local component ownership over black-box UI packages.",
+      "When a stack choice conflicts with BRAND_SPEC.md, the brand contract wins unless a new spec explicitly changes it."
+    ]
+  },
+  "references": [
+    {
+      "name": "Next.js App Router Docs",
+      "url": "https://nextjs.org/docs/app"
+    },
+    {
+      "name": "Tailwind CSS v4.0",
+      "url": "https://tailwindcss.com/blog/tailwindcss-v4"
+    },
+    {
+      "name": "Motion for React Docs",
+      "url": "https://motion.dev/docs/react"
+    },
+    {
+      "name": "shadcn/ui Docs",
+      "url": "https://ui.shadcn.com/docs"
+    },
+    {
+      "name": "Lucide",
+      "url": "https://lucide.dev/"
+    },
+    {
+      "name": "Next.js on Vercel",
+      "url": "https://vercel.com/docs/frameworks/nextjs"
+    }
+  ]
+}
