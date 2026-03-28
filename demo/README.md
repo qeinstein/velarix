@@ -2,6 +2,13 @@
 
 This directory contains proofs-of-concept for Velarix in high-stakes reasoning environments.
 
+Available integration demos:
+1. `agent_pivot.py`: core causal invalidation flow
+2. `langchain_integration.py`: native LangChain model wrapper
+3. `langgraph_integration.py`: LangGraph checkpoint integration
+4. `llamaindex_integration.py`: LlamaIndex retriever integration
+5. TypeScript SDK tests also cover a native LangChainJS wrapper and OpenAI adapter under `sdks/typescript/tests/`
+
 ## The Problem
 In healthcare, AI agents often act on temporary or conditional data (e.g., preliminary lab results or active patient consent). If that data is retracted or updated, standard "flat" agent memory fails to purge the downstream reasoning, leading to clinical safety violations or HIPAA breaches.
 

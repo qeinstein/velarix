@@ -105,9 +105,15 @@ class VelarixSession:
     def _clear_cache(self):
         self._slice_cache.clear()
 
-    def observe(self, fact_id: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+    def observe(
+        self,
+        fact_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+        confidence: float = 1.0,
+    ) -> Dict[str, Any]:
         self._clear_cache()
-        data = {"id": fact_id, "is_root": True, "manual_status": 1.0, "payload": payload or {}}
+        data = {"id": fact_id, "is_root": True, "manual_status": float(confidence), "payload": payload or {}}
         resp = self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
@@ -163,6 +169,41 @@ class VelarixSession:
         resp.raise_for_status()
         return resp.json()
 
+    def append_history(
+        self,
+        event_type: str,
+        payload: Optional[Dict[str, Any]] = None,
+        fact_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not event_type:
+            raise ValueError("event_type is required")
+        body: Dict[str, Any] = {"type": event_type}
+        if payload is not None:
+            body["payload"] = payload
+        if fact_id:
+            body["fact_id"] = fact_id
+        resp = self.client._request("POST", f"{self.base_url}/history", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    def explain(
+        self,
+        fact_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
+        counterfactual_fact_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        params = {}
+        if fact_id:
+            params["fact_id"] = fact_id
+        if timestamp:
+            params["timestamp"] = timestamp
+        if counterfactual_fact_id:
+            params["counterfactual_fact_id"] = counterfactual_fact_id
+        resp = self.client._request("GET", f"{self.base_url}/explain", params=params, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
     def revalidate(self, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
         resp = self.client._request("POST", f"{self.base_url}/revalidate", headers=self._idem_headers(idempotency_key))
@@ -172,10 +213,7 @@ class VelarixSession:
     def record_decision(self, kind: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         if not kind:
             raise ValueError("kind is required")
-        body = {"type": "decision_record", "payload": {"kind": kind, **(payload or {})}}
-        resp = self.client._request("POST", f"{self.base_url}/history", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
-        return resp.json()
+        return self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
 class VelarixClient:
     def __init__(
@@ -281,9 +319,15 @@ class AsyncVelarixSession:
     def _clear_cache(self):
         self._slice_cache.clear()
 
-    async def observe(self, fact_id: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+    async def observe(
+        self,
+        fact_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+        confidence: float = 1.0,
+    ) -> Dict[str, Any]:
         self._clear_cache()
-        data = {"id": fact_id, "is_root": True, "manual_status": 1.0, "payload": payload or {}}
+        data = {"id": fact_id, "is_root": True, "manual_status": float(confidence), "payload": payload or {}}
         resp = await self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
@@ -339,6 +383,41 @@ class AsyncVelarixSession:
         resp.raise_for_status()
         return resp.json()
 
+    async def append_history(
+        self,
+        event_type: str,
+        payload: Optional[Dict[str, Any]] = None,
+        fact_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not event_type:
+            raise ValueError("event_type is required")
+        body: Dict[str, Any] = {"type": event_type}
+        if payload is not None:
+            body["payload"] = payload
+        if fact_id:
+            body["fact_id"] = fact_id
+        resp = await self.client._request("POST", f"{self.base_url}/history", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def explain(
+        self,
+        fact_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
+        counterfactual_fact_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        params = {}
+        if fact_id:
+            params["fact_id"] = fact_id
+        if timestamp:
+            params["timestamp"] = timestamp
+        if counterfactual_fact_id:
+            params["counterfactual_fact_id"] = counterfactual_fact_id
+        resp = await self.client._request("GET", f"{self.base_url}/explain", params=params, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
     async def revalidate(self, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
         resp = await self.client._request("POST", f"{self.base_url}/revalidate", headers=self._idem_headers(idempotency_key))
@@ -348,10 +427,7 @@ class AsyncVelarixSession:
     async def record_decision(self, kind: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         if not kind:
             raise ValueError("kind is required")
-        body = {"type": "decision_record", "payload": {"kind": kind, **(payload or {})}}
-        resp = await self.client._request("POST", f"{self.base_url}/history", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
-        return resp.json()
+        return await self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
 class AsyncVelarixClient:
     """An asynchronous client for interacting with Velarix."""
