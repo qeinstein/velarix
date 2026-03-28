@@ -1,6 +1,7 @@
 todo.txt
 
 .venv/
+venv/
 
 # CausalDB Data and Logs
 velarix.data/
