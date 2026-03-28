@@ -21,8 +21,16 @@ export interface ChangeEvent {
 }
 
 export interface JournalEntry {
-  type: 'assert' | 'invalidate';
+  type: 'assert' | 'invalidate' | 'admin_action' | 'decision_record';
+  session_id?: string;
+  actor_id?: string;
   fact?: Fact;
   fact_id?: string;
+  payload?: Record<string, any>;
   timestamp: number;
+}
+
+export interface DecisionRecordPayload {
+  kind: string;
+  [k: string]: any;
 }

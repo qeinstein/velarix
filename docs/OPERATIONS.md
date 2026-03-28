@@ -52,6 +52,37 @@ Velarix implements a persistent rate-limiting system to ensure stability and pre
 
 When a limit is exceeded, the API will return a `429 Too Many Requests` status code.
 
+## 🧱 Backpressure (Write Concurrency)
+
+Velarix applies per-organization write backpressure to protect latency under bursty agent traffic.
+
+- When the write limiter is saturated, write requests return `503 Service Unavailable` with `Retry-After: 1` and `X-Velarix-Backpressure: 1`.
+- SDKs and the console use idempotency keys + retries to safely re-attempt writes.
+
+### Tuning
+
+- `VELARIX_MAX_CONCURRENT_WRITES`: Overrides the per-org concurrent write limit.
+- `VELARIX_ENV=prod`: Uses a more conservative default (set explicitly; do not rely on defaults).
+
+## 🌐 CORS and Console Origins
+
+For production, set:
+
+- `VELARIX_ALLOWED_ORIGINS`: Comma-separated list of allowed `Origin` values (your console domain(s)).
+
+## 🔐 Auth Configuration (Production)
+
+- `VELARIX_JWT_SECRET`: Required when `VELARIX_ENV != dev` (JWT signing secret for console auth).
+- `VELARIX_ENCRYPTION_KEY`: Required when `VELARIX_ENV != dev` (Badger encryption key).
+
+## 🗄️ Retention Settings
+
+Retention is configured per org via `PATCH /v1/org/settings`:
+
+- `retention_days_activity` (default `30`)
+- `retention_days_access_logs` (default `30`)
+- `retention_days_notifications` (default `30`)
+
 ## 🧹 Session Eviction
 
 To manage memory usage, Velarix employs an automated **Eviction Sweep** every 5 minutes:

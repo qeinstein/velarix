@@ -36,6 +36,14 @@
                                     {
                                         "key": "Accept",
                                         "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Idempotency-Key",
+                                        "value": "{{idempotencyKey}}",
+                                        "description": {
+                                            "content": "Optional idempotency key for safe retries.",
+                                            "type": "text/plain"
+                                        }
                                     }
                                 ],
                                 "method": "POST",
@@ -190,6 +198,14 @@
                                     {
                                         "key": "Accept",
                                         "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Idempotency-Key",
+                                        "value": "{{idempotencyKey}}",
+                                        "description": {
+                                            "content": "Optional idempotency key for safe retries.",
+                                            "type": "text/plain"
+                                        }
                                     }
                                 ],
                                 "method": "POST",
@@ -393,6 +409,14 @@
                                     {
                                         "key": "Accept",
                                         "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Idempotency-Key",
+                                        "value": "{{idempotencyKey}}",
+                                        "description": {
+                                            "content": "Optional idempotency key for safe retries.",
+                                            "type": "text/plain"
+                                        }
                                     }
                                 ],
                                 "method": "POST",
@@ -547,6 +571,14 @@
                                     {
                                         "key": "Accept",
                                         "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Idempotency-Key",
+                                        "value": "{{idempotencyKey}}",
+                                        "description": {
+                                            "content": "Optional idempotency key for safe retries.",
+                                            "type": "text/plain"
+                                        }
                                     }
                                 ],
                                 "method": "POST",
@@ -934,7 +966,7 @@
                             "request": {
                                 "name": "Generate a new API key",
                                 "description": {
-                                    "content": "Create a new labeled API key for the user.",
+                                    "content": "Create a new labeled API key for the user. Supports optional scopes (read|write|export|admin).",
                                     "type": "text/plain"
                                 },
                                 "url": {
@@ -956,6 +988,14 @@
                                     {
                                         "key": "Accept",
                                         "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Idempotency-Key",
+                                        "value": "{{idempotencyKey}}",
+                                        "description": {
+                                            "content": "Optional idempotency key for safe retries.",
+                                            "type": "text/plain"
+                                        }
                                     }
                                 ],
                                 "method": "POST",
@@ -1176,6 +1216,14 @@
                                     {
                                         "key": "Accept",
                                         "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Idempotency-Key",
+                                        "value": "{{idempotencyKey}}",
+                                        "description": {
+                                            "content": "Optional idempotency key for safe retries.",
+                                            "type": "text/plain"
+                                        }
                                     }
                                 ],
                                 "method": "DELETE",
@@ -1658,7 +1706,7 @@
                                     "request": {
                                         "name": "Export audit log",
                                         "description": {
-                                            "content": "Generate a SOC2-ready CSV or PDF export of the session history with SHA-256 integrity hash.",
+                                            "content": "Generate a CSV or PDF export of the session history with integrity metadata (including a journal chain head). For async exports, use /s/{session_id}/export-jobs.",
                                             "type": "text/plain"
                                         },
                                         "url": {
@@ -1788,6 +1836,293 @@
                                             "_postman_previewlanguage": "text"
                                         }
                                     ],
+                                    "event": [],
+                                    "protocolProfileBehavior": {
+                                        "disableBodyPruning": true
+                                    }
+                                },
+                                {
+                                    "id": null,
+                                    "name": "Create export job",
+                                    "request": {
+                                        "name": "Create export job",
+                                        "description": {
+                                            "content": "Create an async export job (csv|pdf).",
+                                            "type": "text/plain"
+                                        },
+                                        "url": {
+                                            "path": [
+                                                "s",
+                                                ":session_id",
+                                                "export-jobs"
+                                            ],
+                                            "host": [
+                                                "{{baseUrl}}"
+                                            ],
+                                            "query": [],
+                                            "variable": [
+                                                {
+                                                    "type": "any",
+                                                    "value": "<string>",
+                                                    "key": "session_id",
+                                                    "disabled": false,
+                                                    "description": {
+                                                        "content": "(Required) Session ID",
+                                                        "type": "text/plain"
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        "header": [
+                                            {
+                                                "key": "Accept",
+                                                "value": "application/json"
+                                            }
+                                        ],
+                                        "method": "POST",
+                                        "body": {
+                                            "mode": "raw",
+                                            "raw": "{\n  \"format\": \"csv\"\n}",
+                                            "options": {
+                                                "raw": {
+                                                    "language": "json"
+                                                }
+                                            }
+                                        },
+                                        "auth": {
+                                            "type": "apikey",
+                                            "apikey": [
+                                                {
+                                                    "key": "key",
+                                                    "value": "Authorization"
+                                                },
+                                                {
+                                                    "key": "value",
+                                                    "value": "{{apiKey}}"
+                                                },
+                                                {
+                                                    "key": "in",
+                                                    "value": "header"
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    "response": [],
+                                    "event": [],
+                                    "protocolProfileBehavior": {
+                                        "disableBodyPruning": true
+                                    }
+                                },
+                                {
+                                    "id": null,
+                                    "name": "List export jobs",
+                                    "request": {
+                                        "name": "List export jobs",
+                                        "description": {
+                                            "content": "List async export jobs for a session.",
+                                            "type": "text/plain"
+                                        },
+                                        "url": {
+                                            "path": [
+                                                "s",
+                                                ":session_id",
+                                                "export-jobs"
+                                            ],
+                                            "host": [
+                                                "{{baseUrl}}"
+                                            ],
+                                            "query": [],
+                                            "variable": [
+                                                {
+                                                    "type": "any",
+                                                    "value": "<string>",
+                                                    "key": "session_id",
+                                                    "disabled": false,
+                                                    "description": {
+                                                        "content": "(Required) Session ID",
+                                                        "type": "text/plain"
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        "header": [
+                                            {
+                                                "key": "Accept",
+                                                "value": "application/json"
+                                            }
+                                        ],
+                                        "method": "GET",
+                                        "body": {},
+                                        "auth": {
+                                            "type": "apikey",
+                                            "apikey": [
+                                                {
+                                                    "key": "key",
+                                                    "value": "Authorization"
+                                                },
+                                                {
+                                                    "key": "value",
+                                                    "value": "{{apiKey}}"
+                                                },
+                                                {
+                                                    "key": "in",
+                                                    "value": "header"
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    "response": [],
+                                    "event": [],
+                                    "protocolProfileBehavior": {
+                                        "disableBodyPruning": true
+                                    }
+                                },
+                                {
+                                    "id": null,
+                                    "name": "Get export job",
+                                    "request": {
+                                        "name": "Get export job",
+                                        "description": {
+                                            "content": "Get export job status. When done, response includes download_url.",
+                                            "type": "text/plain"
+                                        },
+                                        "url": {
+                                            "path": [
+                                                "s",
+                                                ":session_id",
+                                                "export-jobs",
+                                                ":id"
+                                            ],
+                                            "host": [
+                                                "{{baseUrl}}"
+                                            ],
+                                            "query": [],
+                                            "variable": [
+                                                {
+                                                    "type": "any",
+                                                    "value": "<string>",
+                                                    "key": "session_id",
+                                                    "disabled": false,
+                                                    "description": {
+                                                        "content": "(Required) Session ID",
+                                                        "type": "text/plain"
+                                                    }
+                                                },
+                                                {
+                                                    "type": "any",
+                                                    "value": "<string>",
+                                                    "key": "id",
+                                                    "disabled": false,
+                                                    "description": {
+                                                        "content": "(Required) Export job ID",
+                                                        "type": "text/plain"
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        "header": [
+                                            {
+                                                "key": "Accept",
+                                                "value": "application/json"
+                                            }
+                                        ],
+                                        "method": "GET",
+                                        "body": {},
+                                        "auth": {
+                                            "type": "apikey",
+                                            "apikey": [
+                                                {
+                                                    "key": "key",
+                                                    "value": "Authorization"
+                                                },
+                                                {
+                                                    "key": "value",
+                                                    "value": "{{apiKey}}"
+                                                },
+                                                {
+                                                    "key": "in",
+                                                    "value": "header"
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    "response": [],
+                                    "event": [],
+                                    "protocolProfileBehavior": {
+                                        "disableBodyPruning": true
+                                    }
+                                },
+                                {
+                                    "id": null,
+                                    "name": "Download export job",
+                                    "request": {
+                                        "name": "Download export job",
+                                        "description": {
+                                            "content": "Download an export job result (only when status=done).",
+                                            "type": "text/plain"
+                                        },
+                                        "url": {
+                                            "path": [
+                                                "s",
+                                                ":session_id",
+                                                "export-jobs",
+                                                ":id",
+                                                "download"
+                                            ],
+                                            "host": [
+                                                "{{baseUrl}}"
+                                            ],
+                                            "query": [],
+                                            "variable": [
+                                                {
+                                                    "type": "any",
+                                                    "value": "<string>",
+                                                    "key": "session_id",
+                                                    "disabled": false,
+                                                    "description": {
+                                                        "content": "(Required) Session ID",
+                                                        "type": "text/plain"
+                                                    }
+                                                },
+                                                {
+                                                    "type": "any",
+                                                    "value": "<string>",
+                                                    "key": "id",
+                                                    "disabled": false,
+                                                    "description": {
+                                                        "content": "(Required) Export job ID",
+                                                        "type": "text/plain"
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        "header": [
+                                            {
+                                                "key": "Accept",
+                                                "value": "*/*"
+                                            }
+                                        ],
+                                        "method": "GET",
+                                        "body": {},
+                                        "auth": {
+                                            "type": "apikey",
+                                            "apikey": [
+                                                {
+                                                    "key": "key",
+                                                    "value": "Authorization"
+                                                },
+                                                {
+                                                    "key": "value",
+                                                    "value": "{{apiKey}}"
+                                                },
+                                                {
+                                                    "key": "in",
+                                                    "value": "header"
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    "response": [],
                                     "event": [],
                                     "protocolProfileBehavior": {
                                         "disableBodyPruning": true
@@ -1980,6 +2315,14 @@
                                             {
                                                 "key": "Accept",
                                                 "value": "application/json"
+                                            },
+                                            {
+                                                "key": "Idempotency-Key",
+                                                "value": "{{idempotencyKey}}",
+                                                "description": {
+                                                    "content": "Optional idempotency key for safe retries.",
+                                                    "type": "text/plain"
+                                                }
                                             }
                                         ],
                                         "method": "POST",
@@ -2642,6 +2985,14 @@
                                                             {
                                                                 "key": "Accept",
                                                                 "value": "*/*"
+                                                            },
+                                                            {
+                                                                "key": "Idempotency-Key",
+                                                                "value": "{{idempotencyKey}}",
+                                                                "description": {
+                                                                    "content": "Optional idempotency key for safe retries.",
+                                                                    "type": "text/plain"
+                                                                }
                                                             }
                                                         ],
                                                         "method": "POST",
@@ -3129,6 +3480,14 @@
                                             {
                                                 "key": "Accept",
                                                 "value": "*/*"
+                                            },
+                                            {
+                                                "key": "Idempotency-Key",
+                                                "value": "{{idempotencyKey}}",
+                                                "description": {
+                                                    "content": "Optional idempotency key for safe retries.",
+                                                    "type": "text/plain"
+                                                }
                                             }
                                         ],
                                         "method": "POST",
@@ -3278,6 +3637,14 @@
                                             {
                                                 "key": "Accept",
                                                 "value": "*/*"
+                                            },
+                                            {
+                                                "key": "Idempotency-Key",
+                                                "value": "{{idempotencyKey}}",
+                                                "description": {
+                                                    "content": "Optional idempotency key for safe retries.",
+                                                    "type": "text/plain"
+                                                }
                                             }
                                         ],
                                         "method": "POST",
@@ -3640,7 +4007,11 @@
     "variable": [
         {
             "key": "baseUrl",
-            "value": "//localhost:8080"
+            "value": "//localhost:8080/v1"
+        },
+        {
+            "key": "idempotencyKey",
+            "value": "idem_demo"
         }
     ],
     "info": {
@@ -3648,7 +4019,7 @@
         "name": "Velarix API",
         "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
         "description": {
-            "content": "The Epistemic State Layer for AI Agents.\n\nContact Support:\n Name: API Support\n Email: support@velarix.dev",
+            "content": "Epistemic middleware for regulated AI agents. Velarix sits between applications and agents, tracking beliefs and causal dependencies, enforcing what an agent is allowed to believe and act on, and producing deterministic decision records and audit exports.\n\nContact Support:\n Name: API Support\n Email: support@velarix.dev",
             "type": "text/plain"
         }
     }

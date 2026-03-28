@@ -18,8 +18,7 @@ import (
 )
 
 func setupTestServer(t *testing.T) (*api.Server, *httptest.Server) {
-	dbPath := "test_velarix.data"
-	os.RemoveAll(dbPath)
+	dbPath := t.TempDir()
 
 	os.Setenv("VELARIX_API_KEY", "test_admin_key")
 
@@ -29,11 +28,11 @@ func setupTestServer(t *testing.T) (*api.Server, *httptest.Server) {
 	}
 
 	server := &api.Server{
-		Engines:   make(map[string]*core.Engine),
-		Configs:   make(map[string]*store.SessionConfig),
+		Engines:    make(map[string]*core.Engine),
+		Configs:    make(map[string]*store.SessionConfig),
 		LastAccess: make(map[string]time.Time),
-		Store:     badgerStore,
-		StartTime: time.Now(),
+		Store:      badgerStore,
+		StartTime:  time.Now(),
 	}
 
 	// Setup a default user and org for testing
@@ -52,8 +51,8 @@ func setupTestServer(t *testing.T) (*api.Server, *httptest.Server) {
 }
 
 func TestJournalResilience(t *testing.T) {
-	server, ts := setupTestServer(t)
-	defer ts.Close()
+	server, _ := setupTestServer(t)
+	// No defer cleanup here as we didn't have a httptest server usage in the original code snippet or it wasn't needed
 
 	// 1. Write a valid entry
 	server.Store.Append(store.JournalEntry{Type: store.EventAssert, SessionID: "sess_1", Fact: &core.Fact{ID: "F1", IsRoot: true}})
