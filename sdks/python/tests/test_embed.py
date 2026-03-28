@@ -30,8 +30,7 @@ def test_embed_lifecycle():
     """
     # Build the binary first to ensure it's available
     print("Building Go binary for embed test...")
-    subprocess.run(["go", "build", "-o", "velarix_test_bin", "main.go"], check=True)
-    
+    subprocess.run(["go", "build", "-o", "velarix_test_bin", "../../main.go"], check=True)    
     binary_path = os.path.abspath("velarix_test_bin")
     
     try:

@@ -5,6 +5,7 @@ import subprocess
 import time
 import signal
 import asyncio
+import uuid
 from typing import List, Dict, Any, Optional, Generator, Union, AsyncGenerator, Tuple
 import requests
 import httpx
@@ -96,26 +97,31 @@ class VelarixSession:
     def _headers(self):
         return self.client.headers
 
+    def _idem_headers(self, idempotency_key: Optional[str] = None) -> Dict[str, str]:
+        h = dict(self._headers() or {})
+        h["Idempotency-Key"] = idempotency_key or f"idem_{uuid.uuid4().hex}"
+        return h
+
     def _clear_cache(self):
         self._slice_cache.clear()
 
-    def observe(self, fact_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def observe(self, fact_id: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
         data = {"id": fact_id, "is_root": True, "manual_status": 1.0, "payload": payload or {}}
-        resp = requests.post(f"{self.base_url}/facts", json=data, headers=self._headers())
+        resp = self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
 
-    def derive(self, fact_id: str, justifications: List[List[str]], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def derive(self, fact_id: str, justifications: List[List[str]], payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
         data = {"id": fact_id, "is_root": False, "justification_sets": justifications, "payload": payload or {}}
-        resp = requests.post(f"{self.base_url}/facts", json=data, headers=self._headers())
+        resp = self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
 
-    def invalidate(self, fact_id: str) -> Dict[str, Any]:
+    def invalidate(self, fact_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
-        resp = requests.post(f"{self.base_url}/facts/{fact_id}/invalidate", headers=self._headers())
+        resp = self.client._request("POST", f"{self.base_url}/facts/{fact_id}/invalidate", headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
 
@@ -128,7 +134,7 @@ class VelarixSession:
                 if time.time() - timestamp < self.client.cache_ttl:
                     return data
 
-        resp = requests.get(f"{self.base_url}/slice", params={"format": format, "max_facts": max_facts}, headers=self._headers())
+        resp = self.client._request("GET", f"{self.base_url}/slice", params={"format": format, "max_facts": max_facts}, headers=self._headers())
         resp.raise_for_status()
         data = resp.text if format == "markdown" else resp.json()
         
@@ -138,28 +144,36 @@ class VelarixSession:
             
         return data
 
-    def set_config(self, schema: Optional[str] = None, mode: Optional[str] = None) -> Dict[str, Any]:
+    def set_config(self, schema: Optional[str] = None, mode: Optional[str] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
         data = {}
         if schema is not None: data["schema"] = schema
         if mode is not None: data["enforcement_mode"] = mode
-        resp = requests.post(f"{self.base_url}/config", json=data, headers=self._headers())
+        resp = self.client._request("POST", f"{self.base_url}/config", json=data, headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
 
     def get_fact(self, fact_id: str) -> Dict[str, Any]:
-        resp = requests.get(f"{self.base_url}/facts/{fact_id}", headers=self._headers())
+        resp = self.client._request("GET", f"{self.base_url}/facts/{fact_id}", headers=self._headers())
         resp.raise_for_status()
         return resp.json()
 
     def get_history(self) -> List[Dict[str, Any]]:
-        resp = requests.get(f"{self.base_url}/history", headers=self._headers())
+        resp = self.client._request("GET", f"{self.base_url}/history", headers=self._headers())
         resp.raise_for_status()
         return resp.json()
 
-    def revalidate(self) -> Dict[str, Any]:
+    def revalidate(self, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
-        resp = requests.post(f"{self.base_url}/revalidate", headers=self._headers())
+        resp = self.client._request("POST", f"{self.base_url}/revalidate", headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    def record_decision(self, kind: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        if not kind:
+            raise ValueError("kind is required")
+        body = {"type": "decision_record", "payload": {"kind": kind, **(payload or {})}}
+        resp = self.client._request("POST", f"{self.base_url}/history", json=body, headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
 
@@ -170,7 +184,11 @@ class VelarixClient:
         api_key: Optional[str] = None,
         embed_mode: bool = False,
         binary_path: Optional[str] = None,
-        cache_ttl: int = 30
+        cache_ttl: int = 30,
+        max_retries: int = 5,
+        retry_backoff_base: float = 0.25,
+        retry_backoff_max: float = 5.0,
+        timeout_s: float = 10.0,
     ):
         self.embed_mode = embed_mode
         self.sidecar: Optional[SidecarManager] = None
@@ -185,6 +203,40 @@ class VelarixClient:
             
         self.api_key = api_key
         self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self.max_retries = max(0, int(max_retries))
+        self.retry_backoff_base = float(retry_backoff_base)
+        self.retry_backoff_max = float(retry_backoff_max)
+        self.timeout_s = float(timeout_s)
+        self._http = requests.Session()
+
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        retryable_status = {429, 502, 503, 504}
+        timeout = kwargs.pop("timeout", self.timeout_s)
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = self._http.request(method, url, timeout=timeout, **kwargs)
+            except requests.RequestException:
+                if attempt >= self.max_retries:
+                    raise
+                delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+                time.sleep(delay)
+                continue
+
+            if resp.status_code not in retryable_status or attempt >= self.max_retries:
+                return resp
+
+            ra = resp.headers.get("Retry-After")
+            if ra:
+                try:
+                    delay = float(ra)
+                except ValueError:
+                    delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+            else:
+                delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+            time.sleep(delay)
+
+        return resp  # pragma: no cover
 
     def __enter__(self):
         return self
@@ -201,12 +253,12 @@ class VelarixClient:
         return VelarixSession(self, session_id)
 
     def get_sessions(self) -> List[Dict[str, Any]]:
-        resp = requests.get(f"{self.base_url}/v1/sessions", headers=self.headers)
+        resp = self._request("GET", f"{self.base_url}/v1/sessions", headers=self.headers)
         resp.raise_for_status()
         return resp.json()
 
     def get_usage(self) -> Dict[str, Any]:
-        resp = requests.get(f"{self.base_url}/v1/org/usage", headers=self.headers)
+        resp = self._request("GET", f"{self.base_url}/v1/org/usage", headers=self.headers)
         resp.raise_for_status()
         return resp.json()
 
@@ -221,26 +273,31 @@ class AsyncVelarixSession:
     def _headers(self):
         return self.client.headers
 
+    def _idem_headers(self, idempotency_key: Optional[str] = None) -> Dict[str, str]:
+        h = dict(self._headers() or {})
+        h["Idempotency-Key"] = idempotency_key or f"idem_{uuid.uuid4().hex}"
+        return h
+
     def _clear_cache(self):
         self._slice_cache.clear()
 
-    async def observe(self, fact_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def observe(self, fact_id: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
         data = {"id": fact_id, "is_root": True, "manual_status": 1.0, "payload": payload or {}}
-        resp = await self.client.http_client.post(f"{self.base_url}/facts", json=data, headers=self._headers())
+        resp = await self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
 
-    async def derive(self, fact_id: str, justifications: List[List[str]], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def derive(self, fact_id: str, justifications: List[List[str]], payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
         data = {"id": fact_id, "is_root": False, "justification_sets": justifications, "payload": payload or {}}
-        resp = await self.client.http_client.post(f"{self.base_url}/facts", json=data, headers=self._headers())
+        resp = await self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
 
-    async def invalidate(self, fact_id: str) -> Dict[str, Any]:
+    async def invalidate(self, fact_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
-        resp = await self.client.http_client.post(f"{self.base_url}/facts/{fact_id}/invalidate", headers=self._headers())
+        resp = await self.client._request("POST", f"{self.base_url}/facts/{fact_id}/invalidate", headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
 
@@ -253,7 +310,7 @@ class AsyncVelarixSession:
                 if time.time() - timestamp < self.client.cache_ttl:
                     return data
 
-        resp = await self.client.http_client.get(f"{self.base_url}/slice", params={"format": format, "max_facts": max_facts}, headers=self._headers())
+        resp = await self.client._request("GET", f"{self.base_url}/slice", params={"format": format, "max_facts": max_facts}, headers=self._headers())
         resp.raise_for_status()
         data = resp.text if format == "markdown" else resp.json()
         
@@ -268,23 +325,31 @@ class AsyncVelarixSession:
         data = {}
         if schema is not None: data["schema"] = schema
         if mode is not None: data["enforcement_mode"] = mode
-        resp = await self.client.http_client.post(f"{self.base_url}/config", json=data, headers=self._headers())
+        resp = await self.client._request("POST", f"{self.base_url}/config", json=data, headers=self._headers())
         resp.raise_for_status()
         return resp.json()
 
     async def get_fact(self, fact_id: str) -> Dict[str, Any]:
-        resp = await self.client.http_client.get(f"{self.base_url}/facts/{fact_id}", headers=self._headers())
+        resp = await self.client._request("GET", f"{self.base_url}/facts/{fact_id}", headers=self._headers())
         resp.raise_for_status()
         return resp.json()
 
     async def get_history(self) -> List[Dict[str, Any]]:
-        resp = await self.client.http_client.get(f"{self.base_url}/history", headers=self._headers())
+        resp = await self.client._request("GET", f"{self.base_url}/history", headers=self._headers())
         resp.raise_for_status()
         return resp.json()
 
-    async def revalidate(self) -> Dict[str, Any]:
+    async def revalidate(self, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
-        resp = await self.client.http_client.post(f"{self.base_url}/revalidate", headers=self._headers())
+        resp = await self.client._request("POST", f"{self.base_url}/revalidate", headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def record_decision(self, kind: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        if not kind:
+            raise ValueError("kind is required")
+        body = {"type": "decision_record", "payload": {"kind": kind, **(payload or {})}}
+        resp = await self.client._request("POST", f"{self.base_url}/history", json=body, headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
         return resp.json()
 
@@ -296,7 +361,11 @@ class AsyncVelarixClient:
         api_key: Optional[str] = None,
         embed_mode: bool = False,
         binary_path: Optional[str] = None,
-        cache_ttl: int = 30
+        cache_ttl: int = 30,
+        max_retries: int = 5,
+        retry_backoff_base: float = 0.25,
+        retry_backoff_max: float = 5.0,
+        timeout_s: float = 10.0,
     ):
         self.embed_mode = embed_mode
         self.sidecar: Optional[SidecarManager] = None
@@ -306,7 +375,38 @@ class AsyncVelarixClient:
         self.cache_ttl = cache_ttl
         self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self.base_url = (base_url or "http://localhost:8080").rstrip("/")
-        self.http_client = httpx.AsyncClient()
+        self.max_retries = max(0, int(max_retries))
+        self.retry_backoff_base = float(retry_backoff_base)
+        self.retry_backoff_max = float(retry_backoff_max)
+        self.timeout_s = float(timeout_s)
+        self.http_client = httpx.AsyncClient(timeout=self.timeout_s)
+
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        retryable_status = {429, 502, 503, 504}
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = await self.http_client.request(method, url, **kwargs)
+            except httpx.RequestError:
+                if attempt >= self.max_retries:
+                    raise
+                delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+                await asyncio.sleep(delay)
+                continue
+
+            if resp.status_code not in retryable_status or attempt >= self.max_retries:
+                return resp
+
+            ra = resp.headers.get("Retry-After")
+            if ra:
+                try:
+                    delay = float(ra)
+                except ValueError:
+                    delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+            else:
+                delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+            await asyncio.sleep(delay)
+
+        return resp  # pragma: no cover
 
     async def __aenter__(self):
         if self.embed_mode:
@@ -324,11 +424,11 @@ class AsyncVelarixClient:
         return AsyncVelarixSession(self, session_id)
 
     async def get_sessions(self) -> List[Dict[str, Any]]:
-        resp = await self.http_client.get(f"{self.base_url}/v1/sessions", headers=self.headers)
+        resp = await self._request("GET", f"{self.base_url}/v1/sessions", headers=self.headers)
         resp.raise_for_status()
         return resp.json()
 
     async def get_usage(self) -> Dict[str, Any]:
-        resp = await self.http_client.get(f"{self.base_url}/v1/org/usage", headers=self.headers)
+        resp = await self._request("GET", f"{self.base_url}/v1/org/usage", headers=self.headers)
         resp.raise_for_status()
         return resp.json()

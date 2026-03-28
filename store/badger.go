@@ -1,12 +1,17 @@
 package store
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -27,7 +32,8 @@ func uint64Add(originalValue, newValue []byte) []byte {
 }
 
 type BadgerStore struct {
-	db *badger.DB
+	db          *badger.DB
+	appendLocks sync.Map // session_id -> *sync.Mutex
 }
 
 const DBVersion = 1
@@ -58,6 +64,14 @@ func OpenBadger(path string, encryptionKey []byte) (*BadgerStore, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+func (s *BadgerStore) appendLock(sessionID string) *sync.Mutex {
+	if sessionID == "" {
+		return &sync.Mutex{}
+	}
+	val, _ := s.appendLocks.LoadOrStore(sessionID, &sync.Mutex{})
+	return val.(*sync.Mutex)
 }
 
 func (s *BadgerStore) ensureMigrations() error {
@@ -146,6 +160,181 @@ func (s *BadgerStore) IncrementMetric(orgID string, metric string) error {
 	})
 }
 
+func (s *BadgerStore) metricKey(orgID string, metric string) []byte {
+	return []byte(fmt.Sprintf("org:%s:m:%s", orgID, metric))
+}
+
+func (s *BadgerStore) metricTSKey(orgID string, metric string, minuteBucketStartMs int64) []byte {
+	// Minute bucket start as 13-digit ms to preserve lexicographic ordering
+	return []byte(fmt.Sprintf("org:%s:ts:%s:%013d", orgID, metric, minuteBucketStartMs))
+}
+
+// IncrementOrgMetric increments the org counter and a 1-minute timeseries bucket.
+func (s *BadgerStore) IncrementOrgMetric(orgID string, metric string, delta uint64) error {
+	now := time.Now().UnixMilli()
+	minuteStart := (now / 60000) * 60000
+
+	return s.db.Update(func(txn *badger.Txn) error {
+		// total counter
+		key := s.metricKey(orgID, metric)
+		current := uint64(0)
+		if item, err := txn.Get(key); err == nil {
+			_ = item.Value(func(v []byte) error {
+				if len(v) == 8 {
+					current = binary.BigEndian.Uint64(v)
+				}
+				return nil
+			})
+		}
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, current+delta)
+		if err := txn.Set(key, buf); err != nil {
+			return err
+		}
+
+		// minute bucket
+		tsKey := s.metricTSKey(orgID, metric, minuteStart)
+		tsCurrent := uint64(0)
+		if item, err := txn.Get(tsKey); err == nil {
+			_ = item.Value(func(v []byte) error {
+				if len(v) == 8 {
+					tsCurrent = binary.BigEndian.Uint64(v)
+				}
+				return nil
+			})
+		}
+		tsBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(tsBuf, tsCurrent+delta)
+		return txn.Set(tsKey, tsBuf)
+	})
+}
+
+type MetricPoint struct {
+	TimestampMs int64  `json:"ts"`
+	Value       uint64 `json:"value"`
+}
+
+func (s *BadgerStore) GetOrgMetricTimeseries(orgID string, metric string, fromMs int64, toMs int64, bucketMs int64) ([]MetricPoint, error) {
+	if bucketMs <= 0 {
+		bucketMs = 60000
+	}
+	// stored in minute buckets
+	fromMinute := (fromMs / 60000) * 60000
+	toMinute := (toMs / 60000) * 60000
+
+	// Aggregate by requested bucket
+	agg := map[int64]uint64{}
+	prefix := []byte(fmt.Sprintf("org:%s:ts:%s:", orgID, metric))
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		startKey := s.metricTSKey(orgID, metric, fromMinute)
+		for it.Seek(startKey); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			k := string(item.Key())
+			parts := strings.Split(k, ":")
+			if len(parts) < 5 {
+				continue
+			}
+			tsStr := parts[len(parts)-1]
+			ts, err := strconv.ParseInt(tsStr, 10, 64)
+			if err != nil {
+				continue
+			}
+			if ts > toMinute {
+				break
+			}
+			val := uint64(0)
+			_ = item.Value(func(v []byte) error {
+				if len(v) == 8 {
+					val = binary.BigEndian.Uint64(v)
+				}
+				return nil
+			})
+			bucketStart := (ts / bucketMs) * bucketMs
+			agg[bucketStart] += val
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	points := make([]MetricPoint, 0, len(agg))
+	for ts, v := range agg {
+		points = append(points, MetricPoint{TimestampMs: ts, Value: v})
+	}
+	sort.Slice(points, func(i, j int) bool { return points[i].TimestampMs < points[j].TimestampMs })
+	return points, nil
+}
+
+func (s *BadgerStore) IncOrgRequestBreakdown(orgID string, endpoint string, status int, delta uint64) error {
+	// Endpoint is stored verbatim; expected to be mux pattern (stable).
+	key := []byte(fmt.Sprintf("org:%s:req:%s:%d", orgID, endpoint, status))
+	return s.db.Update(func(txn *badger.Txn) error {
+		cur := uint64(0)
+		if item, err := txn.Get(key); err == nil {
+			_ = item.Value(func(v []byte) error {
+				if len(v) == 8 {
+					cur = binary.BigEndian.Uint64(v)
+				}
+				return nil
+			})
+		}
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, cur+delta)
+		return txn.Set(key, buf)
+	})
+}
+
+type UsageBreakdown struct {
+	ByEndpoint map[string]uint64            `json:"by_endpoint"`
+	ByStatus   map[string]uint64            `json:"by_status"`
+	Raw        map[string]map[string]uint64 `json:"raw"`
+}
+
+func (s *BadgerStore) GetOrgUsageBreakdown(orgID string) (*UsageBreakdown, error) {
+	prefix := []byte(fmt.Sprintf("org:%s:req:", orgID))
+	byEndpoint := map[string]uint64{}
+	byStatus := map[string]uint64{}
+	raw := map[string]map[string]uint64{}
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			k := strings.TrimPrefix(string(it.Item().Key()), string(prefix))
+			// key format: {endpoint}:{status}
+			lastColon := strings.LastIndex(k, ":")
+			if lastColon <= 0 {
+				continue
+			}
+			endpoint := k[:lastColon]
+			status := k[lastColon+1:]
+			val := uint64(0)
+			_ = it.Item().Value(func(v []byte) error {
+				if len(v) == 8 {
+					val = binary.BigEndian.Uint64(v)
+				}
+				return nil
+			})
+			byEndpoint[endpoint] += val
+			byStatus[status] += val
+			if raw[endpoint] == nil {
+				raw[endpoint] = map[string]uint64{}
+			}
+			raw[endpoint][status] += val
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &UsageBreakdown{ByEndpoint: byEndpoint, ByStatus: byStatus, Raw: raw}, nil
+}
+
 // GetOrgUsage retrieves all 6 metrics for an organization
 func (s *BadgerStore) GetOrgUsage(orgID string) (map[string]uint64, error) {
 	metrics := []string{
@@ -219,9 +408,102 @@ func (s *BadgerStore) Append(entry JournalEntry) error {
 	// This allows O(K) range scans per session and avoids collisions
 	key := []byte(fmt.Sprintf("s:%s:h:%020d", entry.SessionID, now.UnixNano()))
 
+	// Maintain a linear, tamper-evident hash chain per session.
+	// Under heavy concurrent writes to the same session, serialize Append to avoid Badger transaction conflicts
+	// and ensure the chain head is updated deterministically.
+	lock := s.appendLock(entry.SessionID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	var lastErr error
+	for attempt := 0; attempt < 6; attempt++ {
+		lastErr = s.db.Update(func(txn *badger.Txn) error {
+			if err := txn.Set(key, val); err != nil {
+				return err
+			}
+
+			// Tamper-evident hash chain:
+			// head := sha256(prev_head || entry_json)
+			headKey := []byte(fmt.Sprintf("s:%s:hchain:head", entry.SessionID))
+			prev := []byte{}
+			if item, err := txn.Get(headKey); err == nil {
+				_ = item.Value(func(v []byte) error {
+					prev = make([]byte, len(v))
+					copy(prev, v)
+					return nil
+				})
+			}
+			sum := sha256.Sum256(append(prev, val...))
+			hashKey := []byte(fmt.Sprintf("s:%s:hchain:%020d", entry.SessionID, now.UnixNano()))
+			if err := txn.Set(hashKey, sum[:]); err != nil {
+				return err
+			}
+			return txn.Set(headKey, sum[:])
+		})
+		if lastErr == nil {
+			return nil
+		}
+		if lastErr == badger.ErrConflict {
+			time.Sleep(time.Duration(attempt+1) * 2 * time.Millisecond)
+			continue
+		}
+		return lastErr
+	}
+	return lastErr
+}
+
+func (s *BadgerStore) AppendOrgActivity(orgID string, entry JournalEntry) error {
+	now := time.Now()
+	val, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	key := []byte(fmt.Sprintf("org:%s:activity:%020d:%06s", orgID, now.UnixNano(), hex.EncodeToString([]byte(entry.Type))[:6]))
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set(key, val)
 	})
+}
+
+func (s *BadgerStore) ListOrgActivityPage(orgID string, cursor string, limit int) ([]JournalEntry, string, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	prefix := []byte(fmt.Sprintf("org:%s:activity:", orgID))
+	out := make([]JournalEntry, 0, limit)
+	var next string
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		opts.Reverse = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		seek := []byte(cursor)
+		if cursor == "" {
+			seek = append(prefix, 0xff)
+		}
+		for it.Seek(seek); it.Valid(); it.Next() {
+			item := it.Item()
+			if !strings.HasPrefix(string(item.Key()), string(prefix)) {
+				break
+			}
+			var e JournalEntry
+			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &e) }); err != nil {
+				continue
+			}
+			out = append(out, e)
+			if len(out) >= limit {
+				it.Next()
+				if it.Valid() && strings.HasPrefix(string(it.Item().Key()), string(prefix)) {
+					next = string(it.Item().Key())
+				}
+				break
+			}
+		}
+		return nil
+	})
+	return out, next, err
 }
 
 // GetSessionHistory returns history for ONE session only (O(K) lookup)
@@ -250,6 +532,198 @@ func (s *BadgerStore) GetSessionHistory(sessionID string) ([]JournalEntry, error
 	return history, err
 }
 
+type ExportJob struct {
+	ID          string `json:"id"`
+	SessionID   string `json:"session_id"`
+	OrgID       string `json:"org_id"`
+	Format      string `json:"format"` // csv|pdf
+	Status      string `json:"status"` // queued|running|done|error
+	Error       string `json:"error,omitempty"`
+	CreatedAt   int64  `json:"created_at"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Filename    string `json:"filename,omitempty"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+}
+
+func (s *BadgerStore) exportJobKey(sessionID string, id string) []byte {
+	return []byte(fmt.Sprintf("s:%s:exportjob:%s", sessionID, id))
+}
+func (s *BadgerStore) exportJobDataKey(sessionID string, id string) []byte {
+	return []byte(fmt.Sprintf("s:%s:exportjob:%s:data", sessionID, id))
+}
+
+func (s *BadgerStore) SaveExportJob(job *ExportJob) error {
+	val, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(s.exportJobKey(job.SessionID, job.ID), val)
+	})
+}
+
+func (s *BadgerStore) GetExportJob(sessionID string, id string) (*ExportJob, error) {
+	var job ExportJob
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.exportJobKey(sessionID, id))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error { return json.Unmarshal(v, &job) })
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+func (s *BadgerStore) SaveExportJobResult(sessionID string, id string, contentType string, filename string, data []byte, errMsg string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.exportJobKey(sessionID, id))
+		if err != nil {
+			return err
+		}
+		var job ExportJob
+		if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &job) }); err != nil {
+			return err
+		}
+		job.CompletedAt = time.Now().UnixMilli()
+		if errMsg != "" {
+			job.Status = "error"
+			job.Error = errMsg
+		} else {
+			job.Status = "done"
+			job.ContentType = contentType
+			job.Filename = filename
+			job.SizeBytes = int64(len(data))
+			if err := txn.Set(s.exportJobDataKey(sessionID, id), data); err != nil {
+				return err
+			}
+		}
+		val, err := json.Marshal(job)
+		if err != nil {
+			return err
+		}
+		return txn.Set(s.exportJobKey(sessionID, id), val)
+	})
+}
+
+func (s *BadgerStore) GetExportJobData(sessionID string, id string) ([]byte, error) {
+	var out []byte
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.exportJobDataKey(sessionID, id))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			out = make([]byte, len(v))
+			copy(out, v)
+			return nil
+		})
+	})
+	return out, err
+}
+
+func (s *BadgerStore) ListExportJobs(sessionID string, limit int) ([]ExportJob, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	prefix := []byte(fmt.Sprintf("s:%s:exportjob:", sessionID))
+	out := []ExportJob{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			k := string(it.Item().Key())
+			if strings.HasSuffix(k, ":data") {
+				continue
+			}
+			var job ExportJob
+			if err := it.Item().Value(func(v []byte) error { return json.Unmarshal(v, &job) }); err != nil {
+				continue
+			}
+			out = append(out, job)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// GetSessionHistoryPage returns a filtered, newest-first slice of session history plus a cursor.
+// Cursor is an opaque Badger key string previously returned as nextCursor.
+func (s *BadgerStore) GetSessionHistoryPage(sessionID string, cursor string, limit int, fromMs int64, toMs int64, typ string, q string) ([]JournalEntry, string, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	prefix := []byte(fmt.Sprintf("s:%s:h:", sessionID))
+	var nextCursor string
+	out := make([]JournalEntry, 0, limit)
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		opts.Reverse = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		seek := []byte(cursor)
+		if cursor == "" {
+			seek = append(prefix, 0xff)
+		}
+
+		for it.Seek(seek); it.Valid(); it.Next() {
+			item := it.Item()
+			k := item.Key()
+			if !strings.HasPrefix(string(k), string(prefix)) {
+				break
+			}
+			var entry JournalEntry
+			raw := []byte(nil)
+			err := item.Value(func(v []byte) error {
+				raw = make([]byte, len(v))
+				copy(raw, v)
+				return json.Unmarshal(v, &entry)
+			})
+			if err != nil {
+				continue
+			}
+			if fromMs != 0 && entry.Timestamp < fromMs {
+				continue
+			}
+			if toMs != 0 && entry.Timestamp > toMs {
+				continue
+			}
+			if typ != "" && string(entry.Type) != typ {
+				continue
+			}
+			if q != "" && !strings.Contains(strings.ToLower(string(raw)), q) {
+				continue
+			}
+			out = append(out, entry)
+			if len(out) >= limit {
+				it.Next()
+				if it.Valid() && strings.HasPrefix(string(it.Item().Key()), string(prefix)) {
+					nextCursor = string(it.Item().Key())
+				}
+				break
+			}
+		}
+		return nil
+	})
+
+	return out, nextCursor, err
+}
+
 // SaveConfig persists session-specific settings
 func (s *BadgerStore) SaveConfig(sessionID string, config interface{}) error {
 	val, err := json.Marshal(config)
@@ -268,12 +742,26 @@ type SessionConfig struct {
 }
 
 type APIKey struct {
-	Key        string `json:"key"`
-	Label      string `json:"label"`
-	CreatedAt  int64  `json:"created_at"`
-	LastUsedAt int64  `json:"last_used_at"`
-	ExpiresAt  int64  `json:"expires_at"` // Add expiration for key rotation
-	IsRevoked  bool   `json:"is_revoked"`
+	// NOTE: For security, Velarix does not persist raw API keys for new keys.
+	// The `Key` field may be present for legacy records and in "issued" responses only.
+	Key string `json:"key,omitempty"`
+
+	// Stable identifier for this key (sha256 hex of raw key).
+	ID string `json:"id,omitempty"`
+
+	// Persisted hash of the raw key (sha256 hex). Used for auth lookups.
+	KeyHash string `json:"key_hash,omitempty"`
+
+	// Redacted display helpers for UI/logging.
+	KeyPrefix string `json:"key_prefix,omitempty"`
+	KeyLast4  string `json:"key_last4,omitempty"`
+
+	Label      string   `json:"label"`
+	CreatedAt  int64    `json:"created_at"`
+	LastUsedAt int64    `json:"last_used_at"`
+	ExpiresAt  int64    `json:"expires_at"` // Add expiration for key rotation
+	IsRevoked  bool     `json:"is_revoked"`
+	Scopes     []string `json:"scopes,omitempty"` // read|write|export|admin
 }
 
 type Organization struct {
@@ -281,6 +769,9 @@ type Organization struct {
 	Name        string `json:"name"`
 	CreatedAt   int64  `json:"created_at"`
 	IsSuspended bool   `json:"is_suspended"`
+
+	// Optional org settings (backwards compatible)
+	Settings map[string]interface{} `json:"settings,omitempty"`
 }
 
 type User struct {
@@ -291,6 +782,649 @@ type User struct {
 	Keys           []APIKey `json:"keys"`
 	ResetToken     string   `json:"reset_token,omitempty"`
 	ResetExpiry    int64    `json:"reset_expiry,omitempty"`
+
+	// Optional console state (backwards compatible)
+	Onboarding map[string]bool `json:"onboarding,omitempty"`
+}
+
+type OrgSessionMeta struct {
+	ID             string `json:"id"`
+	CreatedAt      int64  `json:"created_at"`
+	LastActivityAt int64  `json:"last_activity_at"`
+	FactCount      int    `json:"fact_count"`
+}
+
+type Notification struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	CreatedAt int64  `json:"created_at"`
+	ReadAt    int64  `json:"read_at,omitempty"`
+}
+
+type AccessLogEntry struct {
+	ID         string `json:"id"`
+	ActorID    string `json:"actor_id"`
+	ActorRole  string `json:"actor_role,omitempty"`
+	Method     string `json:"method"`
+	Pattern    string `json:"pattern,omitempty"`
+	Path       string `json:"path"`
+	Status     int    `json:"status"`
+	DurationMs int64  `json:"duration_ms"`
+	TraceID    string `json:"trace_id,omitempty"`
+	IP         string `json:"ip,omitempty"`
+	UserAgent  string `json:"user_agent,omitempty"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
+type Integration struct {
+	ID        string                 `json:"id"`
+	Name      string                 `json:"name"`
+	Kind      string                 `json:"kind"`
+	Enabled   bool                   `json:"enabled"`
+	Config    map[string]interface{} `json:"config,omitempty"`
+	CreatedAt int64                  `json:"created_at"`
+	UpdatedAt int64                  `json:"updated_at"`
+}
+
+type BillingSubscription struct {
+	Plan         string `json:"plan"`
+	Status       string `json:"status"`
+	BillingEmail string `json:"billing_email"`
+	UpdatedAt    int64  `json:"updated_at"`
+}
+
+type Invitation struct {
+	ID         string `json:"id"`
+	Email      string `json:"email"`
+	Role       string `json:"role"`
+	Token      string `json:"token"`
+	CreatedAt  int64  `json:"created_at"`
+	ExpiresAt  int64  `json:"expires_at"`
+	AcceptedAt int64  `json:"accepted_at,omitempty"`
+	RevokedAt  int64  `json:"revoked_at,omitempty"`
+}
+
+type SupportTicket struct {
+	ID        string `json:"id"`
+	Subject   string `json:"subject"`
+	Body      string `json:"body"`
+	Status    string `json:"status"` // open|closed
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+	CreatedBy string `json:"created_by"`
+}
+
+type Policy struct {
+	ID        string                 `json:"id"`
+	Name      string                 `json:"name"`
+	Enabled   bool                   `json:"enabled"`
+	Rules     map[string]interface{} `json:"rules,omitempty"`
+	CreatedAt int64                  `json:"created_at"`
+	UpdatedAt int64                  `json:"updated_at"`
+}
+
+func (s *BadgerStore) sessionIndexKey(orgID, sessionID string) []byte {
+	return []byte(fmt.Sprintf("org:%s:sessions:%s", orgID, sessionID))
+}
+
+// UpsertOrgSessionIndex ensures a session appears in the org catalog.
+func (s *BadgerStore) UpsertOrgSessionIndex(orgID, sessionID string, createdAt int64) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		key := s.sessionIndexKey(orgID, sessionID)
+		var meta OrgSessionMeta
+		item, err := txn.Get(key)
+		if err == nil {
+			_ = item.Value(func(v []byte) error { return json.Unmarshal(v, &meta) })
+		}
+		if meta.ID == "" {
+			meta = OrgSessionMeta{
+				ID:             sessionID,
+				CreatedAt:      createdAt,
+				LastActivityAt: createdAt,
+				FactCount:      0,
+			}
+		}
+		val, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		return txn.Set(key, val)
+	})
+}
+
+func (s *BadgerStore) TouchOrgSession(orgID, sessionID string, factDelta int) error {
+	now := time.Now().UnixMilli()
+	return s.db.Update(func(txn *badger.Txn) error {
+		key := s.sessionIndexKey(orgID, sessionID)
+		var meta OrgSessionMeta
+		if item, err := txn.Get(key); err == nil {
+			_ = item.Value(func(v []byte) error { return json.Unmarshal(v, &meta) })
+		}
+		if meta.ID == "" {
+			meta.ID = sessionID
+			meta.CreatedAt = now
+		}
+		meta.LastActivityAt = now
+		meta.FactCount += factDelta
+		if meta.FactCount < 0 {
+			meta.FactCount = 0
+		}
+		val, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		return txn.Set(key, val)
+	})
+}
+
+func (s *BadgerStore) ListOrgSessions(orgID string, cursor string, limit int) ([]OrgSessionMeta, string, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	prefix := []byte(fmt.Sprintf("org:%s:sessions:", orgID))
+	all := []OrgSessionMeta{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			var meta OrgSessionMeta
+			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &meta) }); err != nil {
+				continue
+			}
+			if meta.ID != "" {
+				all = append(all, meta)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].LastActivityAt == all[j].LastActivityAt {
+			return all[i].ID > all[j].ID
+		}
+		return all[i].LastActivityAt > all[j].LastActivityAt
+	})
+
+	start := 0
+	if cursor != "" {
+		for i := range all {
+			c := fmt.Sprintf("%d:%s", all[i].LastActivityAt, all[i].ID)
+			if c == cursor {
+				start = i + 1
+				break
+			}
+		}
+	}
+	end := start + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	page := all[start:end]
+	nextCursor := ""
+	if end < len(all) && len(page) > 0 {
+		last := page[len(page)-1]
+		nextCursor = fmt.Sprintf("%d:%s", last.LastActivityAt, last.ID)
+	}
+	return page, nextCursor, nil
+}
+
+func (s *BadgerStore) SaveNotification(orgID string, n *Notification) error {
+	val, err := json.Marshal(n)
+	if err != nil {
+		return err
+	}
+	key := []byte(fmt.Sprintf("org:%s:notif:%020d:%s", orgID, n.CreatedAt, n.ID))
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, val)
+	})
+}
+
+func (s *BadgerStore) ListNotifications(orgID string, cursor string, limit int) ([]Notification, string, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	prefix := []byte(fmt.Sprintf("org:%s:notif:", orgID))
+	var nextCursor string
+	out := make([]Notification, 0, limit)
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		opts.Reverse = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		var seek []byte
+		if cursor != "" {
+			seek = []byte(cursor)
+		} else {
+			seek = append(prefix, 0xff)
+		}
+
+		for it.Seek(seek); it.Valid(); it.Next() {
+			item := it.Item()
+			k := item.Key()
+			if !strings.HasPrefix(string(k), string(prefix)) {
+				break
+			}
+			var n Notification
+			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &n) }); err != nil {
+				continue
+			}
+			out = append(out, n)
+			if len(out) >= limit {
+				it.Next()
+				if it.Valid() {
+					nextCursor = string(it.Item().Key())
+				}
+				break
+			}
+		}
+		return nil
+	})
+
+	return out, nextCursor, err
+}
+
+func (s *BadgerStore) MarkNotificationRead(orgID string, notificationID string) error {
+	prefix := []byte(fmt.Sprintf("org:%s:notif:", orgID))
+	return s.db.Update(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			var n Notification
+			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &n) }); err != nil {
+				continue
+			}
+			if n.ID != notificationID {
+				continue
+			}
+			if n.ReadAt == 0 {
+				n.ReadAt = time.Now().UnixMilli()
+			}
+			val, err := json.Marshal(n)
+			if err != nil {
+				return err
+			}
+			return txn.Set(item.Key(), val)
+		}
+		return badger.ErrKeyNotFound
+	})
+}
+
+func (s *BadgerStore) AppendAccessLog(orgID string, e AccessLogEntry) error {
+	now := time.Now()
+	if e.CreatedAt == 0 {
+		e.CreatedAt = now.UnixMilli()
+	}
+	val, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	key := []byte(fmt.Sprintf("org:%s:access:%020d:%06s", orgID, now.UnixNano(), hex.EncodeToString([]byte(e.Method))[:6]))
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, val)
+	})
+}
+
+func (s *BadgerStore) ListAccessLogsPage(orgID string, cursor string, limit int) ([]AccessLogEntry, string, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	prefix := []byte(fmt.Sprintf("org:%s:access:", orgID))
+	out := make([]AccessLogEntry, 0, limit)
+	var next string
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		opts.Reverse = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		seek := []byte(cursor)
+		if cursor == "" {
+			seek = append(prefix, 0xff)
+		}
+		for it.Seek(seek); it.Valid(); it.Next() {
+			item := it.Item()
+			if !strings.HasPrefix(string(item.Key()), string(prefix)) {
+				break
+			}
+			var e AccessLogEntry
+			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &e) }); err != nil {
+				continue
+			}
+			out = append(out, e)
+			if len(out) >= limit {
+				it.Next()
+				if it.Valid() && strings.HasPrefix(string(it.Item().Key()), string(prefix)) {
+					next = string(it.Item().Key())
+				}
+				break
+			}
+		}
+		return nil
+	})
+	return out, next, err
+}
+
+func (s *BadgerStore) integrationKey(orgID, id string) []byte {
+	return []byte(fmt.Sprintf("org:%s:integration:%s", orgID, id))
+}
+
+func (s *BadgerStore) SaveIntegration(orgID string, integ *Integration) error {
+	val, err := json.Marshal(integ)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(s.integrationKey(orgID, integ.ID), val)
+	})
+}
+
+func (s *BadgerStore) GetIntegration(orgID, id string) (*Integration, error) {
+	key := s.integrationKey(orgID, id)
+	var integ Integration
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error { return json.Unmarshal(v, &integ) })
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &integ, nil
+}
+
+func (s *BadgerStore) DeleteIntegration(orgID, id string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Delete(s.integrationKey(orgID, id))
+	})
+}
+
+func (s *BadgerStore) ListIntegrations(orgID string) ([]Integration, error) {
+	prefix := []byte(fmt.Sprintf("org:%s:integration:", orgID))
+	out := []Integration{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			var integ Integration
+			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &integ) }); err != nil {
+				continue
+			}
+			out = append(out, integ)
+		}
+		return nil
+	})
+	return out, err
+}
+
+func (s *BadgerStore) billingKey(orgID string) []byte {
+	return []byte(fmt.Sprintf("org:%s:billing", orgID))
+}
+
+func (s *BadgerStore) GetBilling(orgID string) (*BillingSubscription, error) {
+	key := s.billingKey(orgID)
+	var sub BillingSubscription
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error { return json.Unmarshal(v, &sub) })
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &sub, nil
+}
+
+func (s *BadgerStore) SaveBilling(orgID string, sub *BillingSubscription) error {
+	val, err := json.Marshal(sub)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(s.billingKey(orgID), val)
+	})
+}
+
+func (s *BadgerStore) ListOrgUsers(orgID string) ([]string, error) {
+	prefix := []byte(fmt.Sprintf("org:%s:user:", orgID))
+	out := []string{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			k := string(it.Item().Key())
+			email := strings.TrimPrefix(k, string(prefix))
+			if email != "" {
+				out = append(out, email)
+			}
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out, err
+}
+
+func (s *BadgerStore) inviteKey(orgID, id string) []byte {
+	return []byte(fmt.Sprintf("org:%s:invite:%s", orgID, id))
+}
+
+func (s *BadgerStore) inviteTokenKey(token string) []byte {
+	return []byte(fmt.Sprintf("invite:token:%s", token))
+}
+
+func (s *BadgerStore) SaveInvitation(orgID string, inv *Invitation) error {
+	val, err := json.Marshal(inv)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		if err := txn.Set(s.inviteKey(orgID, inv.ID), val); err != nil {
+			return err
+		}
+		return txn.Set(s.inviteTokenKey(inv.Token), []byte(fmt.Sprintf("%s:%s", orgID, inv.ID)))
+	})
+}
+
+func (s *BadgerStore) ListInvitations(orgID string) ([]Invitation, error) {
+	prefix := []byte(fmt.Sprintf("org:%s:invite:", orgID))
+	out := []Invitation{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var inv Invitation
+			item := it.Item()
+			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &inv) }); err != nil {
+				continue
+			}
+			out = append(out, inv)
+		}
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	return out, err
+}
+
+func (s *BadgerStore) GetInvitationByToken(token string) (string, *Invitation, error) {
+	var orgID string
+	var id string
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.inviteTokenKey(token))
+		if err != nil {
+			return err
+		}
+		var ref string
+		if err := item.Value(func(v []byte) error { ref = string(v); return nil }); err != nil {
+			return err
+		}
+		parts := strings.SplitN(ref, ":", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("corrupt invite token ref")
+		}
+		orgID, id = parts[0], parts[1]
+		return nil
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	inv, err := s.GetInvitation(orgID, id)
+	return orgID, inv, err
+}
+
+func (s *BadgerStore) GetInvitation(orgID, id string) (*Invitation, error) {
+	key := s.inviteKey(orgID, id)
+	var inv Invitation
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error { return json.Unmarshal(v, &inv) })
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &inv, nil
+}
+
+func (s *BadgerStore) UpdateInvitation(orgID string, inv *Invitation) error {
+	val, err := json.Marshal(inv)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(s.inviteKey(orgID, inv.ID), val)
+	})
+}
+
+func (s *BadgerStore) ticketKey(orgID, id string) []byte {
+	return []byte(fmt.Sprintf("org:%s:ticket:%s", orgID, id))
+}
+
+func (s *BadgerStore) SaveTicket(orgID string, t *SupportTicket) error {
+	val, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(s.ticketKey(orgID, t.ID), val)
+	})
+}
+
+func (s *BadgerStore) ListTickets(orgID string) ([]SupportTicket, error) {
+	prefix := []byte(fmt.Sprintf("org:%s:ticket:", orgID))
+	out := []SupportTicket{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var t SupportTicket
+			if err := it.Item().Value(func(v []byte) error { return json.Unmarshal(v, &t) }); err != nil {
+				continue
+			}
+			out = append(out, t)
+		}
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out, err
+}
+
+func (s *BadgerStore) GetTicket(orgID, id string) (*SupportTicket, error) {
+	var t SupportTicket
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.ticketKey(orgID, id))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error { return json.Unmarshal(v, &t) })
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (s *BadgerStore) policyKey(orgID, id string) []byte {
+	return []byte(fmt.Sprintf("org:%s:policy:%s", orgID, id))
+}
+
+func (s *BadgerStore) SavePolicy(orgID string, p *Policy) error {
+	val, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(s.policyKey(orgID, p.ID), val)
+	})
+}
+
+func (s *BadgerStore) ListPolicies(orgID string) ([]Policy, error) {
+	prefix := []byte(fmt.Sprintf("org:%s:policy:", orgID))
+	out := []Policy{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var p Policy
+			if err := it.Item().Value(func(v []byte) error { return json.Unmarshal(v, &p) }); err != nil {
+				continue
+			}
+			out = append(out, p)
+		}
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out, err
+}
+
+func (s *BadgerStore) DeletePolicy(orgID, id string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Delete(s.policyKey(orgID, id))
+	})
+}
+
+func (s *BadgerStore) GetPolicy(orgID, id string) (*Policy, error) {
+	var p Policy
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.policyKey(orgID, id))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error { return json.Unmarshal(v, &p) })
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 // GetOrganization retrieves an organization by ID
@@ -380,15 +1514,37 @@ func (s *BadgerStore) SaveUser(user *User) error {
 
 		// Map every active key to this user for fast lookup in middleware
 		for _, k := range user.Keys {
+			keyHash := k.KeyHash
+			if keyHash == "" {
+				keyHash = k.ID
+			}
+
 			if !k.IsRevoked {
-				if err := txn.Set([]byte("k:"+k.Key), []byte(user.Email)); err != nil {
-					return err
+				// Prefer hashed index for all keys that have it.
+				if keyHash != "" {
+					if err := txn.Set([]byte("kh:"+keyHash), []byte(user.Email)); err != nil {
+						return err
+					}
+				}
+				// Backwards-compatible plaintext index for legacy keys only.
+				if k.Key != "" {
+					if err := txn.Set([]byte("k:"+k.Key), []byte(user.Email)); err != nil {
+						return err
+					}
 				}
 			} else {
-				// Ensure revoked keys are removed from the lookup map
-				txn.Delete([]byte("k:" + k.Key))
+				if keyHash != "" {
+					_ = txn.Delete([]byte("kh:" + keyHash))
+				}
+				if k.Key != "" {
+					// Ensure revoked legacy keys are removed from the lookup map
+					_ = txn.Delete([]byte("k:" + k.Key))
+				}
 			}
 		}
+
+		// Org user index (best-effort)
+		_ = txn.Set([]byte(fmt.Sprintf("org:%s:user:%s", user.OrgID, user.Email)), []byte{1})
 		return nil
 	})
 }
@@ -462,6 +1618,114 @@ func (s *BadgerStore) SaveAPIKey(key, email string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set([]byte("k:"+key), []byte(email))
 	})
+}
+
+// GetAPIKeyOwnerByHash returns the email of the user who owns the given key hash (sha256 hex).
+func (s *BadgerStore) GetAPIKeyOwnerByHash(keyHash string) ([]byte, error) {
+	var email []byte
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("kh:" + keyHash))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			email = make([]byte, len(v))
+			copy(email, v)
+			return nil
+		})
+	})
+	return email, err
+}
+
+// SaveAPIKeyHash stores a new API key hash owner mapping.
+func (s *BadgerStore) SaveAPIKeyHash(keyHash, email string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte("kh:"+keyHash), []byte(email))
+	})
+}
+
+func (s *BadgerStore) DeleteAPIKeyHash(keyHash string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Delete([]byte("kh:" + keyHash))
+	})
+}
+
+func (s *BadgerStore) DeleteAPIKey(key string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Delete([]byte("k:" + key))
+	})
+}
+
+type IdempotencyRecord struct {
+	Status      int               `json:"status"`
+	ContentType string            `json:"content_type,omitempty"`
+	Body        []byte            `json:"body,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	CreatedAt   int64             `json:"created_at"`
+}
+
+func (s *BadgerStore) idempotencyKey(orgID string, keyHash string) []byte {
+	return []byte(fmt.Sprintf("org:%s:idem:%s", orgID, keyHash))
+}
+
+func (s *BadgerStore) GetIdempotency(orgID string, keyHash string, maxAge time.Duration) (*IdempotencyRecord, error) {
+	var rec IdempotencyRecord
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.idempotencyKey(orgID, keyHash))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error { return json.Unmarshal(v, &rec) })
+	})
+	if err != nil {
+		return nil, err
+	}
+	if maxAge > 0 && rec.CreatedAt > 0 {
+		if time.Since(time.UnixMilli(rec.CreatedAt)) > maxAge {
+			_ = s.DeleteIdempotency(orgID, keyHash)
+			return nil, badger.ErrKeyNotFound
+		}
+	}
+	return &rec, nil
+}
+
+func (s *BadgerStore) SaveIdempotency(orgID string, keyHash string, rec *IdempotencyRecord) error {
+	if rec.CreatedAt == 0 {
+		rec.CreatedAt = time.Now().UnixMilli()
+	}
+	val, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(s.idempotencyKey(orgID, keyHash), val)
+	})
+}
+
+func (s *BadgerStore) DeleteIdempotency(orgID string, keyHash string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Delete(s.idempotencyKey(orgID, keyHash))
+	})
+}
+
+func (s *BadgerStore) GetSessionHistoryChainHead(sessionID string) (string, error) {
+	headKey := []byte(fmt.Sprintf("s:%s:hchain:head", sessionID))
+	var out []byte
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(headKey)
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			out = make([]byte, len(v))
+			copy(out, v)
+			return nil
+		})
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(out), nil
 }
 
 // ValidateAPIKey checks if a key exists
@@ -617,4 +1881,107 @@ func containsHistoryTag(key string) bool {
 		}
 	}
 	return false
+}
+
+// --- Explanation Persistence ---
+
+// ExplanationRecord stores an immutable explanation with integrity hash.
+type ExplanationRecord struct {
+	SessionID   string          `json:"session_id"`
+	Timestamp   int64           `json:"timestamp"`
+	Content     json.RawMessage `json:"content"`
+	ContentHash string          `json:"content_hash"`
+	Tampered    bool            `json:"tampered"`
+}
+
+// SaveExplanation persists an explanation with a SHA-256 integrity hash.
+func (s *BadgerStore) SaveExplanation(sessionID string, content json.RawMessage) (*ExplanationRecord, error) {
+	now := time.Now()
+	hash := sha256Hash(content)
+
+	record := ExplanationRecord{
+		SessionID:   sessionID,
+		Timestamp:   now.UnixMilli(),
+		Content:     content,
+		ContentHash: hash,
+		Tampered:    false,
+	}
+
+	val, err := json.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+
+	key := []byte(fmt.Sprintf("explanations:%s:%020d", sessionID, now.UnixNano()))
+	err = s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, val)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &record, nil
+}
+
+// GetSessionExplanations returns all stored explanations with tamper verification.
+func (s *BadgerStore) GetSessionExplanations(sessionID string) ([]ExplanationRecord, error) {
+	var records []ExplanationRecord
+	prefix := []byte(fmt.Sprintf("explanations:%s:", sessionID))
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var record ExplanationRecord
+			err := it.Item().Value(func(v []byte) error {
+				return json.Unmarshal(v, &record)
+			})
+			if err != nil {
+				continue
+			}
+
+			// Verify integrity
+			expectedHash := sha256Hash(record.Content)
+			if expectedHash != record.ContentHash {
+				record.Tampered = true
+			}
+
+			records = append(records, record)
+		}
+		return nil
+	})
+
+	return records, err
+}
+
+func (s *BadgerStore) GetSessionHistoryBefore(sessionID string, beforeTimestamp int64) ([]JournalEntry, error) {
+	history := make([]JournalEntry, 0)
+	prefix := []byte(fmt.Sprintf("s:%s:h:", sessionID))
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var entry JournalEntry
+			err := it.Item().Value(func(v []byte) error {
+				return json.Unmarshal(v, &entry)
+			})
+			if err != nil {
+				continue
+			}
+			if entry.Timestamp <= beforeTimestamp {
+				history = append(history, entry)
+			}
+		}
+		return nil
+	})
+
+	return history, err
+}
+
+func sha256Hash(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
 }
