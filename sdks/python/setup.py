@@ -11,7 +11,8 @@ setup(
         "openai>=1.0.0"
     ],
     extras_require={
-        "langgraph": ["langgraph>=0.0.10", "langchain-openai>=0.1.0"],
+        "langchain": ["langchain-core>=1.0.0", "langchain-openai>=1.0.0"],
+        "langgraph": ["langgraph>=0.0.10", "langchain-core>=1.0.0", "langchain-openai>=1.0.0"],
         "llamaindex": ["llama-index>=0.10.0"],
         "local": [] # Marker for local binary support
     }
