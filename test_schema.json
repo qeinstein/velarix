@@ -1,4 +1,0 @@
-{
-  "schema": "{\"type\":\"object\",\"properties\":{\"age\":{\"type\":\"number\",\"minimum\":18}},\"required\":[\"age\"]}",
-  "enforcement_mode": "strict"
-}

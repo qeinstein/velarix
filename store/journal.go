@@ -20,6 +20,7 @@ const (
 	EventConfidenceAdjusted   EventType = "confidence_adjusted"
 	EventRevalidationComplete EventType = "revalidation_complete"
 	EventAdminAction          EventType = "admin_action"
+	EventDecisionRecord       EventType = "decision_record"
 )
 
 type JournalEntry struct {

@@ -1,17 +1,22 @@
-# Velarix: The Epistemic State Layer for Healthcare AI
+# Velarix — Epistemic Middleware for AI Agents
 
-Velarix is a production-hardened belief-tracking engine designed for AI agents operating in regulated, high-stakes environments. It replaces logically flat memory (vector DBs) with a **Stateful Logical Graph** that enforces reasoning integrity.
+Velarix is an **epistemic middleware layer / Truth Maintenance System (TMS)** for AI agents: infrastructure that sits between an application and its agents, tracking every belief, decision, and causal dependency in real time.
 
-In healthcare, agents must not only "remember" context but also **invalidate** state when policy, consent, or lab data changes. Velarix ensures that every agent decision is auditable, deterministic, and cryptographically attributed to a verified actor.
+Where traditional agent memory stores information and retrieves it by similarity, Velarix stores information **by causality** — every fact knows why it exists, what depends on it, and what should collapse when it becomes false.
+
+Velarix does **not** “stop LLMs from hallucinating” at the generation level. Instead, it controls what the agent is allowed to **believe and act on**. Hallucinations can occur in text, but they don’t become durable beliefs, tool actions, or audit liabilities.
+
+Initial beachhead: **Decision Records via a tool gateway** (AML/KYC is a strong first ICP because the audit question is constant). Velarix is not limited to finance — the same middleware applies to healthcare, insurance, legal, and other regulated workflows.
 
 ## Why Velarix?
 
-Traditional vector databases fail in healthcare because they lack a causal model:
-- **Causal Collapse**: If a patient withdraws HIPAA consent, every downstream belief dependent on that consent must be purged instantly. Velarix handles this with $O(1)$ pruning.
-- **Audit Provenance**: Every state change is logged with an `actor_id` and timestamp, exportable as SHA-256 verified SOC2/HIPAA compliance reports.
-- **Deterministic Reliability**: Logic-safe propagation ensures agents never act on stale or retracted medical premises.
+Traditional “memory” approaches fail in regulated agent systems because they lack a causal model:
+- **Causal collapse**: when a foundational belief changes, downstream beliefs and decisions invalidate deterministically.
+- **Decision records**: every tool call / policy decision / final outcome can be recorded, replayed, and exported.
+- **Audit integrity**: exports include a tamper-evident session journal chain head for integrity verification.
+- **Production reliability**: retries are safe via `Idempotency-Key` and scoped API keys limit blast radius.
 
-## The One-Line Swap
+## The One-Line Swap (Adapters)
 
 The core promise of Velarix is that you don't have to rewrite your agent logic to get epistemic memory. Our adapters provide a drop-in replacement for standard clients.
 
@@ -29,37 +34,24 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "The patient has a history of penicillin allergy."}]
 )
 ```
-```
 
-## "Why did you do that?" — Audit-Ready Explanations
+## “Why did you do that?” — Decision Records + Explanations
 
-Velarix includes a first-class **Reasoning Explanation** feature. When an agent makes a decision based on its belief state, you can ask it to justify that decision. 
+Velarix supports both:
+- **Decision Records**: structured events you write as the agent executes (tool calls, policy decisions, final decisions).
+- **Explanations**: deterministic causal chains derived from the belief graph (why/impact).
 
-Through the `explain_reasoning` tool, the LLM fetches a deterministic causal chain from Velarix, ensuring it never "hallucinates" a justification.
+Decision Records are stored as session history events (`type=decision_record`) and can be exported as audit packs.
 
 ### Key Features
-- **Deterministic Causal Chains**: Re-trace exactly which root facts led to a derived belief.
-- **Confidence Weighting**: Every node in the explanation includes a confidence score (0.0 - 1.0).
-- **Historical Replay**: Ask "Why was this true at 10:00 AM?" to see the state at a specific timestamp.
-- **Counterfactual "What If" Analysis**: Predict the impact of removing a specific fact before taking action.
-- **Immutability**: All explanations are hashed with SHA-256 and stored in a tamper-evident audit log.
-
-### Using the Tool (Python SDK)
-
-```python
-# The explain_reasoning tool is automatically registered with the OpenAI adapter.
-# When the user asks "Why did you say that?", the LLM will call the tool.
-
-response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Why did you recommend antibiotics?"}],
-    velarix_session="patient_123"
-)
-```
+- **Deterministic causal chains**: re-trace exactly which facts justified a belief.
+- **Impact analysis**: simulate “what collapses if this premise becomes false?”
+- **Decision Records**: record tool calls/results and final decisions for audit trails.
+- **Exports**: CSV/PDF exports include integrity metadata (journal chain head).
 
 ## Quick Start (Under 10 Minutes)
 
-> **Looking for deep integration details?** See the [Developer Onboarding & Integration Guide in VELARIX.md](VELARIX.md#developer-onboarding--integration-guide) for examples with LangChain and LlamaIndex.
+> For the wedge workflow quickstart, see `markdown/AML_KYC_QUICKSTART.md` and `markdown/DECISION_RECORDS.md`.
 
 ### 1. Start the Velarix Kernel
 Run the server locally using Docker or Go.
@@ -69,28 +61,32 @@ export VELARIX_ENCRYPTION_KEY="your-32-byte-secure-key-here"
 export VELARIX_ENV="dev" # Use dev mode to bypass strict checks for local testing
 go run main.go
 ```
-The kernel is now ready at `http://localhost:8080/v1`. All clients assume this versioned base path.
+The kernel is now ready at `http://localhost:8080` and serves versioned routes under `/v1`.
 
 ### 2. Connect with the Python SDK
-Install the SDK and initialize a clinical reasoning session (defaults to the versioned base URL).
+Install the SDK and initialize a session.
 ```python
-from velarix import VelarixClient
+from velarix import VelarixClient, VelarixGateway
 
-client = VelarixClient(base_url="http://localhost:8080/v1", api_key="your_vx_key")
-session = client.session("patient_case_001")
+client = VelarixClient(base_url="http://localhost:8080", api_key="your_vx_key")
+session = client.session("s_demo")
+gateway = VelarixGateway(session)
 
-# Assert a medical premise (Root Fact)
-session.observe("hipaa_consent_signed", payload={"form_version": "2026.1"})
+# Record a tool call as a Decision Record
+gateway.call_tool("watchlist.search", {"name": "Ada Lovelace"}, lambda i: {"matches": []})
 
-# Derive a belief (Child Fact)
+# Assert a belief (Root Fact)
+session.observe("customer.identity_verified", payload={"method": "kyc_vendor"})
+
+# Derive a belief (Child Fact) with causal justification
 session.derive(
-    "phi_processing_allowed",
-    justifications=[["hipaa_consent_signed"]],
-    payload={"scope": "full_records"}
+    "customer.low_risk",
+    justifications=[["customer.identity_verified"]],
+    payload={"score": 0.12}
 )
 
-# Retract the premise: Child facts collapse automatically
-session.invalidate("hipaa_consent_signed")
+# Retract the premise: downstream collapses deterministically
+session.invalidate("customer.identity_verified")
 ```
 
 ### 3. Launch the Control Plane
@@ -100,19 +96,19 @@ cd console
 npm install
 npm run dev
 ```
-Open `http://localhost:5173` to view the **3D Exploded-View Architecture** and retrace the lineage of every belief.
+Open `http://localhost:5173` to browse sessions, decision records, exports, and the causal graph.
 
 ## 🧩 Integration Patterns
 
 Velarix supports multiple levels of integration for AI agents, from simple drop-in replacements to complex reasoning co-processors:
 - **Level 1: OpenAI Adapter** (Zero-code migration)
-- **Level 2: Epistemic RAG** (Context injection)
+- **Level 2: Epistemic RAG** (Context injection of valid slice)
 - **Level 3: Manual Fact Management** (Causal chains)
-- **Level 4: Real-time Truth Monitoring** (SSE)
-- **Level 5: Compliance & Explainability** (Audit trails)
-- **Level 6: Embedded Co-processor** (Sidecar mode)
+- **Level 4: Decision Records Gateway** (tool-call capture + audit packs)
+- **Level 5: Compliance & Explainability** (exports, why/impact)
+- **Level 6: Embedded Co-processor** (sidecar mode)
 
-For full code examples and implementation details, see [INTEGRATION_PATTERNS.md](./INTEGRATION_PATTERNS.md).
+For full code examples and implementation details, see `markdown/INTEGRATION_PATTERNS.md`.
 
 ## Hardened Architecture
 
@@ -122,6 +118,11 @@ Velarix is built for production reliability:
 - **Durable Journaling**: Every write is synchronized to disk (`Sync()`) to survive system crashes.
 - **Actor Attribution & Admin Audit**: Every belief revision tracks the specific API key or User; admin actions (keys, backups, restores, config) are journaled with actor_id and timestamp.
 - **Rate Limits with Persistence**: Per-key quotas are stored in BadgerDB and enforced across restarts.
+- **Scoped API keys**: `read|write|export|admin` scopes limit access; `auditor` role supports read/export.
+- **Hashed API keys (shown once)**: New keys are not stored in plaintext; UI displays redacted prefixes/last4.
+- **Access logs + retention**: Org access logs are captured server-side (`GET /v1/org/access-logs`) with retention configured via `/v1/org/settings`.
+- **Idempotent writes**: safe retries via `Idempotency-Key`.
+- **Tamper evidence**: per-session journal chain head is included in exports.
 - **Slice Controls**: `GET /v1/s/{id}/slice` honors `max_facts` to bound prompt size.
 
 ## Project Structure
@@ -131,7 +132,7 @@ Velarix is built for production reliability:
 - `/store`: Hardened BadgerDB v4 storage with AES-256 encryption.
 - `/sdks`: Native Python and TypeScript clients with resource-efficient connection pooling.
 - `/console`: React-based Control Plane with world-class motion design and graph visualization.
-- `/docs`: OpenAPI/Swagger artifacts; runtime serves docs from `/docs/openapi.yaml`.
+- `/docs`: OpenAPI/Swagger artifacts; runtime serves docs from `/docs/swagger.yaml`.
 
 ---
-*Velarix: Building the trust layer for autonomous healthcare.*
+*Velarix: deterministic truth maintenance for production agents.*

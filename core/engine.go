@@ -369,38 +369,99 @@ type ImpactReport struct {
 
 // GetImpact returns a list of fact IDs that would be invalidated if factID was invalidated.
 func (e *Engine) GetImpact(factID string) *ImpactReport {
-	e.mu.Lock()
-	if e.DirtyDominators {
-		e.recomputeDominators()
-	}
-	e.mu.Unlock()
-
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	report := &ImpactReport{
-		ImpactedIDs: []string{factID},
-		TotalCount:  1,
+	// 1. Setup simulation state
+	// factID -> simulated DerivedStatus
+	simStatus := make(map[string]Status)
+	for id, f := range e.Facts {
+		simStatus[id] = f.DerivedStatus
 	}
 
-	for id, f := range e.Facts {
-		if id == factID {
-			continue
+	// jSetID -> simulated Confidence
+	simJSetConf := make(map[string]Status)
+	for id, js := range e.JustificationSets {
+		simJSetConf[id] = js.Confidence
+	}
+
+	// 2. Simulate Invalidation
+	simStatus[factID] = Invalid
+	queue := []string{factID}
+	impacted := make(map[string]struct{})
+	impacted[factID] = struct{}{}
+
+	// 3. Propagate simulation
+	for len(queue) > 0 {
+		uID := queue[0]
+		queue = queue[1:]
+
+		// For each dependent JustificationSet
+		for jSetID := range e.ChildrenIndex[uID] {
+			js := e.JustificationSets[jSetID]
+			
+			// Recalculate JSet Confidence
+			minConf := Valid
+			validCount := 0
+			for _, pID := range js.ParentFactIDs {
+				pStatus := simStatus[pID]
+				if pStatus < minConf {
+					minConf = pStatus
+				}
+				if pStatus >= ConfidenceThreshold {
+					validCount++
+				}
+			}
+
+			newJSetConf := Invalid
+			if validCount == js.TargetValidParents {
+				newJSetConf = minConf
+			}
+
+			if newJSetConf != simJSetConf[jSetID] {
+				simJSetConf[jSetID] = newJSetConf
+				
+				// Recalculate Child Fact Status
+				childID := js.ChildFactID
+				childFact := e.Facts[childID]
+				
+				maxConf := Invalid
+				for i := range childFact.JustificationSets {
+					jsID := fmt.Sprintf("%s_jset_%d", childID, i)
+					conf := simJSetConf[jsID]
+					if conf > maxConf {
+						maxConf = conf
+					}
+				}
+
+				if maxConf != simStatus[childID] {
+					simStatus[childID] = maxConf
+					if maxConf < ConfidenceThreshold {
+						if _, exists := impacted[childID]; !exists {
+							impacted[childID] = struct{}{}
+							queue = append(queue, childID)
+						}
+					}
+				}
+			}
 		}
-		if e.isDominatorAncestor(factID, id) {
-			report.ImpactedIDs = append(report.ImpactedIDs, id)
-			report.TotalCount++
-			report.Loss += float64(e.GetStatus(id))
+	}
 
-			// Direct child in dominator tree
-			if f.IDom == factID {
-				report.DirectCount++
-			}
-
-			// Check if this fact is tagged as an action
-			if f.Payload != nil && f.Payload["type"] == "action" {
-				report.ActionCount++
-			}
+	// 4. Build Report
+	report := &ImpactReport{
+		ImpactedIDs: make([]string, 0, len(impacted)),
+		TotalCount:  len(impacted),
+	}
+	for id := range impacted {
+		report.ImpactedIDs = append(report.ImpactedIDs, id)
+		report.Loss += float64(e.Facts[id].DerivedStatus)
+		
+		// Direct child check (simplified for simulation)
+		if f, ok := e.Facts[id]; ok && f.IDom == factID {
+			report.DirectCount++
+		}
+		if f, ok := e.Facts[id]; ok && f.Payload != nil && f.Payload["type"] == "action" {
+			report.ActionCount++
 		}
 	}
 
