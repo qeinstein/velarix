@@ -3,7 +3,6 @@ package tests
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +16,7 @@ import (
 	"github.com/dgraph-io/badger/v4"
 )
 
-func setupTestServer(t *testing.T) (*api.Server, *httptest.Server) {
+func setupTestServer(t *testing.T) *api.Server {
 	dbPath := t.TempDir()
 
 	os.Setenv("VELARIX_API_KEY", "test_admin_key")
@@ -46,13 +45,39 @@ func setupTestServer(t *testing.T) (*api.Server, *httptest.Server) {
 	server.Store.SaveUser(user)
 	server.Store.SaveOrganization(&store.Organization{ID: "test_org", Name: "Test Org"})
 
-	ts := httptest.NewServer(server.Routes())
-	return server, ts
+	return server
+}
+
+func performAuthenticatedRequest(t *testing.T, server *api.Server, method string, path string, authToken string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+
+	var requestBody *bytes.Reader
+	if body == nil {
+		requestBody = bytes.NewReader(nil)
+	} else {
+		requestBody = bytes.NewReader(body)
+	}
+
+	req := httptest.NewRequest(method, path, requestBody)
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	recorder := httptest.NewRecorder()
+	server.Routes().ServeHTTP(recorder, req)
+	return recorder
+}
+
+func performRequest(t *testing.T, server *api.Server, method string, path string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	return performAuthenticatedRequest(t, server, method, path, "test_admin_key", body)
 }
 
 func TestJournalResilience(t *testing.T) {
-	server, _ := setupTestServer(t)
-	// No defer cleanup here as we didn't have a httptest server usage in the original code snippet or it wasn't needed
+	server := setupTestServer(t)
 
 	// 1. Write a valid entry
 	server.Store.Append(store.JournalEntry{Type: store.EventAssert, SessionID: "sess_1", Fact: &core.Fact{ID: "F1", IsRoot: true}})
@@ -90,10 +115,7 @@ func TestJournalResilience(t *testing.T) {
 }
 
 func TestE2ELifecycle(t *testing.T) {
-	_, ts := setupTestServer(t)
-	defer ts.Close()
-
-	client := &http.Client{}
+	server := setupTestServer(t)
 	sessionID := "e2e_session"
 
 	// 1. Assert Root Fact
@@ -104,13 +126,9 @@ func TestE2ELifecycle(t *testing.T) {
 		Payload:      map[string]interface{}{"consent_type": "hipaa"},
 	}
 	body, _ := json.Marshal(rootFact)
-	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/v1/s/%s/facts", ts.URL, sessionID), bytes.NewBuffer(body))
-	req.Header.Set("Authorization", "Bearer test_admin_key")
-	req.Header.Set("Content-Type", "application/json")
-	
-	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode != http.StatusCreated {
-		t.Fatalf("Failed to assert root fact: %v (Status: %d)", err, resp.StatusCode)
+	resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("Failed to assert root fact (status: %d body: %s)", resp.Code, resp.Body.String())
 	}
 
 	// 2. Assert Derived Fact
@@ -120,40 +138,35 @@ func TestE2ELifecycle(t *testing.T) {
 		Payload: map[string]interface{}{"access_level": "full"},
 	}
 	body, _ = json.Marshal(derivedFact)
-	req, _ = http.NewRequest("POST", fmt.Sprintf("%s/v1/s/%s/facts", ts.URL, sessionID), bytes.NewBuffer(body))
-	req.Header.Set("Authorization", "Bearer test_admin_key")
-	
-	resp, err = client.Do(req)
-	if err != nil || resp.StatusCode != http.StatusCreated {
-		t.Fatalf("Failed to assert derived fact: %v (Status: %d)", err, resp.StatusCode)
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("Failed to assert derived fact (status: %d body: %s)", resp.Code, resp.Body.String())
 	}
 
 	// 3. Verify Status
-	req, _ = http.NewRequest("GET", fmt.Sprintf("%s/v1/s/%s/facts/access_granted", ts.URL, sessionID), nil)
-	req.Header.Set("Authorization", "Bearer test_admin_key")
-	resp, err = client.Do(req)
-	
+	resp = performRequest(t, server, http.MethodGet, "/v1/s/"+sessionID+"/facts/access_granted", nil)
+
 	var statusResp struct {
 		ResolvedStatus float64 `json:"resolved_status"`
 	}
-	json.NewDecoder(resp.Body).Decode(&statusResp)
+	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+		t.Fatalf("Failed to decode status response: %v", err)
+	}
 	if statusResp.ResolvedStatus != 1.0 {
 		t.Fatalf("Expected access_granted to be valid (1.0), got %f", statusResp.ResolvedStatus)
 	}
 
 	// 4. Invalidate Root
-	req, _ = http.NewRequest("POST", fmt.Sprintf("%s/v1/s/%s/facts/patient_consented/invalidate", ts.URL, sessionID), nil)
-	req.Header.Set("Authorization", "Bearer test_admin_key")
-	resp, err = client.Do(req)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Failed to invalidate root: %d", resp.StatusCode)
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts/patient_consented/invalidate", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Failed to invalidate root (status: %d body: %s)", resp.Code, resp.Body.String())
 	}
 
 	// 5. Verify Invalidation Cascaded
-	req, _ = http.NewRequest("GET", fmt.Sprintf("%s/v1/s/%s/facts/access_granted", ts.URL, sessionID), nil)
-	req.Header.Set("Authorization", "Bearer test_admin_key")
-	resp, err = client.Do(req)
-	json.NewDecoder(resp.Body).Decode(&statusResp)
+	resp = performRequest(t, server, http.MethodGet, "/v1/s/"+sessionID+"/facts/access_granted", nil)
+	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+		t.Fatalf("Failed to decode invalidated status response: %v", err)
+	}
 	if statusResp.ResolvedStatus != 0.0 {
 		t.Fatalf("Expected access_granted to be invalid (0.0) after root invalidation, got %f", statusResp.ResolvedStatus)
 	}
