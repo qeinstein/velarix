@@ -151,7 +151,7 @@ When your agent starts a turn, query the `slice` of valid facts:
 valid_context = session.get_slice(format="markdown", max_facts=10)
 
 system_prompt = f"""
-You are a healthcare assistant. Only use the following verified facts for your reasoning:
+You are an internal approvals assistant. Only use the following verified facts for your reasoning:
 {valid_context}
 """
 ```

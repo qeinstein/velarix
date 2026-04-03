@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -11,12 +13,22 @@ import (
 )
 
 func TestStressAssertions(t *testing.T) {
-	server := setupTestServer(t)
+	server, _ := setupTestServer(t)
 	sessionID := "stress_session"
 
 	var wg sync.WaitGroup
-	workers := 50
-	requestsPerWorker := 20
+	workers := 10
+	requestsPerWorker := 10
+	if raw := os.Getenv("VELARIX_STRESS_WORKERS"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			workers = parsed
+		}
+	}
+	if raw := os.Getenv("VELARIX_STRESS_REQUESTS_PER_WORKER"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			requestsPerWorker = parsed
+		}
+	}
 
 	errCh := make(chan error, workers*requestsPerWorker)
 

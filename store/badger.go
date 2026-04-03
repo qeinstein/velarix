@@ -31,9 +31,55 @@ func uint64Add(originalValue, newValue []byte) []byte {
 	return res
 }
 
+// BadgerStore is the local Badger-backed adapter used for development, tests, and migration bridges.
 type BadgerStore struct {
 	db          *badger.DB
 	appendLocks sync.Map // session_id -> *sync.Mutex
+}
+
+func (s *BadgerStore) sessionVersionKey(sessionID string) []byte {
+	return []byte(fmt.Sprintf("s:%s:version", sessionID))
+}
+
+func (s *BadgerStore) bumpSessionVersionTxn(txn *badger.Txn, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	key := s.sessionVersionKey(sessionID)
+	var version uint64
+	if item, err := txn.Get(key); err == nil {
+		_ = item.Value(func(v []byte) error {
+			if len(v) == 8 {
+				version = binary.BigEndian.Uint64(v)
+			}
+			return nil
+		})
+	}
+	version++
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, version)
+	return txn.Set(key, buf)
+}
+
+func (s *BadgerStore) GetSessionVersion(sessionID string) (int64, error) {
+	var version int64
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.sessionVersionKey(sessionID))
+		if err == badger.ErrKeyNotFound {
+			version = 0
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			if len(v) == 8 {
+				version = int64(binary.BigEndian.Uint64(v))
+			}
+			return nil
+		})
+	})
+	return version, err
 }
 
 const DBVersion = 1
@@ -438,7 +484,10 @@ func (s *BadgerStore) Append(entry JournalEntry) error {
 			if err := txn.Set(hashKey, sum[:]); err != nil {
 				return err
 			}
-			return txn.Set(headKey, sum[:])
+			if err := txn.Set(headKey, sum[:]); err != nil {
+				return err
+			}
+			return s.bumpSessionVersionTxn(txn, entry.SessionID)
 		})
 		if lastErr == nil {
 			return nil
@@ -732,7 +781,10 @@ func (s *BadgerStore) SaveConfig(sessionID string, config interface{}) error {
 	}
 	key := []byte(fmt.Sprintf("s:%s:c", sessionID))
 	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, val)
+		if err := txn.Set(key, val); err != nil {
+			return err
+		}
+		return s.bumpSessionVersionTxn(txn, sessionID)
 	})
 }
 
@@ -1072,7 +1124,11 @@ func (s *BadgerStore) AppendAccessLog(orgID string, e AccessLogEntry) error {
 	if err != nil {
 		return err
 	}
-	key := []byte(fmt.Sprintf("org:%s:access:%020d:%06s", orgID, now.UnixNano(), hex.EncodeToString([]byte(e.Method))[:6]))
+	methodTag := hex.EncodeToString([]byte(e.Method))
+	if len(methodTag) < 6 {
+		methodTag += strings.Repeat("0", 6-len(methodTag))
+	}
+	key := []byte(fmt.Sprintf("org:%s:access:%020d:%06s", orgID, now.UnixNano(), methodTag[:6]))
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set(key, val)
 	})
@@ -1460,7 +1516,10 @@ func (s *BadgerStore) SaveOrganization(org *Organization) error {
 // SetSessionOrganization links a session to an organization
 func (s *BadgerStore) SetSessionOrganization(sessionID, orgID string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Set([]byte("s:"+sessionID+":org"), []byte(orgID))
+		if err := txn.Set([]byte("s:"+sessionID+":org"), []byte(orgID)); err != nil {
+			return err
+		}
+		return s.bumpSessionVersionTxn(txn, sessionID)
 	})
 }
 
@@ -1573,7 +1632,10 @@ func (s *BadgerStore) SaveSnapshot(sessionID string, snap *core.Snapshot) error 
 	}
 	key := []byte(fmt.Sprintf("s:%s:snap", sessionID))
 	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, val)
+		if err := txn.Set(key, val); err != nil {
+			return err
+		}
+		return s.bumpSessionVersionTxn(txn, sessionID)
 	})
 }
 
@@ -1984,4 +2046,475 @@ func (s *BadgerStore) GetSessionHistoryBefore(sessionID string, beforeTimestamp 
 func sha256Hash(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+func (s *BadgerStore) decisionKey(sessionID, decisionID string) []byte {
+	return []byte(fmt.Sprintf("s:%s:decision:%s", sessionID, decisionID))
+}
+
+func (s *BadgerStore) decisionOrgIndexKey(orgID, sessionID, decisionID string) []byte {
+	return []byte(fmt.Sprintf("org:%s:decision:%s:%s", orgID, sessionID, decisionID))
+}
+
+func (s *BadgerStore) decisionDepsPrefix(sessionID, decisionID string) []byte {
+	return []byte(fmt.Sprintf("s:%s:decisiondeps:%s:", sessionID, decisionID))
+}
+
+func (s *BadgerStore) decisionCheckLatestKey(sessionID, decisionID string) []byte {
+	return []byte(fmt.Sprintf("s:%s:decisioncheck:%s:latest", sessionID, decisionID))
+}
+
+func (s *BadgerStore) decisionCheckHistoryKey(sessionID, decisionID string, checkedAt int64) []byte {
+	return []byte(fmt.Sprintf("s:%s:decisioncheck:%s:%020d", sessionID, decisionID, checkedAt))
+}
+
+func (s *BadgerStore) SaveDecision(decision *Decision) error {
+	if decision == nil {
+		return fmt.Errorf("decision is required")
+	}
+	if decision.SessionID == "" || decision.ID == "" {
+		return fmt.Errorf("decision session_id and decision_id are required")
+	}
+	if decision.CreatedAt == 0 {
+		decision.CreatedAt = time.Now().UnixMilli()
+	}
+	if decision.UpdatedAt == 0 {
+		decision.UpdatedAt = decision.CreatedAt
+	}
+	val, err := json.Marshal(decision)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		if err := txn.Set(s.decisionKey(decision.SessionID, decision.ID), val); err != nil {
+			return err
+		}
+		if decision.OrgID != "" {
+			if err := txn.Set(s.decisionOrgIndexKey(decision.OrgID, decision.SessionID, decision.ID), []byte(decision.Status)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *BadgerStore) GetDecision(sessionID string, decisionID string) (*Decision, error) {
+	var decision Decision
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.decisionKey(sessionID, decisionID))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error { return json.Unmarshal(v, &decision) })
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &decision, nil
+}
+
+func decisionMatchesFilter(decision Decision, filter DecisionListFilter) bool {
+	if filter.Status != "" && decision.Status != filter.Status && decision.ExecutionStatus != filter.Status {
+		return false
+	}
+	if filter.SubjectRef != "" && decision.SubjectRef != filter.SubjectRef {
+		return false
+	}
+	if filter.FromMs != 0 && decision.CreatedAt < filter.FromMs {
+		return false
+	}
+	if filter.ToMs != 0 && decision.CreatedAt > filter.ToMs {
+		return false
+	}
+	return true
+}
+
+func (s *BadgerStore) listDecisionsByPrefix(prefix []byte, filter DecisionListFilter) ([]Decision, error) {
+	out := []Decision{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			if strings.HasSuffix(string(item.Key()), ":latest") {
+				continue
+			}
+			var decision Decision
+			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &decision) }); err != nil {
+				continue
+			}
+			if !decisionMatchesFilter(decision, filter) {
+				continue
+			}
+			out = append(out, decision)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, nil
+}
+
+func (s *BadgerStore) ListSessionDecisions(sessionID string, filter DecisionListFilter) ([]Decision, error) {
+	return s.listDecisionsByPrefix([]byte(fmt.Sprintf("s:%s:decision:", sessionID)), filter)
+}
+
+func (s *BadgerStore) ListOrgDecisions(orgID string, filter DecisionListFilter) ([]Decision, error) {
+	prefix := []byte(fmt.Sprintf("org:%s:decision:", orgID))
+	out := []Decision{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			parts := strings.Split(string(it.Item().Key()), ":")
+			if len(parts) < 5 {
+				continue
+			}
+			sessionID := parts[3]
+			decisionID := parts[4]
+			item, err := txn.Get(s.decisionKey(sessionID, decisionID))
+			if err != nil {
+				continue
+			}
+			var decision Decision
+			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &decision) }); err != nil {
+				continue
+			}
+			if !decisionMatchesFilter(decision, filter) {
+				continue
+			}
+			out = append(out, decision)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, nil
+}
+
+func (s *BadgerStore) SaveDecisionDependencies(sessionID string, decisionID string, deps []DecisionDependency) error {
+	prefix := s.decisionDepsPrefix(sessionID, decisionID)
+	return s.db.Update(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			if err := txn.Delete(it.Item().KeyCopy(nil)); err != nil {
+				return err
+			}
+		}
+		for _, dep := range deps {
+			dep.SessionID = sessionID
+			dep.DecisionID = decisionID
+			val, err := json.Marshal(dep)
+			if err != nil {
+				return err
+			}
+			key := append(prefix, []byte(dep.FactID)...)
+			if err := txn.Set(key, val); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *BadgerStore) GetDecisionDependencies(sessionID string, decisionID string) ([]DecisionDependency, error) {
+	prefix := s.decisionDepsPrefix(sessionID, decisionID)
+	out := []DecisionDependency{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var dep DecisionDependency
+			if err := it.Item().Value(func(v []byte) error { return json.Unmarshal(v, &dep) }); err != nil {
+				continue
+			}
+			out = append(out, dep)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].FactID < out[j].FactID })
+	return out, nil
+}
+
+func (s *BadgerStore) SaveDecisionCheck(sessionID string, decisionID string, check *DecisionCheck) error {
+	if check == nil {
+		return fmt.Errorf("check is required")
+	}
+	if check.CheckedAt == 0 {
+		check.CheckedAt = time.Now().UnixMilli()
+	}
+	check.SessionID = sessionID
+	check.DecisionID = decisionID
+	val, err := json.Marshal(check)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		if err := txn.Set(s.decisionCheckLatestKey(sessionID, decisionID), val); err != nil {
+			return err
+		}
+		return txn.Set(s.decisionCheckHistoryKey(sessionID, decisionID, check.CheckedAt), val)
+	})
+}
+
+func (s *BadgerStore) GetLatestDecisionCheck(sessionID string, decisionID string) (*DecisionCheck, error) {
+	var check DecisionCheck
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(s.decisionCheckLatestKey(sessionID, decisionID))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error { return json.Unmarshal(v, &check) })
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &check, nil
+}
+
+func (s *BadgerStore) searchDocumentKey(doc SearchDocument) []byte {
+	return []byte(fmt.Sprintf("org:%s:search:%s:%s", doc.OrgID, doc.DocumentType, doc.ID))
+}
+
+func (s *BadgerStore) UpsertSearchDocuments(docs []SearchDocument) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		for _, doc := range docs {
+			if doc.ID == "" || doc.OrgID == "" {
+				continue
+			}
+			if doc.UpdatedAt == 0 {
+				doc.UpdatedAt = time.Now().UnixMilli()
+			}
+			if doc.CreatedAt == 0 {
+				doc.CreatedAt = doc.UpdatedAt
+			}
+			val, err := json.Marshal(doc)
+			if err != nil {
+				return err
+			}
+			if err := txn.Set(s.searchDocumentKey(doc), val); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func searchDocumentMatches(doc SearchDocument, filter SearchDocumentsFilter) bool {
+	if filter.DocumentType != "" && doc.DocumentType != filter.DocumentType {
+		return false
+	}
+	if filter.Status != "" && doc.Status != filter.Status {
+		return false
+	}
+	if filter.SubjectRef != "" && doc.SubjectRef != filter.SubjectRef {
+		return false
+	}
+	if filter.FromMs != 0 && doc.UpdatedAt < filter.FromMs {
+		return false
+	}
+	if filter.ToMs != 0 && doc.UpdatedAt > filter.ToMs {
+		return false
+	}
+	if q := strings.TrimSpace(strings.ToLower(filter.Query)); q != "" {
+		if !strings.Contains(strings.ToLower(doc.Title), q) &&
+			!strings.Contains(strings.ToLower(doc.Body), q) &&
+			!strings.Contains(strings.ToLower(doc.SubjectRef), q) &&
+			!strings.Contains(strings.ToLower(doc.TargetRef), q) &&
+			!strings.Contains(strings.ToLower(doc.DecisionID), q) &&
+			!strings.Contains(strings.ToLower(doc.FactID), q) {
+			return false
+		}
+	}
+	return true
+}
+
+func orgSettingAsInt(org *Organization, key string, def int) int {
+	if org == nil || org.Settings == nil {
+		return def
+	}
+	raw, ok := org.Settings[key]
+	if !ok {
+		return def
+	}
+	switch v := raw.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case json.Number:
+		n, err := v.Int64()
+		if err == nil {
+			return int(n)
+		}
+	}
+	return def
+}
+
+func (s *BadgerStore) SearchDocuments(orgID string, filter SearchDocumentsFilter) ([]SearchDocument, string, error) {
+	prefix := []byte(fmt.Sprintf("org:%s:search:", orgID))
+	out := []SearchDocument{}
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var doc SearchDocument
+			if err := it.Item().Value(func(v []byte) error { return json.Unmarshal(v, &doc) }); err != nil {
+				continue
+			}
+			if !searchDocumentMatches(doc, filter) {
+				continue
+			}
+			out = append(out, doc)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt == out[j].UpdatedAt {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	offset := 0
+	if filter.Cursor != "" && strings.HasPrefix(filter.Cursor, "o:") {
+		if n, err := strconv.Atoi(strings.TrimPrefix(filter.Cursor, "o:")); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset > len(out) {
+		offset = len(out)
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	next := ""
+	if end < len(out) {
+		next = fmt.Sprintf("o:%d", end)
+	}
+	return out[offset:end], next, nil
+}
+
+func (s *BadgerStore) EnforceRetention(now time.Time) (*RetentionReport, error) {
+	type orgRetention struct {
+		orgID        string
+		activityDays int
+		accessDays   int
+		notifyDays   int
+	}
+	orgs := []orgRetention{}
+
+	if err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		prefix := []byte("o:")
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			var org Organization
+			if err := it.Item().Value(func(v []byte) error { return json.Unmarshal(v, &org) }); err != nil {
+				continue
+			}
+			orgs = append(orgs, orgRetention{
+				orgID:        org.ID,
+				activityDays: orgSettingAsInt(&org, "retention_days_activity", 30),
+				accessDays:   orgSettingAsInt(&org, "retention_days_access_logs", 30),
+				notifyDays:   orgSettingAsInt(&org, "retention_days_notifications", 30),
+			})
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	report := &RetentionReport{}
+	for _, org := range orgs {
+		activityCutoff := now.Add(-time.Duration(org.activityDays) * 24 * time.Hour).UnixMilli()
+		accessCutoff := now.Add(-time.Duration(org.accessDays) * 24 * time.Hour).UnixMilli()
+		notifyCutoff := now.Add(-time.Duration(org.notifyDays) * 24 * time.Hour).UnixMilli()
+		err := s.db.Update(func(txn *badger.Txn) error {
+			opts := badger.DefaultIteratorOptions
+			opts.PrefetchValues = true
+			it := txn.NewIterator(opts)
+			defer it.Close()
+
+			deleteBefore := func(prefix []byte, cutoff int64, decode func([]byte) (int64, error), count *int) error {
+				for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+					ts := int64(0)
+					if err := it.Item().Value(func(v []byte) error {
+						decoded, decodeErr := decode(v)
+						if decodeErr != nil {
+							return decodeErr
+						}
+						ts = decoded
+						return nil
+					}); err != nil {
+						continue
+					}
+					if ts > 0 && ts < cutoff {
+						if err := txn.Delete(it.Item().KeyCopy(nil)); err != nil {
+							return err
+						}
+						*count = *count + 1
+					}
+				}
+				return nil
+			}
+
+			if err := deleteBefore([]byte(fmt.Sprintf("org:%s:activity:", org.orgID)), activityCutoff, func(v []byte) (int64, error) {
+				var e JournalEntry
+				if err := json.Unmarshal(v, &e); err != nil {
+					return 0, err
+				}
+				return e.Timestamp, nil
+			}, &report.ActivityDeleted); err != nil {
+				return err
+			}
+			if err := deleteBefore([]byte(fmt.Sprintf("org:%s:access:", org.orgID)), accessCutoff, func(v []byte) (int64, error) {
+				var e AccessLogEntry
+				if err := json.Unmarshal(v, &e); err != nil {
+					return 0, err
+				}
+				return e.CreatedAt, nil
+			}, &report.AccessLogsDeleted); err != nil {
+				return err
+			}
+			if err := deleteBefore([]byte(fmt.Sprintf("org:%s:notif:", org.orgID)), notifyCutoff, func(v []byte) (int64, error) {
+				var n Notification
+				if err := json.Unmarshal(v, &n); err != nil {
+					return 0, err
+				}
+				return n.CreatedAt, nil
+			}, &report.NotificationsDeleted); err != nil {
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return report, nil
 }

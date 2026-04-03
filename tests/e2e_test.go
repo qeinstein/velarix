@@ -3,6 +3,8 @@ package tests
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,39 +18,53 @@ import (
 	"github.com/dgraph-io/badger/v4"
 )
 
-func setupTestServer(t *testing.T) *api.Server {
+func setupTestServer(t *testing.T) (*api.Server, *store.BadgerStore) {
 	dbPath := t.TempDir()
 
 	os.Setenv("VELARIX_API_KEY", "test_admin_key")
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	badgerStore, err := store.OpenBadger(dbPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to open test BadgerDB: %v", err)
 	}
 
+	server := newTestServerWithStore(badgerStore)
+	seedDefaultTestIdentity(server)
+
+	return server, badgerStore
+}
+
+func newTestServerWithStore(runtimeStore store.ServerStore) *api.Server {
 	server := &api.Server{
 		Engines:    make(map[string]*core.Engine),
 		Configs:    make(map[string]*store.SessionConfig),
+		Versions:   make(map[string]int64),
 		LastAccess: make(map[string]time.Time),
-		Store:      badgerStore,
+		SliceCache: make(map[string]*api.SliceCacheEntry),
+		Store:      runtimeStore,
 		StartTime:  time.Now(),
 	}
+	return server
+}
 
-	// Setup a default user and org for testing
+func seedDefaultTestIdentity(server *api.Server) {
 	user := &store.User{
 		Email: "test@example.com",
 		OrgID: "test_org",
 		Keys: []store.APIKey{
-			{Key: "test_key", Label: "test_actor", IsRevoked: false},
+			{Key: "test_key", Label: "test_actor", IsRevoked: false, ExpiresAt: 9999999999999},
 		},
 	}
 	server.Store.SaveUser(user)
 	server.Store.SaveOrganization(&store.Organization{ID: "test_org", Name: "Test Org"})
-
-	return server
 }
 
 func performAuthenticatedRequest(t *testing.T, server *api.Server, method string, path string, authToken string, body []byte) *httptest.ResponseRecorder {
+	return performAuthenticatedRequestWithHeaders(t, server, method, path, authToken, body, nil)
+}
+
+func performAuthenticatedRequestWithHeaders(t *testing.T, server *api.Server, method string, path string, authToken string, body []byte, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	var requestBody *bytes.Reader
@@ -65,6 +81,9 @@ func performAuthenticatedRequest(t *testing.T, server *api.Server, method string
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 
 	recorder := httptest.NewRecorder()
 	server.Routes().ServeHTTP(recorder, req)
@@ -77,13 +96,13 @@ func performRequest(t *testing.T, server *api.Server, method string, path string
 }
 
 func TestJournalResilience(t *testing.T) {
-	server := setupTestServer(t)
+	server, badgerStore := setupTestServer(t)
 
 	// 1. Write a valid entry
 	server.Store.Append(store.JournalEntry{Type: store.EventAssert, SessionID: "sess_1", Fact: &core.Fact{ID: "F1", IsRoot: true}})
-	
+
 	// 2. Write a corrupt entry
-	err := server.Store.DB().Update(func(txn *badger.Txn) error {
+	err := badgerStore.DB().Update(func(txn *badger.Txn) error {
 		return txn.Set([]byte("s:sess_1:h:9999999999"), []byte(`{"type":"assert", BAD JSON THIS IS CORRUPT`))
 	})
 	if err != nil {
@@ -95,7 +114,7 @@ func TestJournalResilience(t *testing.T) {
 
 	engines := make(map[string]*core.Engine)
 	configsRaw := make(map[string][]byte)
-	err = server.Store.ReplayAll(engines, configsRaw)
+	err = badgerStore.ReplayAll(engines, configsRaw)
 
 	if err != nil {
 		t.Fatalf("ReplayAll failed unexpectedly: %v", err)
@@ -115,7 +134,7 @@ func TestJournalResilience(t *testing.T) {
 }
 
 func TestE2ELifecycle(t *testing.T) {
-	server := setupTestServer(t)
+	server, _ := setupTestServer(t)
 	sessionID := "e2e_session"
 
 	// 1. Assert Root Fact
@@ -133,9 +152,9 @@ func TestE2ELifecycle(t *testing.T) {
 
 	// 2. Assert Derived Fact
 	derivedFact := core.Fact{
-		ID: "access_granted",
+		ID:                "access_granted",
 		JustificationSets: [][]string{{"patient_consented"}},
-		Payload: map[string]interface{}{"access_level": "full"},
+		Payload:           map[string]interface{}{"access_level": "full"},
 	}
 	body, _ = json.Marshal(derivedFact)
 	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
@@ -169,5 +188,157 @@ func TestE2ELifecycle(t *testing.T) {
 	}
 	if statusResp.ResolvedStatus != 0.0 {
 		t.Fatalf("Expected access_granted to be invalid (0.0) after root invalidation, got %f", statusResp.ResolvedStatus)
+	}
+}
+
+func TestDecisionLifecycleContract(t *testing.T) {
+	server, _ := setupTestServer(t)
+	sessionID := "decision_contract_session"
+
+	rootFact := map[string]interface{}{
+		"id":            "approval_context_ready",
+		"is_root":       true,
+		"manual_status": 1.0,
+		"payload":       map[string]interface{}{"summary": "context ready"},
+	}
+	body, _ := json.Marshal(rootFact)
+	resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create root fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	derivedFact := map[string]interface{}{
+		"id":                 "decision.payment_ready",
+		"justification_sets": [][]string{{"approval_context_ready"}},
+		"payload":            map[string]interface{}{"summary": "payment can be released"},
+	}
+	body, _ = json.Marshal(derivedFact)
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create derived fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	createDecision := map[string]interface{}{
+		"decision_type":       "approval_release",
+		"fact_id":             "decision.payment_ready",
+		"subject_ref":         "invoice-42",
+		"target_ref":          "vendor-7",
+		"recommended_action":  "release_payment",
+		"dependency_fact_ids": []string{"approval_context_ready"},
+	}
+	body, _ = json.Marshal(createDecision)
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create decision: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var decision store.Decision
+	if err := json.NewDecoder(resp.Body).Decode(&decision); err != nil {
+		t.Fatalf("failed to decode decision: %v", err)
+	}
+
+	resp = performRequest(t, server, http.MethodGet, "/v1/s/"+sessionID+"/decisions/"+decision.ID, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to fetch decision: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute-check", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to check decision: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var check store.DecisionCheck
+	if err := json.NewDecoder(resp.Body).Decode(&check); err != nil {
+		t.Fatalf("failed to decode decision check: %v", err)
+	}
+	if !check.Executable {
+		t.Fatalf("expected executable decision, got blocked: %+v", check)
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts/approval_context_ready/invalidate", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to invalidate root fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute-check", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to re-check blocked decision: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&check); err != nil {
+		t.Fatalf("failed to decode blocked decision check: %v", err)
+	}
+	if check.Executable {
+		t.Fatalf("expected blocked decision after invalidation, got executable")
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute", []byte(`{}`))
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected blocked execution conflict, got status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMultiInstanceDecisionRefresh(t *testing.T) {
+	serverOne, sharedStore := setupTestServer(t)
+	serverTwo := newTestServerWithStore(sharedStore)
+	seedDefaultTestIdentity(serverTwo)
+
+	sessionID := "multi_instance_session"
+
+	rootFact := map[string]interface{}{
+		"id":            "shared_root",
+		"is_root":       true,
+		"manual_status": 1.0,
+	}
+	body, _ := json.Marshal(rootFact)
+	resp := performRequest(t, serverOne, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create root fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	derivedFact := map[string]interface{}{
+		"id":                 "shared_decision_fact",
+		"justification_sets": [][]string{{"shared_root"}},
+	}
+	body, _ = json.Marshal(derivedFact)
+	resp = performRequest(t, serverOne, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create derived fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	createDecision := map[string]interface{}{
+		"decision_type":       "multi_instance_check",
+		"fact_id":             "shared_decision_fact",
+		"subject_ref":         "invoice-shared",
+		"target_ref":          "vendor-shared",
+		"dependency_fact_ids": []string{"shared_root"},
+	}
+	body, _ = json.Marshal(createDecision)
+	resp = performRequest(t, serverOne, http.MethodPost, "/v1/s/"+sessionID+"/decisions", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create decision: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var decision store.Decision
+	if err := json.NewDecoder(resp.Body).Decode(&decision); err != nil {
+		t.Fatalf("failed to decode decision: %v", err)
+	}
+
+	resp = performRequest(t, serverTwo, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute-check", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to warm second server decision cache: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performRequest(t, serverOne, http.MethodPost, "/v1/s/"+sessionID+"/facts/shared_root/invalidate", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to invalidate shared root: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performRequest(t, serverTwo, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute-check", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to refresh second server decision view: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var check store.DecisionCheck
+	if err := json.NewDecoder(resp.Body).Decode(&check); err != nil {
+		t.Fatalf("failed to decode refreshed decision check: %v", err)
+	}
+	if check.Executable {
+		t.Fatalf("expected second server to observe blocked decision after version refresh")
 	}
 }

@@ -1,40 +1,32 @@
-# Velarix Healthcare Demo
+# Demo
 
-This directory contains proofs-of-concept for Velarix in high-stakes reasoning environments.
+`approval_integrity.py` is the canonical demo for this repository.
 
-Available integration demos:
-1. `agent_pivot.py`: core causal invalidation flow
-2. `langchain_integration.py`: native LangChain model wrapper
-3. `langgraph_integration.py`: LangGraph checkpoint integration
-4. `llamaindex_integration.py`: LlamaIndex retriever integration
-5. TypeScript SDK tests also cover a native LangChainJS wrapper and OpenAI adapter under `sdks/typescript/tests/`
+It shows a simple internal approval workflow:
+- root facts establish the state used by an approval recommendation,
+- a derived fact represents the recommendation,
+- a history entry records the recommendation event,
+- invalidating one upstream fact collapses the recommendation before action.
 
-## The Problem
-In healthcare, AI agents often act on temporary or conditional data (e.g., preliminary lab results or active patient consent). If that data is retracted or updated, standard "flat" agent memory fails to purge the downstream reasoning, leading to clinical safety violations or HIPAA breaches.
+## Run The Demo
 
-## The Demo: Clinical Consent Retraction
-This script (`agent_pivot.py`) simulates a medical data-processing agent.
-1. The agent observes a patient has signed a **HIPAA Consent Form**.
-2. It derives multiple reasoning paths: **PHI_ACCESS_GRANTED**, **LAB_PROCESSING_ENABLED**, and **INSURANCE_VERIFICATION_ACTIVE**.
-3. The patient suddenly **withdraws consent**.
-4. We invalidate the root consent fact.
-5. **The Result:** Velarix triggers an instant $O(1)$ causal collapse. Every reasoning chain dependent on that consent is invalidated before the agent can perform its next action.
+Start the API from the project root:
 
-## How to run
-
-1. Start the Velarix Go Server from the project root:
 ```bash
-# Ensure encryption is set for compliance mode
-export VELARIX_ENCRYPTION_KEY="your-32-byte-secure-key-here"
-export VELARIX_ENV="dev"
+export VELARIX_ENV=dev
+export VELARIX_API_KEY=dev-admin-key
 go run main.go
 ```
 
-2. Open a new terminal and run the demo:
+In a second terminal:
+
 ```bash
 pip install -e ./sdks/python
-python demo/agent_pivot.py
+export VELARIX_API_KEY=dev-admin-key
+python demo/approval_integrity.py
 ```
 
----
-*Velarix: Building the trust layer for autonomous healthcare.*
+## Notes
+
+- `agent_pivot.py` now forwards to the canonical approval-integrity demo for backwards compatibility.
+- Other integration examples in this folder are exploratory and are not the maintained demo path for the V1 wedge.

@@ -1,6 +1,10 @@
 package core
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"sort"
+)
 
 // BeliefExplanation represents a single fact in a causal explanation chain.
 type BeliefExplanation struct {
@@ -23,11 +27,24 @@ type CounterfactualResult struct {
 	Narrative     string   `json:"narrative"`
 }
 
+type ExplanationSource struct {
+	FactID        string `json:"fact_id"`
+	SourceType    string `json:"source_type,omitempty"`
+	SourceRef     string `json:"source_ref,omitempty"`
+	PayloadHash   string `json:"payload_hash,omitempty"`
+	PolicyVersion string `json:"policy_version,omitempty"`
+}
+
 // ExplanationOutput is the full structured explanation returned by ExplainReasoning.
 type ExplanationOutput struct {
 	FactID         string                `json:"fact_id"`
 	SessionID      string                `json:"session_id"`
 	Timestamp      int64                 `json:"timestamp"`
+	Summary        string                `json:"summary,omitempty"`
+	Structured     map[string]interface{} `json:"structured,omitempty"`
+	InvalidatedFactIDs []string          `json:"invalidated_fact_ids,omitempty"`
+	Sources        []ExplanationSource   `json:"sources,omitempty"`
+	PolicyVersions []string              `json:"policy_versions,omitempty"`
 	CausalChain    []BeliefExplanation   `json:"causal_chain"`
 	Counterfactual *CounterfactualResult `json:"counterfactual,omitempty"`
 }
@@ -70,7 +87,74 @@ func (e *Engine) ExplainReasoning(factID string, counterfactualFactID string) (*
 		output.Counterfactual = e.computeCounterfactual(factID, counterfactualFactID)
 	}
 
+	output.enrichForDecisionContext(fact)
+
 	return output, nil
+}
+
+func (o *ExplanationOutput) enrichForDecisionContext(fact *Fact) {
+	if fact == nil {
+		return
+	}
+	invalidated := map[string]struct{}{}
+	policyVersions := map[string]struct{}{}
+	sources := []ExplanationSource{}
+
+	for _, belief := range o.CausalChain {
+		if belief.Confidence < float64(ConfidenceThreshold) {
+			invalidated[belief.FactID] = struct{}{}
+		}
+
+		source := ExplanationSource{FactID: belief.FactID}
+		if belief.Provenance != nil {
+			if v, ok := belief.Provenance["source_type"].(string); ok {
+				source.SourceType = v
+			}
+			if v, ok := belief.Provenance["source_ref"].(string); ok {
+				source.SourceRef = v
+			}
+			if v, ok := belief.Provenance["payload_hash"].(string); ok {
+				source.PayloadHash = v
+			}
+			if v, ok := belief.Provenance["policy_version"].(string); ok {
+				source.PolicyVersion = v
+				policyVersions[v] = struct{}{}
+			}
+		}
+		if source.SourceType != "" || source.SourceRef != "" || source.PayloadHash != "" || source.PolicyVersion != "" {
+			sources = append(sources, source)
+		}
+	}
+
+	o.InvalidatedFactIDs = make([]string, 0, len(invalidated))
+	for id := range invalidated {
+		o.InvalidatedFactIDs = append(o.InvalidatedFactIDs, id)
+	}
+	sort.Strings(o.InvalidatedFactIDs)
+	o.Sources = sources
+
+	o.PolicyVersions = make([]string, 0, len(policyVersions))
+	for version := range policyVersions {
+		o.PolicyVersions = append(o.PolicyVersions, version)
+	}
+	sort.Strings(o.PolicyVersions)
+
+	status := float64(fact.DerivedStatus)
+	if fact.IsRoot {
+		status = float64(fact.ManualStatus)
+	}
+	if status < float64(ConfidenceThreshold) {
+		o.Summary = fmt.Sprintf("Fact %s is blocked or stale because one or more dependencies are no longer valid.", fact.ID)
+	} else {
+		o.Summary = fmt.Sprintf("Fact %s is supported by the current dependency set.", fact.ID)
+	}
+	o.Structured = map[string]interface{}{
+		"fact_id":              fact.ID,
+		"current_status":       status,
+		"invalidated_fact_ids": o.InvalidatedFactIDs,
+		"policy_versions":      o.PolicyVersions,
+		"source_count":         len(o.Sources),
+	}
 }
 
 // buildCausalChain recursively walks the justification graph and builds a flat list of belief explanations.

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"runtime"
@@ -79,9 +80,10 @@ type Server struct {
 	mu         sync.RWMutex
 	Engines    map[string]*core.Engine
 	Configs    map[string]*store.SessionConfig
+	Versions   map[string]int64
 	LastAccess map[string]time.Time
 	SliceCache map[string]*SliceCacheEntry
-	Store      *store.BadgerStore
+	Store      store.ServerStore
 	StartTime  time.Time
 
 	writeLimiters sync.Map // org_id -> chan struct{}
@@ -94,8 +96,12 @@ func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store
 	if s.LastAccess == nil {
 		s.LastAccess = make(map[string]time.Time)
 	}
+	if s.Versions == nil {
+		s.Versions = make(map[string]int64)
+	}
 	s.LastAccess[sessionID] = time.Now()
 
+	currentVersion, _ := s.Store.GetSessionVersion(sessionID)
 	engine, ok := s.Engines[sessionID]
 	config := s.Configs[sessionID]
 
@@ -104,7 +110,9 @@ func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store
 		if err == nil && storedOrg != orgID {
 			return nil, nil, fmt.Errorf("unauthorized: session belongs to a different organization")
 		}
-		return engine, config, nil
+		if s.Versions[sessionID] == currentVersion {
+			return engine, config, nil
+		}
 	}
 
 	storedOrg, err := s.Store.GetSessionOrganization(sessionID)
@@ -117,6 +125,7 @@ func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store
 	} else if storedOrg != orgID {
 		return nil, nil, fmt.Errorf("unauthorized: session belongs to a different organization")
 	}
+	currentVersion, _ = s.Store.GetSessionVersion(sessionID)
 
 	_ = s.Store.TouchOrgSession(orgID, sessionID, 0)
 
@@ -152,6 +161,7 @@ func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store
 
 	s.Engines[sessionID] = engine
 	s.Configs[sessionID] = config
+	s.Versions[sessionID] = currentVersion
 	ActiveSessions.Set(float64(len(s.Engines)))
 
 	return engine, config, nil
@@ -299,6 +309,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		Payload:   map[string]interface{}{"action": "update_config", "enforcement_mode": config.EnforcementMode},
 		Timestamp: time.Now().UnixMilli(),
 	})
+	_ = s.Store.UpsertSearchDocuments([]store.SearchDocument{sessionSearchDocument(orgID, sessionID, config, time.Now().UnixMilli())})
 
 	writeJSON(w, http.StatusOK, config)
 }
@@ -414,13 +425,14 @@ func (s *Server) handleAssertFact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, fact)
 	_ = s.Store.TouchOrgSession(orgID, sessionID, 1)
 	s.checkSnapshotTrigger(sessionID, engine)
+	s.syncFactSearchDocument(orgID, sessionID, config, &fact, engine.GetStatus(fact.ID))
 }
 
 func (s *Server) handleInvalidateRoot(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	sessionID := r.PathValue("session_id")
 	orgID := getOrgID(r)
-	engine, _, err := s.getEngine(sessionID, orgID)
+	engine, config, err := s.getEngine(sessionID, orgID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
@@ -462,6 +474,7 @@ func (s *Server) handleInvalidateRoot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "invalidated"})
 	_ = s.Store.TouchOrgSession(orgID, sessionID, 0)
 	s.checkSnapshotTrigger(sessionID, engine)
+	s.syncSessionSearchDocuments(orgID, sessionID, engine, config)
 }
 
 func (s *Server) handleGetFact(w http.ResponseWriter, r *http.Request) {
@@ -608,6 +621,7 @@ func (s *Server) handleRevalidate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go s.Store.IncrementOrgMetric(orgID, "revalidation_runs", 1)
+	s.syncSessionSearchDocuments(orgID, sessionID, engine, &store.SessionConfig{})
 	writeJSON(w, http.StatusOK, summary)
 }
 
@@ -754,9 +768,10 @@ func (s *Server) handleFullHealth(w http.ResponseWriter, r *http.Request) {
 	BadgerDiskUsage.Set(float64(diskUsed))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":           "healthy",
-		"badger_connected": s.Store != nil,
-		"ram_sessions":     sessionCount,
+		"status":            "healthy",
+		"storage_connected": s.Store != nil,
+		"badger_connected":  s.Store != nil,
+		"ram_sessions":      sessionCount,
 		"disk": map[string]interface{}{
 			"free_bytes":    diskFree,
 			"total_bytes":   diskTotal,
@@ -805,29 +820,40 @@ func (s *Server) handleGetUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, usage)
 }
 
-func (s *Server) checkRateLimit(apiKey string) bool {
+func (s *Server) checkRateLimit(apiKey string) (bool, time.Duration) {
 	now := time.Now()
 	minuteAgo := now.Add(-1 * time.Minute)
 
 	limits, err := s.Store.GetRateLimit(apiKey)
 	if err != nil && err.Error() != "Key not found" {
-		return false // Fail closed on DB error
+		return false, time.Minute // Fail closed on DB error
 	}
 
 	var valid []time.Time
+	var earliest time.Time
 	for _, t := range limits {
 		if t.After(minuteAgo) {
 			valid = append(valid, t)
+			if earliest.IsZero() || t.Before(earliest) {
+				earliest = t
+			}
 		}
 	}
 
 	if len(valid) >= 60 {
-		return false
+		retryAfter := time.Second
+		if !earliest.IsZero() {
+			retryAfter = time.Until(earliest.Add(time.Minute))
+			if retryAfter < time.Second {
+				retryAfter = time.Second
+			}
+		}
+		return false, retryAfter
 	}
 
 	valid = append(valid, now)
 	s.Store.SaveRateLimit(apiKey, valid)
-	return true
+	return true, 0
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
@@ -961,7 +987,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Invalid or expired API key", http.StatusUnauthorized)
 			return
 		}
-		if !s.checkRateLimit(tokenHash) {
+		if allowed, retryAfter := s.checkRateLimit(tokenHash); !allowed {
+			seconds := int(math.Ceil(retryAfter.Seconds()))
+			if seconds < 1 {
+				seconds = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			w.Header().Set("X-Velarix-RateLimit-Limit", "60")
+			w.Header().Set("X-Velarix-RateLimit-Window", "60")
 			http.Error(w, "rate limit exceeded (60 rpm)", http.StatusTooManyRequests)
 			return
 		}
@@ -1102,6 +1135,7 @@ func (s *Server) PerformEvictionSweep() {
 		if now.Sub(last) > 30*time.Minute {
 			delete(s.Engines, id)
 			delete(s.Configs, id)
+			delete(s.Versions, id)
 			delete(s.LastAccess, id)
 		}
 	}
@@ -1127,6 +1161,7 @@ func (s *Server) PerformEvictionSweep() {
 			id := ages[i].id
 			delete(s.Engines, id)
 			delete(s.Configs, id)
+			delete(s.Versions, id)
 			delete(s.LastAccess, id)
 		}
 	}
@@ -1155,6 +1190,33 @@ func (s *Server) StartBackupTicker() {
 				} else {
 					slog.Info("Automated backup completed")
 				}
+			}
+		}
+	}()
+}
+
+func (s *Server) StartRetentionTicker() {
+	intervalMinutes := 60
+	if raw := strings.TrimSpace(os.Getenv("VELARIX_RETENTION_SWEEP_INTERVAL_MINUTES")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			intervalMinutes = parsed
+		}
+	}
+
+	ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
+	go func() {
+		for range ticker.C {
+			report, err := s.Store.EnforceRetention(time.Now())
+			if err != nil {
+				slog.Error("Retention sweep failed", "error", err)
+				continue
+			}
+			if report != nil && (report.ActivityDeleted > 0 || report.AccessLogsDeleted > 0 || report.NotificationsDeleted > 0) {
+				slog.Info("Retention sweep completed",
+					"activity_deleted", report.ActivityDeleted,
+					"access_logs_deleted", report.AccessLogsDeleted,
+					"notifications_deleted", report.NotificationsDeleted,
+				)
 			}
 		}
 	}()
@@ -1506,7 +1568,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
 	// Documentation & Version-Agnostic Metadata
-	mux.HandleFunc("GET /docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "docs/swagger.yaml") })
+	mux.HandleFunc("GET /docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "docs/openapi.yaml") })
 	mux.HandleFunc("GET /docs/postman.json", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "docs/postman.json") })
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /health", s.handleHealth)
@@ -1534,6 +1596,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/org/activity", s.handleOrgActivity)
 	mux.HandleFunc("GET /v1/org/access-logs", s.handleListAccessLogs)
 	mux.HandleFunc("GET /v1/org/search", s.handleOrgSearch)
+	mux.HandleFunc("GET /v1/org/decisions", s.handleListOrgDecisions)
+	mux.HandleFunc("GET /v1/org/decisions/blocked", s.handleListBlockedOrgDecisions)
 	mux.HandleFunc("GET /v1/org/notifications", s.handleListNotifications)
 	mux.HandleFunc("POST /v1/org/notifications/{id}/read", s.handleMarkNotificationRead)
 	mux.HandleFunc("GET /v1/org/integrations", s.handleListIntegrations)
@@ -1598,6 +1662,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/s/{session_id}/explanations", s.handleGetExplanations)
 	mux.HandleFunc("GET /v1/s/{session_id}/history/page", s.handleHistoryPage)
 	mux.HandleFunc("GET /v1/s/{session_id}/config", s.handleGetConfig)
+	mux.HandleFunc("POST /v1/s/{session_id}/decisions", s.handleCreateDecision)
+	mux.HandleFunc("GET /v1/s/{session_id}/decisions", s.handleListSessionDecisions)
+	mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}", s.handleGetDecision)
+	mux.HandleFunc("POST /v1/s/{session_id}/decisions/{decision_id}/recompute", s.handleRecomputeDecision)
+	mux.HandleFunc("POST /v1/s/{session_id}/decisions/{decision_id}/execute-check", s.handleExecuteDecisionCheck)
+	mux.HandleFunc("POST /v1/s/{session_id}/decisions/{decision_id}/execute", s.handleExecuteDecision)
+	mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}/lineage", s.handleDecisionLineage)
+	mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}/why-blocked", s.handleDecisionWhyBlocked)
 
 	var h http.Handler = mux
 	h = s.orgMetricsMiddleware(h)
