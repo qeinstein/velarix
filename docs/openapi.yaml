@@ -1,0 +1,523 @@
+openapi: 3.0.3
+info:
+  title: Velarix Decision Integrity API
+  version: v1
+  description: Stable workflow routes for decision integrity in AI-assisted internal approvals.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+  /v1/s/{session_id}/facts:
+    post:
+      summary: Assert a fact into a session
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Fact'
+      responses:
+        '201':
+          description: Fact persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fact'
+  /v1/s/{session_id}/facts/{fact_id}/invalidate:
+    post:
+      summary: Invalidate a root fact
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - name: fact_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Fact invalidated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /v1/s/{session_id}/decisions:
+    post:
+      summary: Create a first-class decision
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDecisionRequest'
+      responses:
+        '201':
+          description: Decision created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Decision'
+    get:
+      summary: List decisions for a session
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/SubjectQuery'
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Session decision list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionListResponse'
+  /v1/s/{session_id}/decisions/{decision_id}:
+    get:
+      summary: Fetch a decision
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/DecisionID'
+      responses:
+        '200':
+          description: Decision record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Decision'
+  /v1/s/{session_id}/decisions/{decision_id}/recompute:
+    post:
+      summary: Recompute decision dependencies and status
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/DecisionID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecomputeDecisionRequest'
+      responses:
+        '200':
+          description: Updated decision and latest check
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionWithCheck'
+  /v1/s/{session_id}/decisions/{decision_id}/execute-check:
+    post:
+      summary: Re-check whether a decision is still executable
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/DecisionID'
+      responses:
+        '200':
+          description: Execution eligibility
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionCheck'
+  /v1/s/{session_id}/decisions/{decision_id}/execute:
+    post:
+      summary: Attempt execution of a decision
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/DecisionID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteDecisionRequest'
+      responses:
+        '200':
+          description: Decision executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionWithCheck'
+        '409':
+          description: Execution blocked because the decision is stale
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionCheck'
+  /v1/s/{session_id}/decisions/{decision_id}/why-blocked:
+    get:
+      summary: Explain why a decision is blocked
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/DecisionID'
+      responses:
+        '200':
+          description: Decision explanation payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionWhyBlockedResponse'
+  /v1/org/decisions:
+    get:
+      summary: List organization decisions
+      parameters:
+        - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/SubjectQuery'
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Organization decision list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionListResponse'
+  /v1/org/decisions/blocked:
+    get:
+      summary: List blocked organization decisions
+      parameters:
+        - $ref: '#/components/parameters/SubjectQuery'
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Blocked organization decision list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionListResponse'
+  /v1/org/search:
+    get:
+      summary: Search indexed workflow documents
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+        - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/SubjectQuery'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: APIKeyOrJWT
+  parameters:
+    SessionID:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+    DecisionID:
+      name: decision_id
+      in: path
+      required: true
+      schema:
+        type: string
+    StatusQuery:
+      name: status
+      in: query
+      required: false
+      schema:
+        type: string
+    SubjectQuery:
+      name: subject
+      in: query
+      required: false
+      schema:
+        type: string
+    FromQuery:
+      name: from
+      in: query
+      required: false
+      schema:
+        type: integer
+        format: int64
+    ToQuery:
+      name: to
+      in: query
+      required: false
+      schema:
+        type: integer
+        format: int64
+    LimitQuery:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+  schemas:
+    Fact:
+      type: object
+      properties:
+        id:
+          type: string
+        is_root:
+          type: boolean
+        manual_status:
+          type: number
+        derived_status:
+          type: number
+        resolved_status:
+          type: number
+        justification_sets:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+        payload:
+          type: object
+          additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+    CreateDecisionRequest:
+      type: object
+      required:
+        - decision_type
+      properties:
+        decision_id:
+          type: string
+        fact_id:
+          type: string
+        decision_type:
+          type: string
+        subject_ref:
+          type: string
+        target_ref:
+          type: string
+        recommended_action:
+          type: string
+        policy_version:
+          type: string
+        explanation_summary:
+          type: string
+        dependency_fact_ids:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+    RecomputeDecisionRequest:
+      type: object
+      properties:
+        fact_id:
+          type: string
+        dependency_fact_ids:
+          type: array
+          items:
+            type: string
+    ExecuteDecisionRequest:
+      type: object
+      properties:
+        execution_ref:
+          type: string
+    Decision:
+      type: object
+      properties:
+        decision_id:
+          type: string
+        session_id:
+          type: string
+        org_id:
+          type: string
+        fact_id:
+          type: string
+        decision_type:
+          type: string
+        subject_ref:
+          type: string
+        target_ref:
+          type: string
+        status:
+          type: string
+        execution_status:
+          type: string
+        recommended_action:
+          type: string
+        policy_version:
+          type: string
+        explanation_summary:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+        last_checked_at:
+          type: integer
+          format: int64
+        executed_at:
+          type: integer
+          format: int64
+        executed_by:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+    DecisionDependency:
+      type: object
+      properties:
+        decision_id:
+          type: string
+        session_id:
+          type: string
+        fact_id:
+          type: string
+        dependency_type:
+          type: string
+        required_status:
+          type: string
+        current_status:
+          type: number
+        source_ref:
+          type: string
+        policy_version:
+          type: string
+        explanation_hint:
+          type: string
+    DecisionBlocker:
+      type: object
+      properties:
+        fact_id:
+          type: string
+        dependency_type:
+          type: string
+        required_status:
+          type: string
+        current_status:
+          type: number
+        reason_code:
+          type: string
+        source_ref:
+          type: string
+        policy_version:
+          type: string
+        explanation_hint:
+          type: string
+    DecisionCheck:
+      type: object
+      properties:
+        decision_id:
+          type: string
+        session_id:
+          type: string
+        executable:
+          type: boolean
+        blocked_by:
+          type: array
+          items:
+            $ref: '#/components/schemas/DecisionBlocker'
+        reason_codes:
+          type: array
+          items:
+            type: string
+        checked_at:
+          type: integer
+          format: int64
+        explanation_summary:
+          type: string
+        dependency_snapshots:
+          type: array
+          items:
+            $ref: '#/components/schemas/DecisionDependency'
+    DecisionListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Decision'
+    DecisionWithCheck:
+      type: object
+      properties:
+        decision:
+          $ref: '#/components/schemas/Decision'
+        check:
+          $ref: '#/components/schemas/DecisionCheck'
+    SearchResult:
+      type: object
+      properties:
+        type:
+          type: string
+        session_id:
+          type: string
+        fact_id:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+        snippet:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+    SearchResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+        next_cursor:
+          type: string
+    DecisionWhyBlockedResponse:
+      type: object
+      properties:
+        decision:
+          $ref: '#/components/schemas/Decision'
+        check:
+          $ref: '#/components/schemas/DecisionCheck'
+        blocked_by:
+          type: array
+          items:
+            $ref: '#/components/schemas/DecisionBlocker'
+        reason_codes:
+          type: array
+          items:
+            type: string
+        explanation:
+          type: object
+          additionalProperties: true
