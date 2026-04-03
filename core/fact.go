@@ -3,8 +3,8 @@ package core
 type Status float64
 
 const (
-	Invalid Status = 0.0
-	Valid   Status = 1.0
+	Invalid Status = 0.0	// invalid if it's 0.0, the closer it is to 0.0, the lower it's validity
+	Valid   Status = 1.0	// Valid if it's 1, the closer it is to 1, the higher it's validity 
 )
 
 type JustificationSet struct {

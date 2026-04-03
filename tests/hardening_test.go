@@ -3,15 +3,13 @@ package tests
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
 	"velarix/store"
 )
 
 func TestRBACEnforcement(t *testing.T) {
-	server, ts := setupTestServer(t)
-	defer ts.Close()
+	server := setupTestServer(t)
 
 	// 1. Setup a regular member user
 	memberUser := &store.User{
@@ -24,76 +22,52 @@ func TestRBACEnforcement(t *testing.T) {
 	}
 	server.Store.SaveUser(memberUser)
 
-	client := &http.Client{}
-
 	// 2. Attempt admin operation (backup) with member key
-	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/v1/org/backup", ts.URL), nil)
-	req.Header.Set("Authorization", "Bearer member_key")
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("Expected 403 Forbidden for member accessing backup, got %d", resp.StatusCode)
+	resp := performAuthenticatedRequest(t, server, http.MethodGet, "/v1/org/backup", "member_key", nil)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("Expected 403 Forbidden for member accessing backup, got %d", resp.Code)
 	}
 
 	// 3. Attempt admin operation (full health) with member key
-	req, _ = http.NewRequest("GET", fmt.Sprintf("%s/health/full", ts.URL), nil)
-	req.Header.Set("Authorization", "Bearer member_key")
-	resp, err = client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("Expected 403 Forbidden for member accessing full health, got %d", resp.StatusCode)
+	resp = performAuthenticatedRequest(t, server, http.MethodGet, "/health/full", "member_key", nil)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("Expected 403 Forbidden for member accessing full health, got %d", resp.Code)
 	}
 }
 
 func TestBackupRestore(t *testing.T) {
-	_, ts := setupTestServer(t)
-	defer ts.Close()
-
-	client := &http.Client{}
+	server := setupTestServer(t)
 
 	// 1. Assert a fact
 	fact := map[string]interface{}{"id": "F1", "is_root": true, "manual_status": 1.0}
 	body, _ := json.Marshal(fact)
-	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/v1/s/sess1/facts", ts.URL), bytes.NewBuffer(body))
-	req.Header.Set("Authorization", "Bearer test_admin_key")
-	req.Header.Set("Content-Type", "application/json")
-	client.Do(req)
+	resp := performRequest(t, server, http.MethodPost, "/v1/s/sess1/facts", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("Failed to create fact before backup: %d", resp.Code)
+	}
 
 	// 2. Perform Backup
-	req, _ = http.NewRequest("GET", fmt.Sprintf("%s/v1/org/backup", ts.URL), nil)
-	req.Header.Set("Authorization", "Bearer test_admin_key")
-	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("Backup failed: %v (Status: %d)", err, resp.StatusCode)
+	resp = performRequest(t, server, http.MethodGet, "/v1/org/backup", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Backup failed: status %d body %s", resp.Code, resp.Body.String())
 	}
 	
 	var backupData bytes.Buffer
 	backupData.ReadFrom(resp.Body)
-	resp.Body.Close()
 
 	// 3. Clear Database by creating a new server (simulating disaster)
-	ts.Close()
-	_, ts2 := setupTestServer(t)
-	defer ts2.Close()
+	server2 := setupTestServer(t)
 
 	// 4. Perform Restore
-	req, _ = http.NewRequest("POST", fmt.Sprintf("%s/v1/org/restore", ts2.URL), &backupData)
-	req.Header.Set("Authorization", "Bearer test_admin_key")
-	resp, err = client.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("Restore failed: %v (Status: %d)", err, resp.StatusCode)
+	resp = performRequest(t, server2, http.MethodPost, "/v1/org/restore", backupData.Bytes())
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Restore failed: status %d body %s", resp.Code, resp.Body.String())
 	}
 
 	// 5. Verify data exists after restore
-	req, _ = http.NewRequest("GET", fmt.Sprintf("%s/v1/s/sess1/facts/F1", ts2.URL), nil)
-	req.Header.Set("Authorization", "Bearer test_admin_key")
-	resp, err = client.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("Failed to retrieve fact after restore: %v (Status: %d)", err, resp.StatusCode)
+	resp = performRequest(t, server2, http.MethodGet, "/v1/s/sess1/facts/F1", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Failed to retrieve fact after restore: status %d body %s", resp.Code, resp.Body.String())
 	}
 	
 	var restoredFact struct { ID string }
