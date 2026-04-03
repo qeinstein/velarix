@@ -2,8 +2,8 @@ package api
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -113,16 +113,16 @@ type GenerateKeyRequest struct {
 }
 
 type APIKeyView struct {
-	ID        string   `json:"id"`
-	Key       string   `json:"key,omitempty"` // only returned on create/rotate
-	KeyPrefix string   `json:"key_prefix"`
-	KeyLast4  string   `json:"key_last4"`
-	Label     string   `json:"label"`
-	CreatedAt int64    `json:"created_at"`
-	LastUsedAt int64   `json:"last_used_at"`
-	ExpiresAt int64    `json:"expires_at"`
-	IsRevoked bool     `json:"is_revoked"`
-	Scopes    []string `json:"scopes,omitempty"`
+	ID         string   `json:"id"`
+	Key        string   `json:"key,omitempty"` // only returned on create/rotate
+	KeyPrefix  string   `json:"key_prefix"`
+	KeyLast4   string   `json:"key_last4"`
+	Label      string   `json:"label"`
+	CreatedAt  int64    `json:"created_at"`
+	LastUsedAt int64    `json:"last_used_at"`
+	ExpiresAt  int64    `json:"expires_at"`
+	IsRevoked  bool     `json:"is_revoked"`
+	Scopes     []string `json:"scopes,omitempty"`
 }
 
 func keyHashHex(raw string) string {
@@ -157,15 +157,15 @@ func keyViewFromStored(k store.APIKey) APIKeyView {
 		id = k.KeyHash
 	}
 	return APIKeyView{
-		ID:        id,
-		KeyPrefix: k.KeyPrefix,
-		KeyLast4:  k.KeyLast4,
-		Label:     k.Label,
-		CreatedAt: k.CreatedAt,
+		ID:         id,
+		KeyPrefix:  k.KeyPrefix,
+		KeyLast4:   k.KeyLast4,
+		Label:      k.Label,
+		CreatedAt:  k.CreatedAt,
 		LastUsedAt: k.LastUsedAt,
-		ExpiresAt: k.ExpiresAt,
-		IsRevoked: k.IsRevoked,
-		Scopes:    k.Scopes,
+		ExpiresAt:  k.ExpiresAt,
+		IsRevoked:  k.IsRevoked,
+		Scopes:     k.Scopes,
 	}
 }
 
@@ -294,10 +294,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:    "token",
-		Value:   tokenString,
-		Expires: expirationTime,
-		Path:    "/",
+		Name:     "token",
+		Value:    tokenString,
+		Expires:  expirationTime,
+		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   os.Getenv("VELARIX_ENV") != "dev",
@@ -308,7 +308,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleResetRequest godoc
 // @Summary Request password reset
-// @Description Generate a reset token and log it to the server console. No authentication required.
+// @Description Generate a reset token in development only. Production password reset stays disabled until a real delivery path exists.
 // @Tags Auth
 // @Accept json
 // @Produce json
@@ -321,6 +321,12 @@ func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	body.Email = strings.TrimSpace(strings.ToLower(body.Email))
+
+	if strings.TrimSpace(os.Getenv("VELARIX_ENV")) != "dev" {
+		http.Error(w, "password reset is disabled on this deployment", http.StatusNotImplemented)
+		return
+	}
 
 	user, err := s.Store.GetUser(body.Email)
 	if err != nil {
@@ -328,22 +334,23 @@ func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b := make([]byte, 3)
+	b := make([]byte, 16)
 	rand.Read(b)
 	token := fmt.Sprintf("%x", b)
 
-	user.ResetToken = token
+	user.ResetToken = keyHashHex(token)
 	user.ResetExpiry = time.Now().Add(15 * time.Minute).UnixMilli()
 	s.Store.SaveUser(user)
 
-	slog.Info("Password reset requested", "email", user.Email, "token", token, "expires_in", "15m")
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "if email exists, a reset token has been generated"})
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":          "if email exists, a reset token has been generated",
+		"dev_reset_token": token,
+	})
 }
 
 // handleResetConfirm godoc
 // @Summary Confirm password reset
-// @Description Update password using a reset token provided via console logs. No authentication required.
+// @Description Update password using a reset token issued out-of-band in development. No authentication required.
 // @Tags Auth
 // @Accept json
 // @Produce json
@@ -364,7 +371,7 @@ func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.ResetToken == "" || user.ResetToken != body.Token || time.Now().UnixMilli() > user.ResetExpiry {
+	if user.ResetToken == "" || user.ResetToken != keyHashHex(body.Token) || time.Now().UnixMilli() > user.ResetExpiry {
 		http.Error(w, "invalid token or expired", http.StatusUnauthorized)
 		return
 	}
@@ -372,6 +379,7 @@ func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 	hashed, _ := hashPassword(body.NewPassword)
 	user.HashedPassword = hashed
 	user.ResetToken = ""
+	user.ResetExpiry = 0
 	s.Store.SaveUser(user)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password updated"})

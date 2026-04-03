@@ -1,0 +1,608 @@
+package api
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	apimodels "velarix/api/models"
+	"velarix/core"
+	"velarix/store"
+)
+
+func newDecisionID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return "dec_" + hex.EncodeToString(b)
+}
+
+func factMetadataString(fact *core.Fact, key string) string {
+	if fact == nil || fact.Metadata == nil {
+		return ""
+	}
+	if v, ok := fact.Metadata[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func decisionSearchDocument(decision *store.Decision) store.SearchDocument {
+	bodyParts := []string{decision.DecisionType, decision.RecommendedAction, decision.SubjectRef, decision.TargetRef, decision.ExplanationSummary}
+	return store.SearchDocument{
+		ID:           "decision:" + decision.ID,
+		OrgID:        decision.OrgID,
+		SessionID:    decision.SessionID,
+		DocumentType: "decision",
+		Title:        decision.DecisionType,
+		Body:         strings.TrimSpace(strings.Join(bodyParts, " ")),
+		Status:       decision.Status,
+		SubjectRef:   decision.SubjectRef,
+		TargetRef:    decision.TargetRef,
+		DecisionID:   decision.ID,
+		CreatedAt:    decision.CreatedAt,
+		UpdatedAt:    decision.UpdatedAt,
+		Metadata: map[string]interface{}{
+			"execution_status":   decision.ExecutionStatus,
+			"recommended_action": decision.RecommendedAction,
+			"policy_version":     decision.PolicyVersion,
+		},
+	}
+}
+
+func decisionFactSearchDocuments(orgID, sessionID string, fact *core.Fact, updatedAt int64) []store.SearchDocument {
+	if fact == nil {
+		return nil
+	}
+	payload, _ := json.Marshal(fact.Payload)
+	return []store.SearchDocument{
+		{
+			ID:           "fact:" + sessionID + ":" + fact.ID,
+			OrgID:        orgID,
+			SessionID:    sessionID,
+			DocumentType: "fact",
+			Title:        fact.ID,
+			Body:         string(payload),
+			Status:       fmt.Sprintf("%.2f", fact.ResolvedStatus),
+			FactID:       fact.ID,
+			CreatedAt:    updatedAt,
+			UpdatedAt:    updatedAt,
+		},
+	}
+}
+
+func sessionSearchDocument(orgID, sessionID string, config *store.SessionConfig, updatedAt int64) store.SearchDocument {
+	mode := ""
+	if config != nil {
+		mode = config.EnforcementMode
+	}
+	return store.SearchDocument{
+		ID:           "session:" + sessionID,
+		OrgID:        orgID,
+		SessionID:    sessionID,
+		DocumentType: "session",
+		Title:        sessionID,
+		Body:         "session " + sessionID,
+		Status:       mode,
+		CreatedAt:    updatedAt,
+		UpdatedAt:    updatedAt,
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *Server) buildDecisionDependencies(engine *core.Engine, decision *store.Decision, dependencyIDs []string) ([]store.DecisionDependency, error) {
+	if decision == nil {
+		return nil, fmt.Errorf("decision is required")
+	}
+	if decision.FactID != "" && len(dependencyIDs) == 0 {
+		ids, err := engine.DependencyIDs(decision.FactID, true)
+		if err != nil {
+			return nil, err
+		}
+		dependencyIDs = ids
+	}
+	dependencyIDs = uniqueStrings(dependencyIDs)
+	deps := make([]store.DecisionDependency, 0, len(dependencyIDs))
+	for _, factID := range dependencyIDs {
+		fact, _ := engine.GetFact(factID)
+		currentStatus := float64(engine.GetStatus(factID))
+		deps = append(deps, store.DecisionDependency{
+			DecisionID:      decision.ID,
+			SessionID:       decision.SessionID,
+			FactID:          factID,
+			DependencyType:  "fact",
+			RequiredStatus:  "valid",
+			CurrentStatus:   currentStatus,
+			SourceRef:       factMetadataString(fact, "source_ref"),
+			PolicyVersion:   firstNonEmpty(decision.PolicyVersion, factMetadataString(fact, "policy_version")),
+			ExplanationHint: factMetadataString(fact, "explanation_hint"),
+		})
+	}
+	return deps, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func (s *Server) computeDecisionCheck(engine *core.Engine, decision *store.Decision, deps []store.DecisionDependency) *store.DecisionCheck {
+	check := &store.DecisionCheck{
+		DecisionID:          decision.ID,
+		SessionID:           decision.SessionID,
+		Executable:          true,
+		BlockedBy:           []store.DecisionBlocker{},
+		ReasonCodes:         []string{},
+		CheckedAt:           time.Now().UnixMilli(),
+		DependencySnapshots: make([]store.DecisionDependency, 0, len(deps)),
+	}
+
+	for _, dep := range deps {
+		snapshot := dep
+		currentStatus := float64(engine.GetStatus(dep.FactID))
+		if _, ok := engine.GetFact(dep.FactID); !ok {
+			currentStatus = 0
+		}
+		snapshot.CurrentStatus = currentStatus
+		check.DependencySnapshots = append(check.DependencySnapshots, snapshot)
+
+		if currentStatus < float64(core.ConfidenceThreshold) {
+			check.Executable = false
+			reasonCode := "dependency_invalid"
+			if currentStatus == 0 {
+				reasonCode = "dependency_missing_or_invalid"
+			}
+			check.ReasonCodes = append(check.ReasonCodes, reasonCode)
+			check.BlockedBy = append(check.BlockedBy, store.DecisionBlocker{
+				FactID:          dep.FactID,
+				DependencyType:  dep.DependencyType,
+				RequiredStatus:  dep.RequiredStatus,
+				CurrentStatus:   currentStatus,
+				ReasonCode:      reasonCode,
+				SourceRef:       dep.SourceRef,
+				PolicyVersion:   dep.PolicyVersion,
+				ExplanationHint: dep.ExplanationHint,
+			})
+		}
+	}
+
+	check.ReasonCodes = uniqueStrings(check.ReasonCodes)
+	if decision.FactID != "" {
+		if explanation, err := engine.ExplainReasoning(decision.FactID, ""); err == nil {
+			check.ExplanationSummary = explanation.Summary
+		}
+	}
+	if check.ExplanationSummary == "" {
+		if check.Executable {
+			check.ExplanationSummary = "Decision is executable against the current dependency set."
+		} else {
+			check.ExplanationSummary = "Decision is blocked because one or more dependencies are stale."
+		}
+	}
+	return check
+}
+
+func decisionStatusFromCheck(check *store.DecisionCheck, existingExecutionStatus string) (string, string) {
+	if check == nil {
+		return "active", existingExecutionStatus
+	}
+	if check.Executable {
+		if existingExecutionStatus == "executed" {
+			return "executed", "executed"
+		}
+		return "active", "pending"
+	}
+	return "blocked", "blocked"
+}
+
+func (s *Server) persistDecisionReadModels(decision *store.Decision, deps []store.DecisionDependency) {
+	if decision == nil {
+		return
+	}
+	docs := []store.SearchDocument{decisionSearchDocument(decision)}
+	for _, dep := range deps {
+		docs = append(docs, store.SearchDocument{
+			ID:           fmt.Sprintf("dependency:%s:%s", decision.ID, dep.FactID),
+			OrgID:        decision.OrgID,
+			SessionID:    decision.SessionID,
+			DocumentType: "dependency",
+			Title:        dep.FactID,
+			Body:         firstNonEmpty(dep.ExplanationHint, dep.SourceRef, dep.PolicyVersion),
+			Status:       dep.RequiredStatus,
+			FactID:       dep.FactID,
+			DecisionID:   decision.ID,
+			SubjectRef:   decision.SubjectRef,
+			CreatedAt:    decision.CreatedAt,
+			UpdatedAt:    decision.UpdatedAt,
+		})
+	}
+	_ = s.Store.UpsertSearchDocuments(docs)
+}
+
+func parseDecisionFilter(r *http.Request) store.DecisionListFilter {
+	filter := store.DecisionListFilter{Limit: 50}
+	filter.Status = strings.TrimSpace(r.URL.Query().Get("status"))
+	filter.SubjectRef = strings.TrimSpace(r.URL.Query().Get("subject"))
+	if v := r.URL.Query().Get("from"); v != "" {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+			filter.FromMs = parsed
+		}
+	}
+	if v := r.URL.Query().Get("to"); v != "" {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+			filter.ToMs = parsed
+		}
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 200 {
+			filter.Limit = parsed
+		}
+	}
+	return filter
+}
+
+func (s *Server) handleCreateDecision(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+	engine, config, err := s.getEngine(sessionID, orgID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	var body apimodels.CreateDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.DecisionType) == "" {
+		http.Error(w, "decision_type is required", http.StatusBadRequest)
+		return
+	}
+	decisionID := strings.TrimSpace(body.DecisionID)
+	if decisionID == "" {
+		decisionID = newDecisionID()
+	}
+	now := time.Now().UnixMilli()
+	decision := &store.Decision{
+		ID:                 decisionID,
+		SessionID:          sessionID,
+		OrgID:              orgID,
+		FactID:             strings.TrimSpace(body.FactID),
+		DecisionType:       strings.TrimSpace(body.DecisionType),
+		SubjectRef:         strings.TrimSpace(body.SubjectRef),
+		TargetRef:          strings.TrimSpace(body.TargetRef),
+		RecommendedAction:  strings.TrimSpace(body.RecommendedAction),
+		PolicyVersion:      firstNonEmpty(strings.TrimSpace(body.PolicyVersion), config.Schema),
+		ExplanationSummary: strings.TrimSpace(body.ExplanationSummary),
+		Status:             "active",
+		ExecutionStatus:    "pending",
+		CreatedBy:          getActorID(r),
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		Metadata:           body.Metadata,
+	}
+	deps, err := s.buildDecisionDependencies(engine, decision, body.DependencyFactIDs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	check := s.computeDecisionCheck(engine, decision, deps)
+	decision.Status, decision.ExecutionStatus = decisionStatusFromCheck(check, decision.ExecutionStatus)
+	decision.LastCheckedAt = check.CheckedAt
+	if decision.ExplanationSummary == "" {
+		decision.ExplanationSummary = check.ExplanationSummary
+	}
+	if err := s.Store.SaveDecision(decision); err != nil {
+		http.Error(w, "failed to save decision", http.StatusInternalServerError)
+		return
+	}
+	if err := s.Store.SaveDecisionDependencies(sessionID, decision.ID, deps); err != nil {
+		http.Error(w, "failed to save decision dependencies", http.StatusInternalServerError)
+		return
+	}
+	if err := s.Store.SaveDecisionCheck(sessionID, decision.ID, check); err != nil {
+		http.Error(w, "failed to save decision check", http.StatusInternalServerError)
+		return
+	}
+	s.persistDecisionReadModels(decision, deps)
+	_ = s.Store.AppendOrgActivity(orgID, store.JournalEntry{
+		Type:      store.EventDecisionRecord,
+		SessionID: sessionID,
+		ActorID:   getActorID(r),
+		Payload: map[string]interface{}{
+			"action":      "decision_created",
+			"decision_id": decision.ID,
+			"status":      decision.Status,
+		},
+		Timestamp: now,
+	})
+	writeJSON(w, http.StatusCreated, decision)
+}
+
+func (s *Server) handleGetDecision(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+	storedOrg, err := s.Store.GetSessionOrganization(sessionID)
+	if err != nil || storedOrg != orgID {
+		http.Error(w, "unauthorized", http.StatusForbidden)
+		return
+	}
+	decision, err := s.Store.GetDecision(sessionID, r.PathValue("decision_id"))
+	if err != nil {
+		http.Error(w, "decision not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, decision)
+}
+
+func (s *Server) handleListSessionDecisions(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+	storedOrg, err := s.Store.GetSessionOrganization(sessionID)
+	if err != nil || storedOrg != orgID {
+		http.Error(w, "unauthorized", http.StatusForbidden)
+		return
+	}
+	items, err := s.Store.ListSessionDecisions(sessionID, parseDecisionFilter(r))
+	if err != nil {
+		http.Error(w, "failed to list decisions", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+}
+
+func (s *Server) handleRecomputeDecision(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+	engine, _, err := s.getEngine(sessionID, orgID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	decisionID := r.PathValue("decision_id")
+	decision, err := s.Store.GetDecision(sessionID, decisionID)
+	if err != nil {
+		http.Error(w, "decision not found", http.StatusNotFound)
+		return
+	}
+	var body apimodels.RecomputeDecisionRequest
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if strings.TrimSpace(body.FactID) != "" {
+		decision.FactID = strings.TrimSpace(body.FactID)
+	}
+	deps, err := s.buildDecisionDependencies(engine, decision, body.DependencyFactIDs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	check := s.computeDecisionCheck(engine, decision, deps)
+	decision.LastCheckedAt = check.CheckedAt
+	decision.Status, decision.ExecutionStatus = decisionStatusFromCheck(check, decision.ExecutionStatus)
+	decision.ExplanationSummary = check.ExplanationSummary
+	decision.UpdatedAt = time.Now().UnixMilli()
+	if err := s.Store.SaveDecision(decision); err != nil {
+		http.Error(w, "failed to save decision", http.StatusInternalServerError)
+		return
+	}
+	if err := s.Store.SaveDecisionDependencies(sessionID, decision.ID, deps); err != nil {
+		http.Error(w, "failed to save dependencies", http.StatusInternalServerError)
+		return
+	}
+	if err := s.Store.SaveDecisionCheck(sessionID, decision.ID, check); err != nil {
+		http.Error(w, "failed to save decision check", http.StatusInternalServerError)
+		return
+	}
+	s.persistDecisionReadModels(decision, deps)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"decision": decision, "check": check})
+}
+
+func (s *Server) handleExecuteDecisionCheck(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+	engine, _, err := s.getEngine(sessionID, orgID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	decisionID := r.PathValue("decision_id")
+	decision, err := s.Store.GetDecision(sessionID, decisionID)
+	if err != nil {
+		http.Error(w, "decision not found", http.StatusNotFound)
+		return
+	}
+	deps, err := s.Store.GetDecisionDependencies(sessionID, decisionID)
+	if err != nil {
+		http.Error(w, "failed to read dependencies", http.StatusInternalServerError)
+		return
+	}
+	check := s.computeDecisionCheck(engine, decision, deps)
+	decision.LastCheckedAt = check.CheckedAt
+	decision.Status, decision.ExecutionStatus = decisionStatusFromCheck(check, decision.ExecutionStatus)
+	decision.ExplanationSummary = check.ExplanationSummary
+	decision.UpdatedAt = time.Now().UnixMilli()
+	_ = s.Store.SaveDecision(decision)
+	_ = s.Store.SaveDecisionCheck(sessionID, decisionID, check)
+	s.persistDecisionReadModels(decision, deps)
+	writeJSON(w, http.StatusOK, check)
+}
+
+func (s *Server) handleExecuteDecision(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+	engine, _, err := s.getEngine(sessionID, orgID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	decisionID := r.PathValue("decision_id")
+	decision, err := s.Store.GetDecision(sessionID, decisionID)
+	if err != nil {
+		http.Error(w, "decision not found", http.StatusNotFound)
+		return
+	}
+	deps, err := s.Store.GetDecisionDependencies(sessionID, decisionID)
+	if err != nil {
+		http.Error(w, "failed to read dependencies", http.StatusInternalServerError)
+		return
+	}
+	check := s.computeDecisionCheck(engine, decision, deps)
+	_ = s.Store.SaveDecisionCheck(sessionID, decisionID, check)
+	now := time.Now().UnixMilli()
+	if !check.Executable {
+		decision.Status = "blocked"
+		decision.ExecutionStatus = "blocked"
+		decision.LastCheckedAt = check.CheckedAt
+		decision.ExplanationSummary = check.ExplanationSummary
+		decision.UpdatedAt = now
+		_ = s.Store.SaveDecision(decision)
+		s.persistDecisionReadModels(decision, deps)
+		_ = s.Store.AppendOrgActivity(orgID, store.JournalEntry{
+			Type:      store.EventDecisionRecord,
+			SessionID: sessionID,
+			ActorID:   getActorID(r),
+			Payload: map[string]interface{}{
+				"action":       "decision_execute_blocked",
+				"decision_id":  decision.ID,
+				"reason_codes": check.ReasonCodes,
+			},
+			Timestamp: now,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(check)
+		return
+	}
+	decision.Status = "executed"
+	decision.ExecutionStatus = "executed"
+	decision.LastCheckedAt = check.CheckedAt
+	decision.ExecutedAt = now
+	decision.ExecutedBy = getActorID(r)
+	decision.UpdatedAt = now
+	decision.ExplanationSummary = check.ExplanationSummary
+	if err := s.Store.SaveDecision(decision); err != nil {
+		http.Error(w, "failed to save decision", http.StatusInternalServerError)
+		return
+	}
+	s.persistDecisionReadModels(decision, deps)
+	_ = s.Store.AppendOrgActivity(orgID, store.JournalEntry{
+		Type:      store.EventDecisionRecord,
+		SessionID: sessionID,
+		ActorID:   getActorID(r),
+		Payload: map[string]interface{}{
+			"action":      "decision_executed",
+			"decision_id": decision.ID,
+			"checked_at":  check.CheckedAt,
+			"dependencies": check.DependencySnapshots,
+		},
+		Timestamp: now,
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"decision": decision, "check": check})
+}
+
+func (s *Server) handleDecisionLineage(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+	storedOrg, err := s.Store.GetSessionOrganization(sessionID)
+	if err != nil || storedOrg != orgID {
+		http.Error(w, "unauthorized", http.StatusForbidden)
+		return
+	}
+	decisionID := r.PathValue("decision_id")
+	decision, err := s.Store.GetDecision(sessionID, decisionID)
+	if err != nil {
+		http.Error(w, "decision not found", http.StatusNotFound)
+		return
+	}
+	deps, _ := s.Store.GetDecisionDependencies(sessionID, decisionID)
+	check, _ := s.Store.GetLatestDecisionCheck(sessionID, decisionID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"decision":      decision,
+		"dependencies":  deps,
+		"latest_check":  check,
+		"decision_fact": decision.FactID,
+	})
+}
+
+func (s *Server) handleDecisionWhyBlocked(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	orgID := getOrgID(r)
+	engine, _, err := s.getEngine(sessionID, orgID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	decisionID := r.PathValue("decision_id")
+	decision, err := s.Store.GetDecision(sessionID, decisionID)
+	if err != nil {
+		http.Error(w, "decision not found", http.StatusNotFound)
+		return
+	}
+	deps, _ := s.Store.GetDecisionDependencies(sessionID, decisionID)
+	check, _ := s.Store.GetLatestDecisionCheck(sessionID, decisionID)
+	if check == nil {
+		check = s.computeDecisionCheck(engine, decision, deps)
+		_ = s.Store.SaveDecisionCheck(sessionID, decisionID, check)
+	}
+	var explanation interface{}
+	if decision.FactID != "" {
+		if out, err := engine.ExplainReasoning(decision.FactID, ""); err == nil {
+			explanation = out
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"decision":     decision,
+		"check":        check,
+		"blocked_by":   check.BlockedBy,
+		"reason_codes": check.ReasonCodes,
+		"explanation":  explanation,
+	})
+}
+
+func (s *Server) handleListOrgDecisions(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	items, err := s.Store.ListOrgDecisions(orgID, parseDecisionFilter(r))
+	if err != nil {
+		http.Error(w, "failed to list decisions", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+}
+
+func (s *Server) handleListBlockedOrgDecisions(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	filter := parseDecisionFilter(r)
+	filter.Status = "blocked"
+	items, err := s.Store.ListOrgDecisions(orgID, filter)
+	if err != nil {
+		http.Error(w, "failed to list decisions", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+}

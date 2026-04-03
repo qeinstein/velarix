@@ -1,44 +1,36 @@
-# Velarix Documentation
+# Documentation
 
-Welcome to the Velarix documentation. Velarix is a production-hardened belief-tracking engine designed for AI agents operating in regulated, high-stakes environments. It replaces logically flat memory with a **Stateful Logical Graph** that enforces reasoning integrity.
+Velarix is a decision-integrity service for AI-assisted internal approvals. It records facts, tracks causal dependencies, and invalidates stale reasoning before downstream actions are taken.
 
-## 📚 Table of Contents
+## What The Repo Ships Today
 
-- [**Architecture**](ARCHITECTURE.md): Deep dive into the Epistemic Kernel, Dominator Trees, and Causal Logic.
-- [**API Reference**](API_REFERENCE.md): Detailed documentation for the Velarix REST API (v1).
-- [**Security & Compliance**](SECURITY.md): Authentication, Tenant Isolation, Encryption, and SOC2/HIPAA audit trails.
-- [**Integration Guide**](INTEGRATION_GUIDE.md): Using Velarix with Python/TypeScript SDKs and LLM frameworks like LangChain and LlamaIndex.
-- [**Operations & Maintenance**](OPERATIONS.md): Monitoring, backups, rate limiting, and persistence.
-- [**Error Codes & Troubleshooting**](ERRORS.md): Common error scenarios and how to resolve them.
+- Go API for session facts, invalidation, explanations, history, and exports
+- Python and TypeScript SDKs
+- local Badger-backed persistence for development and tests
+- one maintained demo: `demo/approval_integrity.py`
 
-## 🚀 Quick Start
+## What It Does Not Claim Today
 
-To get Velarix running locally:
+- no shipped console application in this repository,
+- no audited compliance certification,
+- no production shared-store backend,
+- no real billing, support, or policy-enforcement workflow.
 
-1. **Start the Kernel**:
-   ```bash
-   export VELARIX_ENCRYPTION_KEY="your-32-byte-secure-key-here"
-   go run main.go
-   ```
+## Key References
 
-2. **Access the API**:
-   The API is available at `http://localhost:8080/v1`.
+- [Architecture](ARCHITECTURE.md)
+- [Security Notes](SECURITY.md)
+- [Integration Guide](INTEGRATION_GUIDE.md)
+- [Operations](OPERATIONS.md)
+- [Errors](ERRORS.md)
+- OpenAPI document: [`swagger.yaml`](swagger.yaml)
 
-3. **Explore with Swagger**:
-   View the OpenAPI specification at `http://localhost:8080/docs/openapi.yaml`.
+## Quick Start
 
-## 🛠 SDKs
-
-- [**Python SDK**](../sdks/python/README.md)
-- [**TypeScript SDK**](../sdks/typescript/README.md)
-
-## 🌐 Control Plane
-
-The Velarix Console provides a visual interface for managing sessions and visualizing causal graphs.
 ```bash
-cd console
-npm install && npm run dev
+export VELARIX_ENV=dev
+export VELARIX_API_KEY=dev-admin-key
+go run main.go
 ```
 
----
-*Velarix: Building the trust layer for autonomous healthcare.*
+The API will be available at `http://localhost:8080`.
