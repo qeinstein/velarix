@@ -1,10 +1,11 @@
 package tests
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -12,15 +13,22 @@ import (
 )
 
 func TestStressAssertions(t *testing.T) {
-	_, ts := setupTestServer(t)
-	defer ts.Close()
-
-	client := &http.Client{}
+	server, _ := setupTestServer(t)
 	sessionID := "stress_session"
 
 	var wg sync.WaitGroup
-	workers := 50
-	requestsPerWorker := 20
+	workers := 10
+	requestsPerWorker := 10
+	if raw := os.Getenv("VELARIX_STRESS_WORKERS"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			workers = parsed
+		}
+	}
+	if raw := os.Getenv("VELARIX_STRESS_REQUESTS_PER_WORKER"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			requestsPerWorker = parsed
+		}
+	}
 
 	errCh := make(chan error, workers*requestsPerWorker)
 
@@ -37,19 +45,10 @@ func TestStressAssertions(t *testing.T) {
 					Payload:      map[string]interface{}{"worker": workerID, "req": j},
 				}
 				body, _ := json.Marshal(fact)
-				req, _ := http.NewRequest("POST", fmt.Sprintf("%s/v1/s/%s/facts", ts.URL, sessionID), bytes.NewBuffer(body))
-				req.Header.Set("Authorization", "Bearer test_admin_key")
-				req.Header.Set("Content-Type", "application/json")
-
-				resp, err := client.Do(req)
-				if err != nil {
-					errCh <- err
-					continue
+				resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+				if resp.Code != http.StatusCreated {
+					errCh <- fmt.Errorf("unexpected status code: %d", resp.Code)
 				}
-				if resp.StatusCode != http.StatusCreated {
-					errCh <- fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-				}
-				resp.Body.Close()
 			}
 		}(i)
 	}

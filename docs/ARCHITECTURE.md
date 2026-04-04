@@ -1,75 +1,60 @@
-# Velarix Architecture
+# Architecture
 
-Velarix is a stateful logical engine that provides a **deterministic conscience** for AI agents. It bridges the gap between probabilistic LLM outputs and the strict reasoning requirements of regulated industries.
+Velarix is built around one core capability:
 
-## 🏛️ System Overview
+- prevent stale approval decisions from reaching execution after upstream facts change
 
-Velarix is built around a versioned API and a hardened Go kernel. It treats agent memory as a directed acyclic graph (DAG) of **Facts** and **Justifications**.
+## Current Runtime Shape
 
-### The 7 Layers of Velarix
+The codebase currently runs as:
 
-1.  **Epistemic Kernel (Go)**:
-    -   Handles belief propagation and causal invalidation.
-    -   Implements cycle detection and dominator tree analysis.
-    -   $O(1)$ invalidation cascades for large-scale sessions.
+- a Go HTTP API
+- per-session in-memory reasoning engines
+- local Badger-backed persistence for development and tests
+- a shared-store path using Postgres with optional Redis coordination
+- SDK clients that talk to the public `/v1` API
 
-2.  **Durable Persistence (BadgerDB v4)**:
-    -   **AES-256 Encryption**: Mandatory in production for data at rest.
-    -   **Hybrid Boot**: Optimized startup using binary snapshots and journal replays.
-    -   **Synchronous IO**: Guarantees data survival across system crashes.
+## Current Logical Model
 
-3.  **The Interceptor Layer**:
-    -   Adapters for LLM frameworks (OpenAI, LangGraph, LlamaIndex).
-    -   Automated fact extraction and provenance tracking.
+- a fact is either asserted directly or derived from other facts
+- derived facts use OR-of-AND justification sets
+- decisions depend on facts and persist dependency snapshots
+- invalidating a root fact collapses downstream reasoning that no longer has valid support
+- `execute-check` and `execute` determine whether an action is still safe to run
 
-4.  **Security Infrastructure**:
-    -   **Tenant Isolation**: Strict `OrgID` partitioning on every endpoint.
-    -   **Actor Tracking**: Attribution of every state change to a verified actor.
-    -   **Admin Audit Trail**: Journaled history of administrative actions.
+## Approval Guardrail Flow
 
-5.  **Observability Suite**:
-    -   **Neural Graph Visualization**: Real-time rendering of belief dependencies.
-    -   **Time-Travel Replay**: Debugging complex state transitions via journal replay.
-    -   **Impact Analysis**: Quantifying the "blast radius" of retracted premises.
+1. approval facts are recorded into a session
+2. a derived fact represents the recommendation
+3. a first-class decision is created from that derived fact
+4. dependencies are checked right before execution
+5. execution is blocked if any required dependency has gone stale
+6. explanation endpoints expose the exact blocking reason
 
-6.  **Integration Ecosystem**:
-    -   Native SDKs (Python, TypeScript).
-    -   Framework-specific retrievers and checkpointers.
+## Current Architectural Risk
 
-7.  **Operations & Compliance**:
-    -   **Versioned API**: `/v1` base for contract stability.
-    -   **Structured JSON Logging**: Integration with enterprise log aggregators.
-    -   **Compliance Exports**: SOC2/HIPAA-ready audit reports (PDF/CSV).
+The main risk still in the repo is over-reliance on:
 
-## 🧠 Epistemic Kernel
+- process-local engine ownership
+- local Badger assumptions
+- replay-heavy rebuild behavior
 
-The core of Velarix is the **Epistemic Kernel**, which manages the lifecycle of **Facts**.
+That is acceptable for local development.
 
-### Facts & Justifications
+It is not the final production architecture.
 
-- **Fact**: A single piece of information or belief.
-  - **Root Fact**: A manually asserted premise (e.g., "Patient signed HIPAA consent").
-  - **Derived Fact**: A fact that depends on other facts (e.g., "PHI processing allowed").
-- **Justification**: A set of parent facts that support a derived fact.
-  - Velarix uses **OR-of-AND** logic: A fact is valid if at least one of its justification sets is fully valid.
+## Target Runtime Shape
 
-### Causal Invalidation (Dominator Trees)
+The target architecture for the product is:
 
-Velarix uses **Dominator Tree** theory to optimize state invalidation. If a root fact is invalidated, Velarix identifies all downstream facts that *exclusively* depend on that root and retracts them instantly.
+- Postgres as the system of record
+- Redis for idempotency, rate limiting, and coordination
+- rebuildable in-memory engine caches only
+- object storage for large artifacts and snapshots
 
-This ensures that agents never act on stale or retracted data, maintaining **State Integrity** at all times.
+## Design Rule
 
-## 💾 Persistence & Durability
+Badger is a local adapter.
 
-Velarix uses **BadgerDB v4**, an LSM-tree based key-value store, for high-performance writes and reliable persistence.
+The product should not be designed around one node remaining warm or authoritative.
 
-### Hybrid Boot Strategy
-
-To ensure sub-second startup times for large sessions, Velarix employs a hybrid boot strategy:
-1.  **Snapshot**: Periodically, Velarix saves the entire state of a session as a binary snapshot.
-2.  **Journal Replay**: On startup, the latest snapshot is loaded, and then any journal entries (assertions/invalidations) that occurred *after* the snapshot are replayed.
-
-This combination provides both fast recovery and 100% data accuracy.
-
----
-*Velarix: Deterministic logic for the age of autonomous agents.*

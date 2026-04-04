@@ -1,95 +1,101 @@
-# Velarix Operations & Maintenance
+# Operations
 
-This guide covers the day-to-day operations, monitoring, and maintenance of a Velarix cluster.
+This guide covers the current operational reality of Velarix as an approval-guardrail service.
 
-## 📊 Monitoring & Observability
+## Current Deployment Modes
 
-Velarix exports high-resolution metrics for monitoring via a Prometheus-compatible `/metrics` endpoint.
+### Local Development
 
-### Key Metrics to Monitor
+Use Badger for:
 
-- `velarix_api_requests_total`: Total count of API requests by path and status code.
-- `velarix_active_sessions`: Number of sessions currently loaded in RAM.
-- `velarix_fact_assertion_latency_ms`: Histogram of fact assertion latency.
-- `velarix_prune_latency_ms`: Histogram of invalidation/pruning latency.
-- `velarix_slo_success_rate`: Tracking success vs failure for SLO monitoring (target 99.9%).
+- local work
+- tests
+- demo runs
 
-### System Health
+### Production Direction
 
-Velarix provides two health check endpoints:
-- `GET /health`: Basic connectivity and uptime check.
-- `GET /health/full`: Detailed system status, including disk usage and memory allocation (requires admin role).
+Use Postgres plus Redis for:
 
-## 💾 Backups & Recovery
+- shared state
+- multi-instance safety
+- distributed idempotency
+- distributed rate limiting
 
-Velarix uses **BadgerDB v4** as its underlying storage engine. We recommend a multi-tier backup strategy.
+## Health Endpoints
 
-### Automated Backups
+- `GET /health`: basic connectivity and uptime
+- `GET /health/full`: detailed health information for admins
 
-Velarix includes an automated daily backup ticker that saves a binary backup to `velarix_backup_<timestamp>.bak`. This can be customized in the server configuration.
+## Key Metrics
 
-### Manual Backups
+Watch these first:
 
-For manual or ad-hoc backups, use the admin API:
-```bash
-# Export a full backup of the system state
-curl -X GET http://localhost:8080/v1/org/backup -H "Authorization: Bearer <admin_key>" --output backup.bak
-```
+- API request counts and status codes
+- active sessions in memory
+- fact assertion latency
+- invalidation latency
+- write backpressure events
+- execute-check and blocked execute volume
 
-### Restoration
+## Backpressure
 
-To restore a system from a backup:
-```bash
-curl -X POST http://localhost:8080/v1/org/restore -H "Authorization: Bearer <admin_key>" --data-binary @backup.bak
-```
-**Note**: Restoration is a destructive operation and will overwrite any current data in the database.
+Velarix uses per-org write backpressure to protect latency under bursty write load.
 
-## ⚖️ Rate Limiting
+When saturated, write routes return:
 
-Velarix implements a persistent rate-limiting system to ensure stability and prevent abuse.
-- **Default Limit**: 60 requests per minute (RPM) per API key.
-- **Persistence**: Quotas are stored in BadgerDB and persist across server restarts.
+- `503 Service Unavailable`
+- `Retry-After: 1`
+- `X-Velarix-Backpressure: 1`
 
-When a limit is exceeded, the API will return a `429 Too Many Requests` status code.
+Use idempotency keys for safe retries.
 
-## 🧱 Backpressure (Write Concurrency)
+## Rate Limiting
 
-Velarix applies per-organization write backpressure to protect latency under bursty agent traffic.
+Current behavior:
 
-- When the write limiter is saturated, write requests return `503 Service Unavailable` with `Retry-After: 1` and `X-Velarix-Backpressure: 1`.
-- SDKs and the console use idempotency keys + retries to safely re-attempt writes.
+- local and shared-store code paths exist
+- the long-term production path should be Redis-backed
 
-### Tuning
+Do not treat local-store rate limiting as the final production design.
 
-- `VELARIX_MAX_CONCURRENT_WRITES`: Overrides the per-org concurrent write limit.
-- `VELARIX_ENV=prod`: Uses a more conservative default (set explicitly; do not rely on defaults).
+## Backups And Restore
 
-## 🌐 CORS and Console Origins
+Badger local backup and restore exist for the local adapter path.
 
-For production, set:
+That is not the final production recovery story.
 
-- `VELARIX_ALLOWED_ORIGINS`: Comma-separated list of allowed `Origin` values (your console domain(s)).
+For the shared-store product direction, the recovery story should center on:
 
-## 🔐 Auth Configuration (Production)
+- Postgres backups
+- Redis operational recovery
+- artifact storage strategy for snapshots and exports
 
-- `VELARIX_JWT_SECRET`: Required when `VELARIX_ENV != dev` (JWT signing secret for console auth).
-- `VELARIX_ENCRYPTION_KEY`: Required when `VELARIX_ENV != dev` (Badger encryption key).
+## Retention
 
-## 🗄️ Retention Settings
+Retention settings should be treated as operational policy, not only read filtering.
 
-Retention is configured per org via `PATCH /v1/org/settings`:
+The product should enforce:
 
-- `retention_days_activity` (default `30`)
-- `retention_days_access_logs` (default `30`)
-- `retention_days_notifications` (default `30`)
+- activity retention
+- access-log retention
+- notification retention
 
-## 🧹 Session Eviction
+## Environment Guidance
 
-To manage memory usage, Velarix employs an automated **Eviction Sweep** every 5 minutes:
-- **Base Eviction**: Any session that hasn't been accessed in 30 minutes is evicted from RAM.
-- **Aggressive Eviction**: If heap memory allocation exceeds 1GB, the oldest sessions (LRU) are evicted until memory usage stabilizes.
+For production-like work, set:
 
-Evicted sessions are still stored on disk and will be automatically reloaded on the next access via the **Hybrid Boot** strategy.
+- `VELARIX_ENV=prod`
+- `VELARIX_JWT_SECRET`
+- `VELARIX_ALLOWED_ORIGINS`
+- `VELARIX_STORE_BACKEND=postgres`
+- `VELARIX_POSTGRES_DSN`
+- `VELARIX_REDIS_URL`
 
----
-*Velarix: Engineered for production reliability.*
+If using Badger outside development, also set:
+
+- `VELARIX_ENCRYPTION_KEY`
+
+## Operational Rule
+
+Do not market this repo as a finished enterprise control plane until the shared-store path is the default production reality.
+

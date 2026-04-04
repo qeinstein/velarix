@@ -210,6 +210,141 @@ class VelarixSession:
         resp.raise_for_status()
         return resp.json()
 
+    def create_decision(
+        self,
+        decision_type: str,
+        *,
+        subject_ref: str = "",
+        target_ref: str = "",
+        fact_id: Optional[str] = None,
+        decision_id: Optional[str] = None,
+        recommended_action: Optional[str] = None,
+        policy_version: Optional[str] = None,
+        explanation_summary: Optional[str] = None,
+        dependency_fact_ids: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not decision_type:
+            raise ValueError("decision_type is required")
+        body: Dict[str, Any] = {
+            "decision_type": decision_type,
+            "subject_ref": subject_ref,
+            "target_ref": target_ref,
+        }
+        if fact_id:
+            body["fact_id"] = fact_id
+        if decision_id:
+            body["decision_id"] = decision_id
+        if recommended_action:
+            body["recommended_action"] = recommended_action
+        if policy_version:
+            body["policy_version"] = policy_version
+        if explanation_summary:
+            body["explanation_summary"] = explanation_summary
+        if dependency_fact_ids:
+            body["dependency_fact_ids"] = dependency_fact_ids
+        if metadata:
+            body["metadata"] = metadata
+        resp = self.client._request("POST", f"{self.base_url}/decisions", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_decisions(
+        self,
+        *,
+        status: Optional[str] = None,
+        subject_ref: Optional[str] = None,
+        from_ms: Optional[int] = None,
+        to_ms: Optional[int] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if subject_ref:
+            params["subject"] = subject_ref
+        if from_ms is not None:
+            params["from"] = from_ms
+        if to_ms is not None:
+            params["to"] = to_ms
+        resp = self.client._request("GET", f"{self.base_url}/decisions", params=params, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json().get("items", [])
+
+    def get_decision(self, decision_id: str) -> Dict[str, Any]:
+        resp = self.client._request("GET", f"{self.base_url}/decisions/{decision_id}", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    def recompute_decision(
+        self,
+        decision_id: str,
+        *,
+        fact_id: Optional[str] = None,
+        dependency_fact_ids: Optional[List[str]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        if fact_id:
+            body["fact_id"] = fact_id
+        if dependency_fact_ids:
+            body["dependency_fact_ids"] = dependency_fact_ids
+        resp = self.client._request(
+            "POST",
+            f"{self.base_url}/decisions/{decision_id}/recompute",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def execute_check(self, decision_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        resp = self.client._request(
+            "POST",
+            f"{self.base_url}/decisions/{decision_id}/execute-check",
+            headers=self._idem_headers(idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def execute_decision(
+        self,
+        decision_id: str,
+        *,
+        execution_ref: Optional[str] = None,
+        execution_token: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        token = execution_token
+        if not token:
+            check = self.execute_check(decision_id, idempotency_key=idempotency_key)
+            token = check.get("execution_token")
+            if not token:
+                raise ValueError("execute_check did not return an execution_token; decision is likely blocked")
+        body: Dict[str, Any] = {}
+        if execution_ref:
+            body["execution_ref"] = execution_ref
+        body["execution_token"] = token
+        resp = self.client._request(
+            "POST",
+            f"{self.base_url}/decisions/{decision_id}/execute",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_decision_lineage(self, decision_id: str) -> Dict[str, Any]:
+        resp = self.client._request("GET", f"{self.base_url}/decisions/{decision_id}/lineage", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_decision_why_blocked(self, decision_id: str) -> Dict[str, Any]:
+        resp = self.client._request("GET", f"{self.base_url}/decisions/{decision_id}/why-blocked", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
     def record_decision(self, kind: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         if not kind:
             raise ValueError("kind is required")
@@ -299,6 +434,28 @@ class VelarixClient:
         resp = self._request("GET", f"{self.base_url}/v1/org/usage", headers=self.headers)
         resp.raise_for_status()
         return resp.json()
+
+    def list_org_decisions(
+        self,
+        *,
+        status: Optional[str] = None,
+        subject_ref: Optional[str] = None,
+        from_ms: Optional[int] = None,
+        to_ms: Optional[int] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if subject_ref:
+            params["subject"] = subject_ref
+        if from_ms is not None:
+            params["from"] = from_ms
+        if to_ms is not None:
+            params["to"] = to_ms
+        resp = self._request("GET", f"{self.base_url}/v1/org/decisions", params=params, headers=self.headers)
+        resp.raise_for_status()
+        return resp.json().get("items", [])
 
 class AsyncVelarixSession:
     """An asynchronous context-bound session for interacting with Velarix."""
@@ -424,6 +581,141 @@ class AsyncVelarixSession:
         resp.raise_for_status()
         return resp.json()
 
+    async def create_decision(
+        self,
+        decision_type: str,
+        *,
+        subject_ref: str = "",
+        target_ref: str = "",
+        fact_id: Optional[str] = None,
+        decision_id: Optional[str] = None,
+        recommended_action: Optional[str] = None,
+        policy_version: Optional[str] = None,
+        explanation_summary: Optional[str] = None,
+        dependency_fact_ids: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not decision_type:
+            raise ValueError("decision_type is required")
+        body: Dict[str, Any] = {
+            "decision_type": decision_type,
+            "subject_ref": subject_ref,
+            "target_ref": target_ref,
+        }
+        if fact_id:
+            body["fact_id"] = fact_id
+        if decision_id:
+            body["decision_id"] = decision_id
+        if recommended_action:
+            body["recommended_action"] = recommended_action
+        if policy_version:
+            body["policy_version"] = policy_version
+        if explanation_summary:
+            body["explanation_summary"] = explanation_summary
+        if dependency_fact_ids:
+            body["dependency_fact_ids"] = dependency_fact_ids
+        if metadata:
+            body["metadata"] = metadata
+        resp = await self.client._request("POST", f"{self.base_url}/decisions", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def list_decisions(
+        self,
+        *,
+        status: Optional[str] = None,
+        subject_ref: Optional[str] = None,
+        from_ms: Optional[int] = None,
+        to_ms: Optional[int] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if subject_ref:
+            params["subject"] = subject_ref
+        if from_ms is not None:
+            params["from"] = from_ms
+        if to_ms is not None:
+            params["to"] = to_ms
+        resp = await self.client._request("GET", f"{self.base_url}/decisions", params=params, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json().get("items", [])
+
+    async def get_decision(self, decision_id: str) -> Dict[str, Any]:
+        resp = await self.client._request("GET", f"{self.base_url}/decisions/{decision_id}", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def recompute_decision(
+        self,
+        decision_id: str,
+        *,
+        fact_id: Optional[str] = None,
+        dependency_fact_ids: Optional[List[str]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        if fact_id:
+            body["fact_id"] = fact_id
+        if dependency_fact_ids:
+            body["dependency_fact_ids"] = dependency_fact_ids
+        resp = await self.client._request(
+            "POST",
+            f"{self.base_url}/decisions/{decision_id}/recompute",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def execute_check(self, decision_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        resp = await self.client._request(
+            "POST",
+            f"{self.base_url}/decisions/{decision_id}/execute-check",
+            headers=self._idem_headers(idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def execute_decision(
+        self,
+        decision_id: str,
+        *,
+        execution_ref: Optional[str] = None,
+        execution_token: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        token = execution_token
+        if not token:
+            check = await self.execute_check(decision_id, idempotency_key=idempotency_key)
+            token = check.get("execution_token")
+            if not token:
+                raise ValueError("execute_check did not return an execution_token; decision is likely blocked")
+        body: Dict[str, Any] = {}
+        if execution_ref:
+            body["execution_ref"] = execution_ref
+        body["execution_token"] = token
+        resp = await self.client._request(
+            "POST",
+            f"{self.base_url}/decisions/{decision_id}/execute",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_decision_lineage(self, decision_id: str) -> Dict[str, Any]:
+        resp = await self.client._request("GET", f"{self.base_url}/decisions/{decision_id}/lineage", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_decision_why_blocked(self, decision_id: str) -> Dict[str, Any]:
+        resp = await self.client._request("GET", f"{self.base_url}/decisions/{decision_id}/why-blocked", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
     async def record_decision(self, kind: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         if not kind:
             raise ValueError("kind is required")
@@ -508,3 +800,25 @@ class AsyncVelarixClient:
         resp = await self._request("GET", f"{self.base_url}/v1/org/usage", headers=self.headers)
         resp.raise_for_status()
         return resp.json()
+
+    async def list_org_decisions(
+        self,
+        *,
+        status: Optional[str] = None,
+        subject_ref: Optional[str] = None,
+        from_ms: Optional[int] = None,
+        to_ms: Optional[int] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if subject_ref:
+            params["subject"] = subject_ref
+        if from_ms is not None:
+            params["from"] = from_ms
+        if to_ms is not None:
+            params["to"] = to_ms
+        resp = await self._request("GET", f"{self.base_url}/v1/org/decisions", params=params, headers=self.headers)
+        resp.raise_for_status()
+        return resp.json().get("items", [])

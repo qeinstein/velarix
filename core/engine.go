@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 )
@@ -562,4 +563,47 @@ func (e *Engine) ListFacts() []*Fact {
 		results = append(results, f)
 	}
 	return results
+}
+
+// DependencyIDs returns the transitive fact dependency set for the given fact.
+func (e *Engine) DependencyIDs(factID string, includeSelf bool) ([]string, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if _, ok := e.Facts[factID]; !ok {
+		return nil, errors.New("fact not found")
+	}
+
+	seen := map[string]struct{}{}
+	var walk func(string)
+	walk = func(id string) {
+		fact, ok := e.Facts[id]
+		if !ok {
+			return
+		}
+		if !includeSelf && id == factID {
+			// keep walking parents without adding the target fact itself
+		} else {
+			if _, exists := seen[id]; exists {
+				return
+			}
+			seen[id] = struct{}{}
+		}
+		for _, set := range fact.JustificationSets {
+			for _, parentID := range set {
+				walk(parentID)
+			}
+		}
+	}
+	walk(factID)
+
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		if !includeSelf && id == factID {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
 }
