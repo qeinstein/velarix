@@ -274,7 +274,7 @@ info:
     email: support@velarix.dev
     name: API Support
     url: http://velarix.dev/support
-  description: Epistemic middleware for regulated AI agents. Velarix sits between applications and agents, tracking beliefs and causal dependencies, enforcing what an agent is allowed to believe and act on, and producing deterministic decision records and audit exports.
+  description: Decision integrity API for AI-assisted internal approvals. Velarix records facts, tracks causal dependencies, and invalidates stale reasoning before downstream actions are taken.
   license:
     name: Apache 2.0
     url: http://www.apache.org/licenses/LICENSE-2.0.html

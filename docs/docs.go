@@ -438,7 +438,7 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "Generate a SOC2-ready CSV or PDF export of the session history with SHA-256 integrity hash.",
+                "description": "Generate a CSV or PDF export of the session history with a SHA-256 verification hash.",
                 "tags": [
                     "History"
                 ],

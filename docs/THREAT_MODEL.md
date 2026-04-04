@@ -1,52 +1,103 @@
-# Velarix Threat Model (Pilot-Ready)
+# Threat Model
 
-This document is a practical threat model for running Velarix as epistemic middleware for regulated AI agents.
+This threat model is written for Velarix as an approval-guardrail service for AI-assisted internal operations.
 
-## Assets
+## Protected Assets
 
-- Session journals (belief assertions, invalidations, decision records)
-- Exported audit packs (CSV/PDF + integrity metadata)
-- API keys (service auth) and JWTs (console auth)
-- Organization metadata (settings, billing, integrations, team)
-- Access logs / activity feeds (sensitive metadata)
+- approval facts and their dependency graph
+- decision records and dependency snapshots
+- execute-check and execute outcomes
+- audit trail and access logs
+- API keys and JWTs
+- organization-scoped operational metadata
 
-## Trust boundaries
+## Trust Boundaries
 
-- Public network → reverse proxy / TLS terminator → Velarix API
-- Console (browser) → Velarix API (JWT)
-- SDK / agents → Velarix API (API keys)
-- Velarix API → BadgerDB (encrypted at rest)
+- public network to reverse proxy to Velarix API
+- internal operator or service to Velarix API
+- Velarix API to Postgres, Redis, or local Badger
+- Velarix API to any downstream execution owner
 
-## Primary threats and mitigations
+## Primary Threats
 
-### 1) Unauthorized cross-tenant reads/writes
-- Mitigation: strict `OrgID` checks on every org/session handler; session→org binding persisted in storage.
+### 1. Cross-Tenant Access
 
-### 2) Stolen API keys
-- Mitigation: API keys are shown once and not stored in plaintext; keys are scoped (`read|write|export|admin`), rate-limited, revocable, and rotatable.
-- Operational: restrict key distribution; prefer per-environment keys; rotate on schedule and after incidents.
+Risk:
 
-### 3) Stolen JWTs / session hijack
-- Mitigation: production requires `VELARIX_JWT_SECRET`; JWTs expire; console endpoints are scope-checked.
-- Operational: serve console over HTTPS; consider short-lived tokens + refresh flow for enterprise.
+- one org reads or writes another org's sessions or decisions
 
-### 4) Tampering with decision records / journal integrity
-- Mitigation: session journals maintain a tamper-evident hash chain head; exports include integrity metadata for verification.
+Mitigation:
 
-### 5) Data exfiltration via exports / logs
-- Mitigation: exports require `export` scope; access logs are restricted to auditor/admin; retention settings reduce exposure window.
-- Operational: implement least-privilege roles; monitor export/access-log reads.
+- strict org binding on session and org handlers
+- scoped auth on every route
 
-### 6) Denial of service (ingest bursts from agents)
-- Mitigation: per-org write backpressure returns `503` + `Retry-After`; idempotency prevents duplicate writes under retries.
-- Operational: front with a reverse proxy that enforces request size/timeouts; scale horizontally if needed.
+### 2. Stale Decision Execution
 
-## Hardening defaults (recommended)
+Risk:
 
-- Set `VELARIX_ENV=prod`
-- Set `VELARIX_ENCRYPTION_KEY` (16/24/32 bytes)
-- Set `VELARIX_JWT_SECRET`
-- Set `VELARIX_ALLOWED_ORIGINS` to your console origin(s)
-- Use scoped API keys; avoid `admin` scope in agents
-- Configure org retention via `PATCH /v1/org/settings`
+- an upstream fact changes but a previously generated approval still executes
+
+Mitigation:
+
+- dependency snapshots
+- fresh `execute-check`
+- blocked `execute` when dependencies are invalid
+
+### 3. Stolen Service Credentials
+
+Risk:
+
+- attacker replays writes or reads approval history
+
+Mitigation:
+
+- scoped API keys
+- revocation and rotation
+- rate limiting
+- org-aware auditing
+
+### 4. Tampering With Decision History
+
+Risk:
+
+- approval provenance becomes untrustworthy
+
+Mitigation:
+
+- append-only history
+- verification hashes
+- persisted decision and dependency records
+
+### 5. Denial Of Service From Bursty Writers
+
+Risk:
+
+- approval checks degrade under agent bursts
+
+Mitigation:
+
+- per-org write backpressure
+- idempotency keys
+- distributed coordination on the production path
+
+### 6. Data Exposure Through Broad Platform Surfaces
+
+Risk:
+
+- non-core routes expand the attack surface without strengthening the approval workflow
+
+Mitigation:
+
+- narrow the product narrative
+- reduce dependence on broad admin features
+- treat non-core surfaces as secondary
+
+## Hardening Defaults
+
+- set `VELARIX_ENV=prod`
+- set `VELARIX_JWT_SECRET`
+- set `VELARIX_ALLOWED_ORIGINS`
+- prefer Postgres plus Redis for production-like work
+- avoid broad admin credentials in agent traffic
+- require execute checks immediately before final action
 

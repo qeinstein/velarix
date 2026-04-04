@@ -4,12 +4,15 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 	"velarix/api"
 	"velarix/core"
 	"velarix/store"
+	storepostgres "velarix/store/postgres"
+	storeredis "velarix/store/redis"
 
 	"log/slog"
 )
@@ -32,9 +35,7 @@ func main() {
 		}()
 	}
 
-	slog.Info("Velarix | The Epistemic State Layer for AI Agents")
-
-	dbPath := "velarix.data"
+	slog.Info("Velarix | Decision Integrity For AI-Assisted Internal Approvals")
 
 	encryptionKey := []byte(os.Getenv("VELARIX_ENCRYPTION_KEY"))
 	env := os.Getenv("VELARIX_ENV")
@@ -54,32 +55,77 @@ func main() {
 		os.Exit(1)
 	}
 
-	badgerStore, err := store.OpenBadger(dbPath, encryptionKey)
-	if err != nil {
-		slog.Error("Failed to open BadgerDB", "error", err)
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("VELARIX_STORE_BACKEND")))
+	if backend == "" {
+		if strings.TrimSpace(os.Getenv("VELARIX_POSTGRES_DSN")) != "" {
+			backend = "postgres"
+		} else {
+			backend = "badger"
+		}
+	}
+
+	var runtimeStore store.RuntimeStore
+	switch backend {
+	case "postgres":
+		pgStore, err := storepostgres.Open(context.Background(), os.Getenv("VELARIX_POSTGRES_DSN"))
+		if err != nil {
+			slog.Error("Failed to open Postgres store", "error", err)
+			os.Exit(1)
+		}
+
+		redisAddr := strings.TrimSpace(os.Getenv("VELARIX_REDIS_URL"))
+		if redisAddr == "" {
+			redisAddr = strings.TrimSpace(os.Getenv("VELARIX_REDIS_ADDR"))
+		}
+		if redisAddr != "" {
+			redisStore, err := storeredis.Open(redisAddr)
+			if err != nil {
+				slog.Error("Failed to open Redis store", "error", err)
+				os.Exit(1)
+			}
+			runtimeStore = store.NewCompositeRuntimeStore(pgStore, redisStore, redisStore, redisStore, pgStore)
+			slog.Info("Using shared Postgres + Redis backend", "store_backend", backend)
+		} else {
+			runtimeStore = store.NewCompositeRuntimeStore(pgStore, nil, nil, pgStore)
+			slog.Warn("Using Postgres without Redis; idempotency and rate limiting fall back to Postgres tables")
+		}
+	case "badger":
+		dbPath := strings.TrimSpace(os.Getenv("VELARIX_BADGER_PATH"))
+		if dbPath == "" {
+			dbPath = "velarix.data"
+		}
+		localStore, err := store.OpenBadger(dbPath, encryptionKey)
+		if err != nil {
+			slog.Error("Failed to open BadgerDB", "error", err)
+			os.Exit(1)
+		}
+		runtimeStore = localStore
+		slog.Info("Using local Badger adapter for storage", "mode", "development/test")
+	default:
+		slog.Error("Unknown store backend", "backend", backend)
 		os.Exit(1)
 	}
-	defer badgerStore.Close()
+
+	defer runtimeStore.Close()
 
 	server := &api.Server{
 		Engines:    make(map[string]*core.Engine),
 		Configs:    make(map[string]*store.SessionConfig),
+		Versions:   make(map[string]int64),
 		LastAccess: make(map[string]time.Time),
 		SliceCache: make(map[string]*api.SliceCacheEntry),
-		Store:      badgerStore,
+		Store:      runtimeStore,
 		StartTime:  time.Now(),
 	}
 
-	configsRaw := make(map[string][]byte)
-	if err := badgerStore.ReplayAll(server.Engines, configsRaw); err != nil {
-		slog.Error("Failed to replay journal on startup", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("Global journal replay complete", "sessions_loaded", len(server.Engines))
+	slog.Info("Session engines will rebuild lazily from shared state", "store_backend", backend)
 
 	server.StartEvictionTicker()
-	server.StartBackupTicker()
-	server.Store.StartGC()
+	server.StartRetentionTicker()
+	if backend == "badger" {
+		server.StartBackupTicker()
+	}
+	runtimeStore.StartGC()
 
 	port := os.Getenv("PORT")
 	if port == "" {
