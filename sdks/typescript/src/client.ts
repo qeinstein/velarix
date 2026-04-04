@@ -234,12 +234,20 @@ export class VelarixSession {
 
   async executeDecision(
     decisionId: string,
-    options: { executionRef?: string; idempotencyKey?: string } = {}
+    options: { executionRef?: string; executionToken?: string; idempotencyKey?: string } = {}
   ): Promise<{ decision: Decision; check: DecisionCheck }> {
+    let executionToken = options.executionToken;
+    if (!executionToken) {
+      const check = await this.executeCheck(decisionId, options.idempotencyKey);
+      executionToken = check.execution_token;
+      if (!executionToken) {
+        throw new Error('execute-check did not return an execution token; decision is likely blocked');
+      }
+    }
     const res = await this.client.fetchWithRetry(`${this.baseUrl}/decisions/${decisionId}/execute`, {
       method: 'POST',
       headers: { ...this.getHeaders(), 'Content-Type': 'application/json', 'Idempotency-Key': this.idemKey(options.idempotencyKey) },
-      body: JSON.stringify({ execution_ref: options.executionRef })
+      body: JSON.stringify({ execution_ref: options.executionRef, execution_token: executionToken })
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();

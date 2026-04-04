@@ -214,12 +214,14 @@ func (s *Store) ListNotifications(orgID string, cursor string, limit int) ([]sto
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	offset := parseOffsetCursor(cursor)
 	rows, err := s.pool.Query(context.Background(), `
 		SELECT doc
 		FROM notifications
 		WHERE org_id = $1
 		ORDER BY created_at DESC, notification_id DESC
-	`, orgID)
+		LIMIT $2 OFFSET $3
+	`, orgID, limit+1, offset)
 	if err != nil {
 		return nil, "", err
 	}
@@ -240,15 +242,12 @@ func (s *Store) ListNotifications(orgID string, cursor string, limit int) ([]sto
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
-	offset := parseOffsetCursor(cursor)
-	if offset > len(items) {
-		offset = len(items)
+	next := ""
+	if len(items) > limit {
+		items = items[:limit]
+		next = fmt.Sprintf("o:%d", offset+limit)
 	}
-	end := offset + limit
-	if end > len(items) {
-		end = len(items)
-	}
-	return items[offset:end], nextOffsetCursor(offset, limit, len(items)), nil
+	return items, next, nil
 }
 
 func (s *Store) MarkNotificationRead(orgID string, notificationID string) error {
@@ -290,12 +289,14 @@ func (s *Store) ListOrgActivityPage(orgID string, cursor string, limit int) ([]s
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	offset := parseOffsetCursor(cursor)
 	rows, err := s.pool.Query(context.Background(), `
 		SELECT entry_json
 		FROM org_activity
 		WHERE org_id = $1
 		ORDER BY created_at DESC, id DESC
-	`, orgID)
+		LIMIT $2 OFFSET $3
+	`, orgID, limit+1, offset)
 	if err != nil {
 		return nil, "", err
 	}
@@ -316,15 +317,12 @@ func (s *Store) ListOrgActivityPage(orgID string, cursor string, limit int) ([]s
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
-	offset := parseOffsetCursor(cursor)
-	if offset > len(items) {
-		offset = len(items)
+	next := ""
+	if len(items) > limit {
+		items = items[:limit]
+		next = fmt.Sprintf("o:%d", offset+limit)
 	}
-	end := offset + limit
-	if end > len(items) {
-		end = len(items)
-	}
-	return items[offset:end], nextOffsetCursor(offset, limit, len(items)), nil
+	return items, next, nil
 }
 
 func (s *Store) AppendAccessLog(orgID string, e store.AccessLogEntry) error {
@@ -344,12 +342,14 @@ func (s *Store) ListAccessLogsPage(orgID string, cursor string, limit int) ([]st
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	offset := parseOffsetCursor(cursor)
 	rows, err := s.pool.Query(context.Background(), `
 		SELECT entry_json
 		FROM access_logs
 		WHERE org_id = $1
 		ORDER BY created_at DESC, id DESC
-	`, orgID)
+		LIMIT $2 OFFSET $3
+	`, orgID, limit+1, offset)
 	if err != nil {
 		return nil, "", err
 	}
@@ -370,15 +370,12 @@ func (s *Store) ListAccessLogsPage(orgID string, cursor string, limit int) ([]st
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
-	offset := parseOffsetCursor(cursor)
-	if offset > len(items) {
-		offset = len(items)
+	next := ""
+	if len(items) > limit {
+		items = items[:limit]
+		next = fmt.Sprintf("o:%d", offset+limit)
 	}
-	end := offset + limit
-	if end > len(items) {
-		end = len(items)
-	}
-	return items[offset:end], nextOffsetCursor(offset, limit, len(items)), nil
+	return items, next, nil
 }
 
 func (s *Store) GetUser(email string) (*store.User, error) {

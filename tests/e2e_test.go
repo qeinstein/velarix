@@ -342,3 +342,69 @@ func TestMultiInstanceDecisionRefresh(t *testing.T) {
 		t.Fatalf("expected second server to observe blocked decision after version refresh")
 	}
 }
+
+func TestDecisionExecutionRequiresFreshToken(t *testing.T) {
+	server, _ := setupTestServer(t)
+	sessionID := "decision_execute_token_session"
+
+	rootFact := map[string]interface{}{
+		"id":            "token_root",
+		"is_root":       true,
+		"manual_status": 1.0,
+	}
+	body, _ := json.Marshal(rootFact)
+	resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create root fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	derivedFact := map[string]interface{}{
+		"id":                 "token_ready_fact",
+		"justification_sets": [][]string{{"token_root"}},
+	}
+	body, _ = json.Marshal(derivedFact)
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create derived fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	createDecision := map[string]interface{}{
+		"decision_type":       "execute_with_token",
+		"fact_id":             "token_ready_fact",
+		"subject_ref":         "invoice-token",
+		"target_ref":          "vendor-token",
+		"dependency_fact_ids": []string{"token_root"},
+	}
+	body, _ = json.Marshal(createDecision)
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create decision: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var decision store.Decision
+	if err := json.NewDecoder(resp.Body).Decode(&decision); err != nil {
+		t.Fatalf("failed to decode decision: %v", err)
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute-check", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to check decision: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var check store.DecisionCheck
+	if err := json.NewDecoder(resp.Body).Decode(&check); err != nil {
+		t.Fatalf("failed to decode decision check: %v", err)
+	}
+	if !check.Executable || check.ExecutionToken == "" {
+		t.Fatalf("expected executable decision with execution token, got %+v", check)
+	}
+
+	body, _ = json.Marshal(map[string]interface{}{"execution_token": check.ExecutionToken})
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute", body)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected successful execution, got status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute", body)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected second execution to fail, got status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}

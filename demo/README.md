@@ -2,11 +2,14 @@
 
 `approval_integrity.py` is the canonical demo for this repository.
 
-It shows a simple internal approval workflow:
-- root facts establish the state used by an approval recommendation,
-- a derived fact represents the recommendation,
-- a history entry records the recommendation event,
-- invalidating one upstream fact collapses the recommendation before action.
+It demonstrates the product the repo should be judged on:
+
+- approval facts are recorded
+- a decision is created from those facts
+- an upstream fact changes
+- the decision becomes stale
+- execution is blocked
+- the API explains why
 
 ## Run The Demo
 
@@ -15,6 +18,7 @@ Start the API from the project root:
 ```bash
 export VELARIX_ENV=dev
 export VELARIX_API_KEY=dev-admin-key
+export VELARIX_BADGER_PATH="$(mktemp -d)"
 go run main.go
 ```
 
@@ -28,5 +32,7 @@ python demo/approval_integrity.py
 
 ## Notes
 
-- `agent_pivot.py` now forwards to the canonical approval-integrity demo for backwards compatibility.
-- Other integration examples in this folder are exploratory and are not the maintained demo path for the V1 wedge.
+- `approval_integrity.py` is the maintained demo path
+- other integration examples in this directory are exploratory
+- the repo should not be pitched around those exploratory examples
+

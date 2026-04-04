@@ -4,12 +4,21 @@ import requests
 import time
 import subprocess
 import asyncio
+import socket
 from pathlib import Path
 import tempfile
 from velarix.client import VelarixClient, AsyncVelarixClient
 
 @pytest.fixture(scope="module", autouse=True)
 def velarix_server():
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", 0))
+    except OSError as exc:
+        pytest.skip(f"local TCP listen is not permitted in this environment: {exc}")
+    finally:
+        probe.close()
+
     # Attempt to start the server in the background for tests
     env = os.environ.copy()
     env["VELARIX_ENCRYPTION_KEY"] = "test_32_byte_secure_key_12345678"
@@ -17,10 +26,23 @@ def velarix_server():
     env["VELARIX_ENV"] = "dev"
     env["PORT"] = "8089"
     env["VELARIX_BADGER_PATH"] = tempfile.mkdtemp(prefix="velarix-sdk-py-")
+    env["GOCACHE"] = tempfile.mkdtemp(prefix="velarix-go-cache-")
     repo_root = Path(__file__).resolve().parents[3]
+    binary_path = Path(tempfile.mkdtemp(prefix="velarix-sdk-bin-")) / "velarix-test-bin"
+
+    build = subprocess.run(
+        ["go", "build", "-o", str(binary_path), "main.go"],
+        cwd=str(repo_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if build.returncode != 0:
+        raise RuntimeError(f"failed to build test server\nstdout:\n{build.stdout}\nstderr:\n{build.stderr}")
     
     server_process = subprocess.Popen(
-        ["go", "run", "main.go"],
+        [str(binary_path)],
         cwd=str(repo_root),
         env=env,
         stdout=subprocess.PIPE,
@@ -64,6 +86,7 @@ def test_sync_client_lifecycle():
     assert any(d.get("decision_id") == decision["decision_id"] for d in decisions)
     check = session.execute_check(decision["decision_id"])
     assert check["executable"] is True
+    assert isinstance(check.get("execution_token"), str)
     
     session.invalidate("sdk_root")
     facts_after = session.get_slice() or []
@@ -91,6 +114,7 @@ def test_async_client_lifecycle():
             assert any(f.get("id") == "sdk_async_root" for f in facts)
             check = await session.execute_check(decision["decision_id"])
             assert check["executable"] is True
+            assert isinstance(check.get("execution_token"), str)
             await session.invalidate("sdk_async_root")
             blocked = await session.execute_check(decision["decision_id"])
             assert blocked["executable"] is False

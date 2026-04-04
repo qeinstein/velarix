@@ -1,108 +1,66 @@
 # Velarix
 
-Velarix prevents stale AI-assisted approval decisions from being executed after upstream facts change.
+Velarix is a Go service for recording approval facts, tracking decision dependencies, and blocking execution when those dependencies go stale.
 
-This repository currently ships:
-- a Go API for recording facts, derivations, invalidations, history, explanations, and exports,
-- first-class decision creation, execute-check, execute, lineage, and why-blocked APIs,
-- Python and TypeScript SDKs that talk to that API,
-- backend selection for local Badger or shared Postgres with optional Redis coordination,
-- one canonical demo for approval integrity.
+The codebase is currently optimized around one workflow shape:
 
-This repository does not currently ship:
-- a production console application,
-- object-storage-backed export artifacts,
-- real billing, support, or policy-enforcement workflows.
+- an internal approval or recommendation is created from a set of facts
+- one or more upstream facts change
+- `execute-check` or `execute` rejects the stale decision
+- the API returns machine-readable blockers plus an explanation
 
-## Product Wedge
+## What Is In This Repo
 
-The V1 wedge is decision integrity for AI-assisted internal approvals.
+- Go HTTP API for facts, decisions, invalidation, explanations, history, and search
+- decision lifecycle routes: create, recompute, execute-check, execute, lineage, why-blocked
+- Python and TypeScript SDKs
+- Badger-backed local adapter for development and tests
+- Postgres-backed shared-state path with optional Redis coordination
+- one maintained end-to-end demo: `demo/approval_integrity.py`
 
-In practice that means:
-- an agent or operator records the facts behind an approval recommendation,
-- downstream reasoning depends on those facts,
-- if an upstream fact changes, stale derived reasoning is invalidated,
-- operators can inspect the history and explanation trail before acting.
+## What Is Not In Scope
 
-## Current Architecture
+- a finished finance ops SaaS product
+- a complete console application
+- full external workflow integrations
+- audited compliance posture
+- finalized billing or support systems
 
-Today the service runs as:
-- a Go HTTP API layer,
-- in-memory reasoning engines loaded lazily per session,
-- session-version-based cache refresh for multi-instance safety,
-- either a local Badger adapter or a shared Postgres backend,
-- optional Redis-backed idempotency and rate limiting.
+Some admin and org routes still exist in the API, but the repo should be evaluated on the approval-guardrail workflow, not on those scaffolding surfaces.
 
-Target V1 architecture is shared-state:
-- Postgres for durable system-of-record data,
-- Redis for idempotency, rate limiting, and coordination,
-- object storage for large artifacts and exports,
-- rebuildable in-memory engine caches as an optimization only.
+## Core Workflow
 
-The Badger path in this repo should be treated as a local adapter, not the final production authority.
+1. Assert root facts into a session.
+2. Derive a decision-supporting fact.
+3. Create a first-class decision.
+4. Invalidate or change an upstream fact.
+5. Call `execute-check` and receive blockers plus an execution token when valid.
+6. Call `execute` with a fresh execution token.
 
-## Canonical Demo
+If the dependency set has changed, execution is blocked.
 
-The canonical demo path for this repo is:
+## Runtime Model
+
+Current runtime shape:
+
+- Go API server
+- per-session in-memory engines used as rebuildable caches
+- Badger for local development and tests
+- Postgres as the shared system-of-record path
+- Redis for idempotency and rate limiting when configured
+
+The Badger backend should be treated as a local adapter, not the long-term production authority.
+
+## Quick Start
+
+Use the local Badger adapter:
 
 ```bash
 cp .env.example .env
-export VELARIX_ENV=dev
-export VELARIX_API_KEY=dev-admin-key
-export VELARIX_BADGER_PATH="$(mktemp -d)"
 go run main.go
 ```
 
-In a second terminal:
-
-```bash
-pip install -e ./sdks/python
-export VELARIX_API_KEY=dev-admin-key
-python demo/approval_integrity.py
-```
-
-That demo uses only the shipped public Python SDK methods and shows:
-- facts recorded into a session,
-- a first-class decision created from a derived fact,
-- an upstream fact invalidated,
-- execute-check returning `executable=false`,
-- the blocked execution response and why-blocked explanation payload.
-
-To boot against shared storage instead of Badger:
-
-```bash
-cp .env.example .env
-export VELARIX_ENV=dev
-export VELARIX_STORE_BACKEND=postgres
-export VELARIX_POSTGRES_DSN=postgres://user:pass@localhost:5432/velarix?sslmode=disable
-export VELARIX_REDIS_URL=redis://localhost:6379/0
-go run main.go
-```
-
-The committed env template is [`.env.example`](/home/fluxx/Workspace/casualdb/.env.example). It now includes:
-- local Badger variables,
-- shared Postgres/Redis variables,
-- dev versus production auth/runtime knobs,
-- the current optional tuning variables used by the server.
-
-## Repository Notes
-
-- `demo/approval_integrity.py` is the maintained demo for the V1 wedge.
-- `docs/openapi.yaml` is the stable API contract entrypoint served at `/docs/openapi.yaml`.
-- The other org/admin surfaces in the API are existing scaffolding and should not be read as completed enterprise workflows.
-- Password reset is intentionally dev-only until a real delivery path exists.
-- Invitation tokens are returned once on create and redacted from list/read responses.
-- Export files include verification hashes, but the repo does not claim audited compliance posture.
-
-## Development
-
-Start by copying the env template:
-
-```bash
-cp .env.example .env
-```
-
-For local Badger development, the minimum useful env is:
+Or set the environment explicitly:
 
 ```bash
 export VELARIX_ENV=dev
@@ -112,23 +70,23 @@ export VELARIX_BADGER_PATH="$(mktemp -d)"
 go run main.go
 ```
 
-For shared-store development, set:
+Run the maintained demo from a second terminal:
 
 ```bash
-export VELARIX_ENV=dev
-export VELARIX_STORE_BACKEND=postgres
-export VELARIX_POSTGRES_DSN=postgres://user:pass@localhost:5432/velarix?sslmode=disable
-export VELARIX_REDIS_URL=redis://localhost:6379/0
-go run main.go
+pip install -e ./sdks/python
+export VELARIX_API_KEY=dev-admin-key
+python demo/approval_integrity.py
 ```
 
-Run the Go tests with:
+## Tests
+
+Go:
 
 ```bash
 go test ./... -count=1 -p 1
 ```
 
-Run the Python SDK integration test with:
+Python SDK integration:
 
 ```bash
 python3 -m venv .venv-sdk-tests
@@ -136,10 +94,33 @@ python3 -m venv .venv-sdk-tests
 PYTHONPATH=./sdks/python ./.venv-sdk-tests/bin/python -m pytest sdks/python/tests/test_sdk_integration.py
 ```
 
-Run the TypeScript SDK integration test with:
+TypeScript SDK integration:
 
 ```bash
 cd sdks/typescript && npm test
 ```
 
-For local development, `VELARIX_ENV=dev` disables the production-only JWT secret requirement, allows Badger without an encryption key, and enables dev-only password reset token issuance in the response body instead of logs. Outside `dev`, set `VELARIX_JWT_SECRET`, and if you still use Badger, set a valid `VELARIX_ENCRYPTION_KEY`.
+## Review Map
+
+Start here if you are reading the code for the first time:
+
+1. `core/fact.go`
+2. `core/engine.go`
+3. `core/explain.go`
+4. `api/models/decision.go`
+5. `api/decision_contracts.go`
+6. `api/server.go`
+7. `store/interfaces.go`
+8. `store/badger.go`
+9. `store/postgres/`
+10. `demo/approval_integrity.py`
+
+## Docs
+
+- [`docs/README.md`](docs/README.md)
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/INTEGRATION_GUIDE.md`](docs/INTEGRATION_GUIDE.md)
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md)
+- [`docs/SECURITY.md`](docs/SECURITY.md)
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)
+- [`docs/ERRORS.md`](docs/ERRORS.md)

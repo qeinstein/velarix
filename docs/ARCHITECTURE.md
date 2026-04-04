@@ -1,34 +1,60 @@
 # Architecture
 
-Velarix is built around one core capability: invalidate stale reasoning when upstream facts change.
+Velarix is built around one core capability:
+
+- prevent stale approval decisions from reaching execution after upstream facts change
 
 ## Current Runtime Shape
 
-The repository currently runs as:
-- a Go HTTP API,
-- per-session in-memory reasoning engines,
-- a local Badger-backed persistence adapter for development and tests,
-- SDK clients that use the public `/v1` API.
+The codebase currently runs as:
 
-## Target V1 Shape
+- a Go HTTP API
+- per-session in-memory reasoning engines
+- local Badger-backed persistence for development and tests
+- a shared-store path using Postgres with optional Redis coordination
+- SDK clients that talk to the public `/v1` API
 
-The implementation plan for V1 moves toward:
-- Postgres for durable system-of-record data,
-- Redis for idempotency, rate limiting, and coordination,
-- object storage for large artifacts and export outputs,
-- rebuildable in-memory engine caches rather than process-local authority.
+## Current Logical Model
 
-## Core Reasoning Model
+- a fact is either asserted directly or derived from other facts
+- derived facts use OR-of-AND justification sets
+- decisions depend on facts and persist dependency snapshots
+- invalidating a root fact collapses downstream reasoning that no longer has valid support
+- `execute-check` and `execute` determine whether an action is still safe to run
 
-- A fact is either asserted directly or derived from other facts.
-- Derived facts use OR-of-AND justification sets.
-- Invalidating a root fact removes downstream reasoning that no longer has valid support.
-- History and explanation endpoints preserve provenance for debugging and review.
+## Approval Guardrail Flow
 
-## Storage Reality
+1. approval facts are recorded into a session
+2. a derived fact represents the recommendation
+3. a first-class decision is created from that derived fact
+4. dependencies are checked right before execution
+5. execution is blocked if any required dependency has gone stale
+6. explanation endpoints expose the exact blocking reason
 
-Badger is still used in this repo, but it should be treated as a local adapter. It is not the long-term production system of record described in the V1 plan.
+## Current Architectural Risk
 
-## Export Reality
+The main risk still in the repo is over-reliance on:
 
-Exports include verification hashes and history snapshots. They are integrity artifacts, not proof of an audited compliance program.
+- process-local engine ownership
+- local Badger assumptions
+- replay-heavy rebuild behavior
+
+That is acceptable for local development.
+
+It is not the final production architecture.
+
+## Target Runtime Shape
+
+The target architecture for the product is:
+
+- Postgres as the system of record
+- Redis for idempotency, rate limiting, and coordination
+- rebuildable in-memory engine caches only
+- object storage for large artifacts and snapshots
+
+## Design Rule
+
+Badger is a local adapter.
+
+The product should not be designed around one node remaining warm or authoritative.
+

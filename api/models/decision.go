@@ -19,5 +19,6 @@ type RecomputeDecisionRequest struct {
 }
 
 type ExecuteDecisionRequest struct {
-	ExecutionRef string `json:"execution_ref,omitempty"`
+	ExecutionRef   string `json:"execution_ref,omitempty"`
+	ExecutionToken string `json:"execution_token,omitempty"`
 }

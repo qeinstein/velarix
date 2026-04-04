@@ -143,13 +143,14 @@ func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store
 		}
 	}
 
-	history, err := s.Store.GetSessionHistory(sessionID)
+	var history []store.JournalEntry
+	if lastSnapshotTS > 0 {
+		history, err = s.Store.GetSessionHistoryAfter(sessionID, lastSnapshotTS)
+	} else {
+		history, err = s.Store.GetSessionHistory(sessionID)
+	}
 	if err == nil {
 		for _, entry := range history {
-			// Only replay events AFTER the snapshot
-			if entry.Timestamp <= lastSnapshotTS {
-				continue
-			}
 			switch entry.Type {
 			case store.EventAssert:
 				engine.AssertFact(entry.Fact)
@@ -721,17 +722,34 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []sessionInfo
-	for id := range s.Engines {
-		storedOrg, err := s.Store.GetSessionOrganization(id)
-		if err == nil && storedOrg == orgID {
-			result = append(result, sessionInfo{ID: id})
+	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
 		}
 	}
-	writeJSON(w, http.StatusOK, result)
+
+	items, nextCursor, err := s.Store.ListOrgSessions(orgID, cursor, limit)
+	if err != nil {
+		http.Error(w, "failed to list sessions", http.StatusInternalServerError)
+		return
+	}
+	result := make([]sessionInfo, 0, len(items))
+	for _, item := range items {
+		info := sessionInfo{
+			ID:        item.ID,
+			FactCount: item.FactCount,
+		}
+		if config, err := s.Store.GetConfig(item.ID); err == nil && config != nil {
+			info.EnforcementMode = config.EnforcementMode
+		}
+		result = append(result, info)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"items":       result,
+		"next_cursor": nextCursor,
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -756,29 +774,43 @@ func (s *Server) handleFullHealth(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	sessionCount := len(s.Engines)
+	sliceCacheCount := len(s.SliceCache)
 	s.mu.RUnlock()
 
-	var stat syscall.Statfs_t
-	wd, _ := os.Getwd()
-	syscall.Statfs(wd, &stat)
-
-	diskFree := stat.Bavail * uint64(stat.Bsize)
-	diskTotal := stat.Blocks * uint64(stat.Bsize)
-	diskUsed := diskTotal - diskFree
-	BadgerDiskUsage.Set(float64(diskUsed))
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	backend := "unknown"
+	storageConnected := s.Store != nil
+	if reporter, ok := s.Store.(store.HealthReporter); ok {
+		backend = reporter.BackendName()
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		storageConnected = reporter.Ping(ctx) == nil
+	}
+	response := map[string]interface{}{
 		"status":            "healthy",
-		"storage_connected": s.Store != nil,
-		"badger_connected":  s.Store != nil,
+		"storage_backend":   backend,
+		"storage_connected": storageConnected,
+		"badger_connected":  backend == "badger" && storageConnected,
 		"ram_sessions":      sessionCount,
-		"disk": map[string]interface{}{
-			"free_bytes":    diskFree,
-			"total_bytes":   diskTotal,
-			"usage_percent": fmt.Sprintf("%.2f%%", (1-float64(diskFree)/float64(diskTotal))*100),
-		},
-		"uptime": time.Since(s.StartTime).String(),
-	})
+		"slice_cache_items": sliceCacheCount,
+		"uptime":            time.Since(s.StartTime).String(),
+	}
+	if backend == "badger" {
+		var stat syscall.Statfs_t
+		wd, _ := os.Getwd()
+		if err := syscall.Statfs(wd, &stat); err == nil {
+			diskFree := stat.Bavail * uint64(stat.Bsize)
+			diskTotal := stat.Blocks * uint64(stat.Bsize)
+			diskUsed := diskTotal - diskFree
+			BadgerDiskUsage.Set(float64(diskUsed))
+			response["disk"] = map[string]interface{}{
+				"free_bytes":    diskFree,
+				"total_bytes":   diskTotal,
+				"usage_percent": fmt.Sprintf("%.2f%%", (1-float64(diskFree)/float64(diskTotal))*100),
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {

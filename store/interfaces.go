@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"time"
@@ -12,6 +13,7 @@ import (
 type SessionStateStore interface {
 	Append(entry JournalEntry) error
 	GetSessionHistory(sessionID string) ([]JournalEntry, error)
+	GetSessionHistoryAfter(sessionID string, afterTimestamp int64) ([]JournalEntry, error)
 	GetSessionHistoryBefore(sessionID string, beforeTimestamp int64) ([]JournalEntry, error)
 	GetSessionHistoryChainHead(sessionID string) (string, error)
 	GetSessionHistoryPage(sessionID string, cursor string, limit int, fromMs int64, toMs int64, typ string, q string) ([]JournalEntry, string, error)
@@ -177,6 +179,11 @@ type RuntimeStore interface {
 	ReplayAll(engines map[string]*core.Engine, configs map[string][]byte) error
 	StartGC()
 	Close() error
+}
+
+type HealthReporter interface {
+	BackendName() string
+	Ping(ctx context.Context) error
 }
 
 var _ RuntimeStore = (*BadgerStore)(nil)
