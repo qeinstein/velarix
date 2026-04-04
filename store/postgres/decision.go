@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -76,34 +75,64 @@ func decisionMatchesFilter(decision store.Decision, filter store.DecisionListFil
 }
 
 func (s *Store) ListSessionDecisions(sessionID string, filter store.DecisionListFilter) ([]store.Decision, error) {
-	rows, err := s.pool.Query(context.Background(), `
-		SELECT doc
-		FROM decisions
-		WHERE session_id = $1
-		ORDER BY created_at DESC, decision_id DESC
-	`, sessionID)
+	query, args := buildDecisionListQuery("session_id = $1", []interface{}{sessionID}, filter)
+	rows, err := s.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return decodeDecisionRows(rows, filter)
+	return decodeDecisionRows(rows)
 }
 
 func (s *Store) ListOrgDecisions(orgID string, filter store.DecisionListFilter) ([]store.Decision, error) {
-	rows, err := s.pool.Query(context.Background(), `
-		SELECT doc
-		FROM decisions
-		WHERE org_id = $1
-		ORDER BY created_at DESC, decision_id DESC
-	`, orgID)
+	query, args := buildDecisionListQuery("org_id = $1", []interface{}{orgID}, filter)
+	rows, err := s.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return decodeDecisionRows(rows, filter)
+	return decodeDecisionRows(rows)
 }
 
-func decodeDecisionRows(rows pgx.Rows, filter store.DecisionListFilter) ([]store.Decision, error) {
+func buildDecisionListQuery(scopeClause string, args []interface{}, filter store.DecisionListFilter) (string, []interface{}) {
+	clauses := []string{scopeClause}
+	argPos := len(args) + 1
+	if filter.Status != "" {
+		clauses = append(clauses, fmt.Sprintf("(status = $%d OR execution_status = $%d)", argPos, argPos))
+		args = append(args, filter.Status)
+		argPos++
+	}
+	if filter.SubjectRef != "" {
+		clauses = append(clauses, fmt.Sprintf("subject_ref = $%d", argPos))
+		args = append(args, filter.SubjectRef)
+		argPos++
+	}
+	if filter.FromMs != 0 {
+		clauses = append(clauses, fmt.Sprintf("created_at >= $%d", argPos))
+		args = append(args, filter.FromMs)
+		argPos++
+	}
+	if filter.ToMs != 0 {
+		clauses = append(clauses, fmt.Sprintf("created_at <= $%d", argPos))
+		args = append(args, filter.ToMs)
+		argPos++
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	query := fmt.Sprintf(`
+		SELECT doc
+		FROM decisions
+		WHERE %s
+		ORDER BY created_at DESC, decision_id DESC
+		LIMIT $%d
+	`, strings.Join(clauses, " AND "), argPos)
+	args = append(args, limit)
+	return query, args
+}
+
+func decodeDecisionRows(rows pgx.Rows) ([]store.Decision, error) {
 	out := []store.Decision{}
 	for rows.Next() {
 		var raw []byte
@@ -114,16 +143,10 @@ func decodeDecisionRows(rows pgx.Rows, filter store.DecisionListFilter) ([]store
 		if err := decodeJSON(raw, &item); err != nil {
 			continue
 		}
-		if !decisionMatchesFilter(item, filter) {
-			continue
-		}
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-	if filter.Limit > 0 && len(out) > filter.Limit {
-		out = out[:filter.Limit]
 	}
 	return out, nil
 }
@@ -298,12 +321,61 @@ func searchDocumentMatches(doc store.SearchDocument, filter store.SearchDocument
 }
 
 func (s *Store) SearchDocuments(orgID string, filter store.SearchDocumentsFilter) ([]store.SearchDocument, string, error) {
-	rows, err := s.pool.Query(context.Background(), `
+	clauses := []string{"org_id = $1"}
+	args := []interface{}{orgID}
+	argPos := 2
+	if filter.DocumentType != "" {
+		clauses = append(clauses, fmt.Sprintf("document_type = $%d", argPos))
+		args = append(args, filter.DocumentType)
+		argPos++
+	}
+	if filter.Status != "" {
+		clauses = append(clauses, fmt.Sprintf("status = $%d", argPos))
+		args = append(args, filter.Status)
+		argPos++
+	}
+	if filter.SubjectRef != "" {
+		clauses = append(clauses, fmt.Sprintf("subject_ref = $%d", argPos))
+		args = append(args, filter.SubjectRef)
+		argPos++
+	}
+	if filter.FromMs != 0 {
+		clauses = append(clauses, fmt.Sprintf("updated_at >= $%d", argPos))
+		args = append(args, filter.FromMs)
+		argPos++
+	}
+	if filter.ToMs != 0 {
+		clauses = append(clauses, fmt.Sprintf("updated_at <= $%d", argPos))
+		args = append(args, filter.ToMs)
+		argPos++
+	}
+	q := strings.TrimSpace(strings.ToLower(filter.Query))
+	if q != "" {
+		clauses = append(clauses, fmt.Sprintf(`(
+			LOWER(title) LIKE $%d OR
+			LOWER(body) LIKE $%d OR
+			LOWER(subject_ref) LIKE $%d OR
+			LOWER(target_ref) LIKE $%d OR
+			LOWER(fact_id) LIKE $%d OR
+			LOWER(decision_id) LIKE $%d
+		)`, argPos, argPos, argPos, argPos, argPos, argPos))
+		args = append(args, "%"+q+"%")
+		argPos++
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := parseOffsetCursor(filter.Cursor)
+	query := fmt.Sprintf(`
 		SELECT doc
 		FROM search_documents
-		WHERE org_id = $1
+		WHERE %s
 		ORDER BY updated_at DESC, document_id DESC
-	`, orgID)
+		LIMIT $%d OFFSET $%d
+	`, strings.Join(clauses, " AND "), argPos, argPos+1)
+	args = append(args, limit+1, offset)
+	rows, err := s.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -319,31 +391,15 @@ func (s *Store) SearchDocuments(orgID string, filter store.SearchDocumentsFilter
 		if err := decodeJSON(raw, &item); err != nil {
 			continue
 		}
-		if !searchDocumentMatches(item, filter) {
-			continue
-		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].UpdatedAt == items[j].UpdatedAt {
-			return items[i].ID > items[j].ID
-		}
-		return items[i].UpdatedAt > items[j].UpdatedAt
-	})
-	offset := parseOffsetCursor(filter.Cursor)
-	if offset > len(items) {
-		offset = len(items)
+	next := ""
+	if len(items) > limit {
+		items = items[:limit]
+		next = fmt.Sprintf("o:%d", offset+limit)
 	}
-	limit := filter.Limit
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	end := offset + limit
-	if end > len(items) {
-		end = len(items)
-	}
-	return items[offset:end], nextOffsetCursor(offset, limit, len(items)), nil
+	return items, next, nil
 }

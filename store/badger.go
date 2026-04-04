@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -182,6 +183,23 @@ func (s *BadgerStore) migrate(version uint64) error {
 
 func (s *BadgerStore) DB() *badger.DB {
 	return s.db
+}
+
+func (s *BadgerStore) BackendName() string {
+	return "badger"
+}
+
+func (s *BadgerStore) Ping(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("badger store is not initialized")
+	}
+	return s.db.View(func(txn *badger.Txn) error {
+		_, err := txn.Get([]byte("sys:version"))
+		if err == badger.ErrKeyNotFound {
+			return nil
+		}
+		return err
+	})
 }
 
 // IncrementMetric atomically increments a 64-bit counter for an organization
@@ -579,6 +597,23 @@ func (s *BadgerStore) GetSessionHistory(sessionID string) ([]JournalEntry, error
 	})
 
 	return history, err
+}
+
+func (s *BadgerStore) GetSessionHistoryAfter(sessionID string, afterTimestamp int64) ([]JournalEntry, error) {
+	history, err := s.GetSessionHistory(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if afterTimestamp <= 0 {
+		return history, nil
+	}
+	filtered := make([]JournalEntry, 0, len(history))
+	for _, entry := range history {
+		if entry.Timestamp > afterTimestamp {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
 }
 
 type ExportJob struct {

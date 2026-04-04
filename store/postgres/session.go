@@ -86,6 +86,33 @@ func (s *Store) GetSessionHistory(sessionID string) ([]store.JournalEntry, error
 	return out, rows.Err()
 }
 
+func (s *Store) GetSessionHistoryAfter(sessionID string, afterTimestamp int64) ([]store.JournalEntry, error) {
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT entry_json
+		FROM session_history
+		WHERE session_id = $1 AND timestamp_ms > $2
+		ORDER BY event_id ASC
+	`, sessionID, afterTimestamp)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []store.JournalEntry{}
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var entry store.JournalEntry
+		if err := decodeJSON(raw, &entry); err != nil {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) GetSessionHistoryBefore(sessionID string, beforeTimestamp int64) ([]store.JournalEntry, error) {
 	rows, err := s.pool.Query(context.Background(), `
 		SELECT entry_json
@@ -126,19 +153,47 @@ func (s *Store) GetSessionHistoryPage(sessionID string, cursor string, limit int
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(context.Background(), `
+	offset := parseOffsetCursor(cursor)
+	q = strings.TrimSpace(strings.ToLower(q))
+	typ = strings.TrimSpace(typ)
+
+	clauses := []string{"session_id = $1"}
+	args := []interface{}{sessionID}
+	argPos := 2
+	if fromMs != 0 {
+		clauses = append(clauses, fmt.Sprintf("timestamp_ms >= $%d", argPos))
+		args = append(args, fromMs)
+		argPos++
+	}
+	if toMs != 0 {
+		clauses = append(clauses, fmt.Sprintf("timestamp_ms <= $%d", argPos))
+		args = append(args, toMs)
+		argPos++
+	}
+	if typ != "" {
+		clauses = append(clauses, fmt.Sprintf("event_type = $%d", argPos))
+		args = append(args, typ)
+		argPos++
+	}
+	if q != "" {
+		clauses = append(clauses, fmt.Sprintf("entry_json::text ILIKE $%d", argPos))
+		args = append(args, "%"+q+"%")
+		argPos++
+	}
+	query := fmt.Sprintf(`
 		SELECT entry_json
 		FROM session_history
-		WHERE session_id = $1
+		WHERE %s
 		ORDER BY event_id DESC
-	`, sessionID)
+		LIMIT $%d OFFSET $%d
+	`, strings.Join(clauses, " AND "), argPos, argPos+1)
+	args = append(args, limit+1, offset)
+	rows, err := s.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", err
 	}
 	defer rows.Close()
 
-	q = strings.TrimSpace(strings.ToLower(q))
-	typ = strings.TrimSpace(typ)
 	items := []store.JournalEntry{}
 	for rows.Next() {
 		var raw []byte
@@ -149,36 +204,17 @@ func (s *Store) GetSessionHistoryPage(sessionID string, cursor string, limit int
 		if err := decodeJSON(raw, &entry); err != nil {
 			continue
 		}
-		if fromMs != 0 && entry.Timestamp < fromMs {
-			continue
-		}
-		if toMs != 0 && entry.Timestamp > toMs {
-			continue
-		}
-		if typ != "" && string(entry.Type) != typ {
-			continue
-		}
-		if q != "" {
-			rawLower := strings.ToLower(string(raw))
-			if !strings.Contains(rawLower, q) {
-				continue
-			}
-		}
 		items = append(items, entry)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
-
-	offset := parseOffsetCursor(cursor)
-	if offset > len(items) {
-		offset = len(items)
+	next := ""
+	if len(items) > limit {
+		items = items[:limit]
+		next = fmt.Sprintf("o:%d", offset+limit)
 	}
-	end := offset + limit
-	if end > len(items) {
-		end = len(items)
-	}
-	return items[offset:end], nextOffsetCursor(offset, limit, len(items)), nil
+	return items, next, nil
 }
 
 func (s *Store) SaveConfig(sessionID string, config interface{}) error {

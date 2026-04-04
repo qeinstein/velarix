@@ -87,6 +87,10 @@ export interface DecisionCheck {
   blocked_by: DecisionBlocker[];
   reason_codes: string[];
   checked_at: number;
+  decision_version?: number;
+  session_version?: number;
+  expires_at?: number;
+  execution_token?: string;
   explanation_summary?: string;
   dependency_snapshots?: DecisionDependency[];
 }

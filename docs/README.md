@@ -1,36 +1,58 @@
 # Documentation
 
-Velarix is a decision-integrity service for AI-assisted internal approvals. It records facts, tracks causal dependencies, and invalidates stale reasoning before downstream actions are taken.
+Velarix should be understood as an approval guardrail service for AI-assisted internal operations.
+
+Its job is simple:
+
+- record the facts behind an approval recommendation
+- track the dependencies that support the decision
+- block execution when those dependencies go stale
+
+The first wedge for this repo is:
+
+- finance ops approval integrity
 
 ## What The Repo Ships Today
 
-- Go API for session facts, invalidation, explanations, history, and exports
+- Go API for facts, invalidation, history, explanation, and first-class decisions
 - Python and TypeScript SDKs
-- local Badger-backed persistence for development and tests
+- local Badger adapter for development and tests
+- shared-state path using Postgres with optional Redis coordination
 - one maintained demo: `demo/approval_integrity.py`
 
-## What It Does Not Claim Today
+## What The Repo Does Not Claim
 
-- no shipped console application in this repository,
-- no audited compliance certification,
-- no production shared-store backend,
-- no real billing, support, or policy-enforcement workflow.
+- a finished finance ops SaaS product
+- a generic memory platform for agents
+- audited compliance posture
+- production-complete object storage, billing, support, or policy workflows
 
 ## Key References
 
 - [Architecture](ARCHITECTURE.md)
-- [Security Notes](SECURITY.md)
 - [Integration Guide](INTEGRATION_GUIDE.md)
 - [Operations](OPERATIONS.md)
+- [Security Notes](SECURITY.md)
+- [Threat Model](THREAT_MODEL.md)
 - [Errors](ERRORS.md)
-- OpenAPI document: [`swagger.yaml`](swagger.yaml)
+- OpenAPI document: [`openapi.yaml`](openapi.yaml)
 
-## Quick Start
+## Read This Repo In Order
 
-```bash
-export VELARIX_ENV=dev
-export VELARIX_API_KEY=dev-admin-key
-go run main.go
-```
+1. `README.md`
+2. `docs/ARCHITECTURE.md`
+3. `api/models/decision.go`
+4. `api/decision_contracts.go`
+5. `api/server.go`
+6. `store/interfaces.go`
+7. `store/badger.go`
+8. `store/postgres/`
+9. `demo/approval_integrity.py`
+10. `tests/e2e_test.go`
 
-The API will be available at `http://localhost:8080`.
+## Review Notes
+
+- The canonical product flow is in `api/decision_contracts.go`.
+- The canonical demo is `demo/approval_integrity.py`.
+- The Postgres path is the production direction.
+- The Badger path exists for local development and tests.

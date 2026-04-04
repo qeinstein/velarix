@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -14,7 +16,21 @@ import (
 	apimodels "velarix/api/models"
 	"velarix/core"
 	"velarix/store"
+
+	"github.com/golang-jwt/jwt/v5"
 )
+
+const executionTokenTTL = 30 * time.Second
+
+type executionTokenClaims struct {
+	SessionID       string `json:"session_id"`
+	DecisionID      string `json:"decision_id"`
+	OrgID           string `json:"org_id"`
+	DecisionVersion int64  `json:"decision_version"`
+	SessionVersion  int64  `json:"session_version"`
+	CheckTimestamp  int64  `json:"check_timestamp"`
+	jwt.RegisteredClaims
+}
 
 func newDecisionID() string {
 	b := make([]byte, 8)
@@ -150,6 +166,59 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func decisionVersion(decision *store.Decision) int64 {
+	if decision == nil {
+		return 0
+	}
+	if decision.UpdatedAt > 0 {
+		return decision.UpdatedAt
+	}
+	return decision.CreatedAt
+}
+
+func (s *Server) issueExecutionToken(orgID string, decision *store.Decision, check *store.DecisionCheck) (string, error) {
+	if decision == nil || check == nil {
+		return "", fmt.Errorf("decision and check are required")
+	}
+	expiresAt := time.UnixMilli(check.ExpiresAt)
+	claims := executionTokenClaims{
+		SessionID:       decision.SessionID,
+		DecisionID:      decision.ID,
+		OrgID:           orgID,
+		DecisionVersion: check.DecisionVersion,
+		SessionVersion:  check.SessionVersion,
+		CheckTimestamp:  check.CheckedAt,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(time.UnixMilli(check.CheckedAt)),
+			NotBefore: jwt.NewNumericDate(time.UnixMilli(check.CheckedAt)),
+			Subject:   decision.ID,
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSigningKey())
+}
+
+func (s *Server) parseExecutionToken(raw string) (*executionTokenClaims, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("execution_token is required")
+	}
+	claims := &executionTokenClaims{}
+	token, err := jwt.ParseWithClaims(raw, claims, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return jwtSigningKey(), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !token.Valid {
+		return nil, fmt.Errorf("invalid execution token")
+	}
+	return claims, nil
 }
 
 func (s *Server) computeDecisionCheck(engine *core.Engine, decision *store.Decision, deps []store.DecisionDependency) *store.DecisionCheck {
@@ -443,10 +512,21 @@ func (s *Server) handleExecuteDecisionCheck(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	check := s.computeDecisionCheck(engine, decision, deps)
+	check.SessionVersion, _ = s.Store.GetSessionVersion(sessionID)
 	decision.LastCheckedAt = check.CheckedAt
 	decision.Status, decision.ExecutionStatus = decisionStatusFromCheck(check, decision.ExecutionStatus)
 	decision.ExplanationSummary = check.ExplanationSummary
 	decision.UpdatedAt = time.Now().UnixMilli()
+	check.DecisionVersion = decisionVersion(decision)
+	if check.Executable {
+		check.ExpiresAt = check.CheckedAt + executionTokenTTL.Milliseconds()
+		token, err := s.issueExecutionToken(orgID, decision, check)
+		if err != nil {
+			http.Error(w, "failed to issue execution token", http.StatusInternalServerError)
+			return
+		}
+		check.ExecutionToken = token
+	}
 	_ = s.Store.SaveDecision(decision)
 	_ = s.Store.SaveDecisionCheck(sessionID, decisionID, check)
 	s.persistDecisionReadModels(decision, deps)
@@ -472,7 +552,38 @@ func (s *Server) handleExecuteDecision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read dependencies", http.StatusInternalServerError)
 		return
 	}
+	if decision.ExecutionStatus == "executed" {
+		http.Error(w, "decision already executed", http.StatusConflict)
+		return
+	}
+	var body apimodels.ExecuteDecisionRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+	}
+	claims, err := s.parseExecutionToken(body.ExecutionToken)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	currentSessionVersion, _ := s.Store.GetSessionVersion(sessionID)
+	if claims.SessionID != sessionID || claims.DecisionID != decisionID || claims.OrgID != orgID {
+		http.Error(w, "execution token does not match this decision", http.StatusConflict)
+		return
+	}
+	if claims.SessionVersion != currentSessionVersion {
+		http.Error(w, "execution token is stale; run execute-check again", http.StatusConflict)
+		return
+	}
+	if claims.DecisionVersion != decisionVersion(decision) || claims.CheckTimestamp != decision.LastCheckedAt {
+		http.Error(w, "execution token no longer matches the latest decision state", http.StatusConflict)
+		return
+	}
 	check := s.computeDecisionCheck(engine, decision, deps)
+	check.SessionVersion = currentSessionVersion
+	check.DecisionVersion = claims.DecisionVersion
 	_ = s.Store.SaveDecisionCheck(sessionID, decisionID, check)
 	now := time.Now().UnixMilli()
 	if !check.Executable {
@@ -516,9 +627,9 @@ func (s *Server) handleExecuteDecision(w http.ResponseWriter, r *http.Request) {
 		SessionID: sessionID,
 		ActorID:   getActorID(r),
 		Payload: map[string]interface{}{
-			"action":      "decision_executed",
-			"decision_id": decision.ID,
-			"checked_at":  check.CheckedAt,
+			"action":       "decision_executed",
+			"decision_id":  decision.ID,
+			"checked_at":   check.CheckedAt,
 			"dependencies": check.DependencySnapshots,
 		},
 		Timestamp: now,

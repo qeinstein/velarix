@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/smtp"
 	"os"
 	"sort"
 	"strings"
@@ -149,6 +150,63 @@ func keyLast4(raw string) string {
 		return raw
 	}
 	return raw[len(raw)-4:]
+}
+
+type smtpResetConfig struct {
+	Addr     string
+	Username string
+	Password string
+	From     string
+	BaseURL  string
+}
+
+func loadSMTPResetConfig() smtpResetConfig {
+	return smtpResetConfig{
+		Addr:     strings.TrimSpace(os.Getenv("VELARIX_SMTP_ADDR")),
+		Username: strings.TrimSpace(os.Getenv("VELARIX_SMTP_USER")),
+		Password: os.Getenv("VELARIX_SMTP_PASS"),
+		From:     strings.TrimSpace(os.Getenv("VELARIX_SMTP_FROM")),
+		BaseURL:  strings.TrimRight(strings.TrimSpace(os.Getenv("VELARIX_BASE_URL")), "/"),
+	}
+}
+
+func (cfg smtpResetConfig) Enabled() bool {
+	return cfg.Addr != "" && cfg.From != ""
+}
+
+func sendPasswordResetEmail(email, token string) error {
+	cfg := loadSMTPResetConfig()
+	if !cfg.Enabled() {
+		return fmt.Errorf("password reset email delivery is not configured")
+	}
+	link := token
+	if cfg.BaseURL != "" {
+		link = fmt.Sprintf("%s/reset-password?email=%s&token=%s", cfg.BaseURL, email, token)
+	}
+	body := strings.Join([]string{
+		fmt.Sprintf("To: %s", email),
+		fmt.Sprintf("From: %s", cfg.From),
+		"Subject: Velarix password reset",
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=UTF-8",
+		"",
+		"Use the following password reset link or token to complete your password reset.",
+		"",
+		fmt.Sprintf("Reset link: %s", link),
+		fmt.Sprintf("Reset token: %s", token),
+		"",
+		"This link or token expires in 15 minutes.",
+	}, "\r\n")
+
+	var auth smtp.Auth
+	if cfg.Username != "" {
+		host := cfg.Addr
+		if idx := strings.Index(host, ":"); idx >= 0 {
+			host = host[:idx]
+		}
+		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, host)
+	}
+	return smtp.SendMail(cfg.Addr, auth, cfg.From, []string{email}, []byte(body))
 }
 
 func keyViewFromStored(k store.APIKey) APIKeyView {
@@ -323,8 +381,9 @@ func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	body.Email = strings.TrimSpace(strings.ToLower(body.Email))
 
-	if strings.TrimSpace(os.Getenv("VELARIX_ENV")) != "dev" {
-		http.Error(w, "password reset is disabled on this deployment", http.StatusNotImplemented)
+	devMode := strings.TrimSpace(os.Getenv("VELARIX_ENV")) == "dev"
+	if !devMode && !loadSMTPResetConfig().Enabled() {
+		http.Error(w, "password reset is not configured on this deployment", http.StatusNotImplemented)
 		return
 	}
 
@@ -341,6 +400,18 @@ func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 	user.ResetToken = keyHashHex(token)
 	user.ResetExpiry = time.Now().Add(15 * time.Minute).UnixMilli()
 	s.Store.SaveUser(user)
+
+	if !devMode {
+		if err := sendPasswordResetEmail(body.Email, token); err != nil {
+			slog.Error("Failed to deliver password reset email", "email", body.Email, "error", err)
+			http.Error(w, "failed to deliver password reset email", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "if email exists, a reset message has been sent",
+		})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":          "if email exists, a reset token has been generated",
