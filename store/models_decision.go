@@ -46,13 +46,17 @@ type DecisionBlocker struct {
 }
 
 type DecisionCheck struct {
-	DecisionID          string            `json:"decision_id"`
-	SessionID           string            `json:"session_id"`
-	Executable          bool              `json:"executable"`
-	BlockedBy           []DecisionBlocker `json:"blocked_by"`
-	ReasonCodes         []string          `json:"reason_codes"`
-	CheckedAt           int64             `json:"checked_at"`
-	ExplanationSummary  string            `json:"explanation_summary,omitempty"`
+	DecisionID          string               `json:"decision_id"`
+	SessionID           string               `json:"session_id"`
+	Executable          bool                 `json:"executable"`
+	BlockedBy           []DecisionBlocker    `json:"blocked_by"`
+	ReasonCodes         []string             `json:"reason_codes"`
+	CheckedAt           int64                `json:"checked_at"`
+	DecisionVersion     int64                `json:"decision_version,omitempty"`
+	SessionVersion      int64                `json:"session_version,omitempty"`
+	ExpiresAt           int64                `json:"expires_at,omitempty"`
+	ExecutionToken      string               `json:"execution_token,omitempty"`
+	ExplanationSummary  string               `json:"explanation_summary,omitempty"`
 	DependencySnapshots []DecisionDependency `json:"dependency_snapshots,omitempty"`
 }
 

@@ -313,11 +313,19 @@ class VelarixSession:
         decision_id: str,
         *,
         execution_ref: Optional[str] = None,
+        execution_token: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
+        token = execution_token
+        if not token:
+            check = self.execute_check(decision_id, idempotency_key=idempotency_key)
+            token = check.get("execution_token")
+            if not token:
+                raise ValueError("execute_check did not return an execution_token; decision is likely blocked")
         body: Dict[str, Any] = {}
         if execution_ref:
             body["execution_ref"] = execution_ref
+        body["execution_token"] = token
         resp = self.client._request(
             "POST",
             f"{self.base_url}/decisions/{decision_id}/execute",
@@ -676,11 +684,19 @@ class AsyncVelarixSession:
         decision_id: str,
         *,
         execution_ref: Optional[str] = None,
+        execution_token: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
+        token = execution_token
+        if not token:
+            check = await self.execute_check(decision_id, idempotency_key=idempotency_key)
+            token = check.get("execution_token")
+            if not token:
+                raise ValueError("execute_check did not return an execution_token; decision is likely blocked")
         body: Dict[str, Any] = {}
         if execution_ref:
             body["execution_ref"] = execution_ref
+        body["execution_token"] = token
         resp = await self.client._request(
             "POST",
             f"{self.base_url}/decisions/{decision_id}/execute",

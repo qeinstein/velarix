@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -10,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { VelarixClient } from '../src/client.ts';
 
 async function waitForHealth(url: string): Promise<void> {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       const res = await fetch(`${url}/health`);
       if (res.ok) return;
@@ -22,9 +23,21 @@ async function waitForHealth(url: string): Promise<void> {
   throw new Error('server did not become healthy');
 }
 
+async function canListenLocally(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.listen(0, '127.0.0.1', () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
 function startServer(): ChildProcess {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(here, '../../..');
+  const gocache = mkdtempSync(path.join(tmpdir(), 'velarix-go-cache-'));
+  const binary = path.join(mkdtempSync(path.join(tmpdir(), 'velarix-sdk-bin-')), 'velarix-test-bin');
   const env = {
     ...process.env,
     VELARIX_ENCRYPTION_KEY: 'test_32_byte_secure_key_12345678',
@@ -32,18 +45,46 @@ function startServer(): ChildProcess {
     VELARIX_ENV: 'dev',
     PORT: '8090',
     VELARIX_BADGER_PATH: mkdtempSync(path.join(tmpdir(), 'velarix-sdk-ts-')),
+    GOCACHE: gocache,
   };
-  return spawn('go', ['run', 'main.go'], {
+  execFileSync('go', ['build', '-o', binary, 'main.go'], {
     cwd: repoRoot,
     env,
-    stdio: 'ignore',
+    stdio: 'pipe',
+  });
+  return spawn(binary, [], {
+    cwd: repoRoot,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
 }
 
 async function main(): Promise<void> {
+  if (!(await canListenLocally())) {
+    // eslint-disable-next-line no-console
+    console.warn('Skipping TypeScript SDK integration test: local TCP listen is not permitted in this environment.');
+    return;
+  }
+
   const server = startServer();
+  let stderr = '';
+  let stdout = '';
+  let exitSummary = 'server still running';
+  server.stdout?.on('data', (chunk) => {
+    stdout += String(chunk);
+  });
+  server.stderr?.on('data', (chunk) => {
+    stderr += String(chunk);
+  });
+  server.on('exit', (code, signal) => {
+    exitSummary = `exit code=${code} signal=${signal}`;
+  });
   try {
-    await waitForHealth('http://localhost:8090');
+    try {
+      await waitForHealth('http://localhost:8090');
+    } catch (err) {
+      throw new Error(`${String(err)}\nserver status: ${exitSummary}\nserver stdout:\n${stdout}\nserver stderr:\n${stderr}`);
+    }
 
     const client = new VelarixClient({ baseUrl: 'http://localhost:8090', apiKey: 'test_key' });
     const session = client.session('ts_sdk_decision_sess');
@@ -60,6 +101,7 @@ async function main(): Promise<void> {
 
     const activeCheck = await session.executeCheck(decision.decision_id);
     assert.equal(activeCheck.executable, true);
+    assert.equal(typeof activeCheck.execution_token, 'string');
 
     const listed = await session.listDecisions();
     assert.equal(listed.some((item) => item.decision_id === decision.decision_id), true);

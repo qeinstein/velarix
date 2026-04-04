@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"time"
 
 	"velarix/core"
@@ -63,6 +64,20 @@ func (s *CompositeRuntimeStore) ReplayAll(engines map[string]*core.Engine, confi
 }
 
 func (s *CompositeRuntimeStore) StartGC() {}
+
+func (s *CompositeRuntimeStore) BackendName() string {
+	if reporter, ok := s.ServerStore.(HealthReporter); ok {
+		return reporter.BackendName()
+	}
+	return "composite"
+}
+
+func (s *CompositeRuntimeStore) Ping(ctx context.Context) error {
+	if reporter, ok := s.ServerStore.(HealthReporter); ok {
+		return reporter.Ping(ctx)
+	}
+	return nil
+}
 
 func (s *CompositeRuntimeStore) Close() error {
 	var firstErr error

@@ -351,6 +351,8 @@ components:
       properties:
         execution_ref:
           type: string
+        execution_token:
+          type: string
     Decision:
       type: object
       properties:
@@ -457,6 +459,17 @@ components:
         checked_at:
           type: integer
           format: int64
+        decision_version:
+          type: integer
+          format: int64
+        session_version:
+          type: integer
+          format: int64
+        expires_at:
+          type: integer
+          format: int64
+        execution_token:
+          type: string
         explanation_summary:
           type: string
         dependency_snapshots:
