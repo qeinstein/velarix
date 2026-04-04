@@ -73,7 +73,7 @@ func buildSessionExport(sessionID string, orgID string, engine *core.Engine, his
 		}
 		pdf.Ln(10)
 		pdf.SetFont("Arial", "B", 16)
-		pdf.Cell(0, 10, "SOC2 Compliance Export - Velarix Audit Log")
+		pdf.Cell(0, 10, "Velarix Verification Export")
 		pdf.Ln(12)
 		pdf.SetFont("Arial", "", 10)
 		pdf.Cell(0, 10, fmt.Sprintf("Total Facts: %d | API Requests: %d", usage["facts_asserted"], usage["api_requests"]))

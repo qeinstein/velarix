@@ -1,5 +1,14 @@
 import { EventSourcePolyfill } from 'event-source-polyfill';
-import type { Fact, ExplanationNode, ChangeEvent, JournalEntry, DecisionRecordPayload, ExplainOptions } from './types.js';
+import type {
+  Fact,
+  ExplanationNode,
+  ChangeEvent,
+  JournalEntry,
+  DecisionRecordPayload,
+  ExplainOptions,
+  Decision,
+  DecisionCheck,
+} from './types.js';
 
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
@@ -128,6 +137,138 @@ export class VelarixSession {
     return res.json();
   }
 
+  async createDecision(
+    decisionType: string,
+    options: {
+      factId?: string;
+      decisionId?: string;
+      subjectRef?: string;
+      targetRef?: string;
+      recommendedAction?: string;
+      policyVersion?: string;
+      explanationSummary?: string;
+      dependencyFactIds?: string[];
+      metadata?: Record<string, any>;
+      idempotencyKey?: string;
+    } = {}
+  ): Promise<Decision> {
+    if (!decisionType) throw new Error('createDecision requires decisionType');
+    const {
+      idempotencyKey,
+      ...rest
+    } = options;
+    const res = await this.client.fetchWithRetry(`${this.baseUrl}/decisions`, {
+      method: 'POST',
+      headers: { ...this.getHeaders(), 'Content-Type': 'application/json', 'Idempotency-Key': this.idemKey(idempotencyKey) },
+      body: JSON.stringify({
+        decision_type: decisionType,
+        fact_id: rest.factId,
+        decision_id: rest.decisionId,
+        subject_ref: rest.subjectRef || '',
+        target_ref: rest.targetRef || '',
+        recommended_action: rest.recommendedAction,
+        policy_version: rest.policyVersion,
+        explanation_summary: rest.explanationSummary,
+        dependency_fact_ids: rest.dependencyFactIds,
+        metadata: rest.metadata,
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async listDecisions(options: {
+    status?: string;
+    subjectRef?: string;
+    fromMs?: number;
+    toMs?: number;
+    limit?: number;
+  } = {}): Promise<Decision[]> {
+    const params = new URLSearchParams();
+    if (options.status) params.set('status', options.status);
+    if (options.subjectRef) params.set('subject', options.subjectRef);
+    if (typeof options.fromMs === 'number') params.set('from', String(options.fromMs));
+    if (typeof options.toMs === 'number') params.set('to', String(options.toMs));
+    params.set('limit', String(options.limit ?? 50));
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const res = await this.client.fetchWithRetry(`${this.baseUrl}/decisions${suffix}`, {
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json();
+    return body.items || [];
+  }
+
+  async getDecision(decisionId: string): Promise<Decision> {
+    const res = await this.client.fetchWithRetry(`${this.baseUrl}/decisions/${decisionId}`, {
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async recomputeDecision(
+    decisionId: string,
+    options: { factId?: string; dependencyFactIds?: string[]; idempotencyKey?: string } = {}
+  ): Promise<{ decision: Decision; check: DecisionCheck }> {
+    const res = await this.client.fetchWithRetry(`${this.baseUrl}/decisions/${decisionId}/recompute`, {
+      method: 'POST',
+      headers: { ...this.getHeaders(), 'Content-Type': 'application/json', 'Idempotency-Key': this.idemKey(options.idempotencyKey) },
+      body: JSON.stringify({
+        fact_id: options.factId,
+        dependency_fact_ids: options.dependencyFactIds,
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async executeCheck(decisionId: string, idempotencyKey?: string): Promise<DecisionCheck> {
+    const res = await this.client.fetchWithRetry(`${this.baseUrl}/decisions/${decisionId}/execute-check`, {
+      method: 'POST',
+      headers: { ...this.getHeaders(), 'Idempotency-Key': this.idemKey(idempotencyKey) }
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async executeDecision(
+    decisionId: string,
+    options: { executionRef?: string; executionToken?: string; idempotencyKey?: string } = {}
+  ): Promise<{ decision: Decision; check: DecisionCheck }> {
+    let executionToken = options.executionToken;
+    if (!executionToken) {
+      const check = await this.executeCheck(decisionId, options.idempotencyKey);
+      executionToken = check.execution_token;
+      if (!executionToken) {
+        throw new Error('execute-check did not return an execution token; decision is likely blocked');
+      }
+    }
+    const res = await this.client.fetchWithRetry(`${this.baseUrl}/decisions/${decisionId}/execute`, {
+      method: 'POST',
+      headers: { ...this.getHeaders(), 'Content-Type': 'application/json', 'Idempotency-Key': this.idemKey(options.idempotencyKey) },
+      body: JSON.stringify({ execution_ref: options.executionRef, execution_token: executionToken })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async getDecisionLineage(decisionId: string): Promise<any> {
+    const res = await this.client.fetchWithRetry(`${this.baseUrl}/decisions/${decisionId}/lineage`, {
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async getDecisionWhyBlocked(decisionId: string): Promise<any> {
+    const res = await this.client.fetchWithRetry(`${this.baseUrl}/decisions/${decisionId}/why-blocked`, {
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
   async recordDecision(payload: DecisionRecordPayload, idempotencyKey?: string): Promise<JournalEntry> {
     if (!payload || !payload.kind) throw new Error('recordDecision requires payload.kind');
     return this.appendHistory('decision_record', { ...payload }, undefined, idempotencyKey);
@@ -246,5 +387,27 @@ export class VelarixClient {
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
+  }
+
+  async listOrgDecisions(options: {
+    status?: string;
+    subjectRef?: string;
+    fromMs?: number;
+    toMs?: number;
+    limit?: number;
+  } = {}): Promise<Decision[]> {
+    const params = new URLSearchParams();
+    if (options.status) params.set('status', options.status);
+    if (options.subjectRef) params.set('subject', options.subjectRef);
+    if (typeof options.fromMs === 'number') params.set('from', String(options.fromMs));
+    if (typeof options.toMs === 'number') params.set('to', String(options.toMs));
+    params.set('limit', String(options.limit ?? 50));
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const res = await this.fetchWithRetry(`${this.baseUrl}/v1/org/decisions${suffix}`, {
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json();
+    return body.items || [];
   }
 }

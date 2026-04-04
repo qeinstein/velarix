@@ -1,48 +1,114 @@
-# Velarix Error Codes & Troubleshooting
+# Error Codes
 
-Velarix uses standard HTTP status codes and detailed JSON error messages to communicate issues.
+Velarix uses standard HTTP status codes with JSON payloads.
 
-## 🛑 Common Error Codes
+The approval-guardrail workflow depends most on the following responses.
 
-### 401 Unauthorized
-- **Cause**: Invalid or expired API key or JWT token.
-- **Resolution**: Verify your `Authorization` header and ensure your API key has not been revoked.
+## 400 Bad Request
 
-### 403 Forbidden
-- **Cause**: Attempting to access a session or resource belonging to a different organization (Tenant Isolation).
-- **Resolution**: Ensure you are using the correct OrgID/API Key for the session.
+Common causes:
 
-### 404 Not Found
-- **Cause**: The requested fact, session, or key does not exist.
-- **Resolution**: Check the ID of the resource you are requesting.
+- invalid JSON
+- schema validation failure
+- unknown parent fact
+- cycle or logical violation
+- malformed decision payload
 
-### 429 Too Many Requests
-- **Cause**: You have exceeded the rate limit of 60 requests per minute.
-- **Resolution**: Implement exponential backoff in your application or request a quota increase.
+## 401 Unauthorized
 
-### 400 Bad Request
-- **Cause**: Invalid JSON, schema validation failure, or logical violation (e.g., cycle detected in the graph).
-- **Resolution**:
-    - **Schema Failure**: Verify your fact `payload` matches the session's JSON schema.
-    - **Cycle Violation**: Ensure your fact justifications do not create a circular dependency.
+Common causes:
 
-## 🛠 Troubleshooting Scenarios
+- missing API key
+- invalid API key
+- expired or invalid JWT
 
-### Fact is Not Appearing in `get_slice()`
-- **Cause**: The fact has a resolved status below the `ConfidenceThreshold` (0.5), or one of its required parents has been invalidated.
-- **Check**: Use `GET /v1/s/{session_id}/facts/{id}/why` to see the justification tree and identify why the fact is currently considered invalid.
+## 403 Forbidden
 
-### Session Startup is Slow
-- **Cause**: Large number of journal entries to replay since the last snapshot.
-- **Resolution**: Velarix snapshots automatically every 50 mutations or every 5 minutes. If startup is consistently slow, check the health of your disk I/O.
+Common causes:
 
-### "Decryption Failed" on Startup
-- **Cause**: Incorrect `VELARIX_ENCRYPTION_KEY` provided.
-- **Resolution**: Ensure the 32-byte encryption key matches the one used when the data was originally written. Data cannot be recovered without the original key.
+- cross-org access attempt
+- missing scope for the route
+- admin-only route accessed by non-admin user
 
-### Metrics are Missing in Prometheus
-- **Cause**: The `/metrics` endpoint is not being scraped.
-- **Check**: Ensure your Prometheus configuration includes the Velarix server as a target and that the `/metrics` path is accessible.
+## 404 Not Found
 
----
-*Velarix: Transparent and deterministic error handling.*
+Common causes:
+
+- session, fact, or decision does not exist
+- dependency read requested for a missing record
+
+## 409 Conflict
+
+This is the most important approval-guardrail failure mode.
+
+Common causes:
+
+- `execute` was called on a stale decision
+- one or more required facts are missing or invalid
+
+Expected operator response:
+
+- inspect `reason_codes`
+- inspect `blocked_by`
+- call `why-blocked` if more detail is needed
+
+## 429 Too Many Requests
+
+Common causes:
+
+- rate limit exceeded for the current key
+
+Expected response behavior:
+
+- honor `Retry-After`
+- retry safely with idempotency keys
+
+## 503 Service Unavailable
+
+Common causes:
+
+- per-org write backpressure limit reached
+
+Expected response behavior:
+
+- honor `Retry-After`
+- retry safely with the same idempotency key
+
+## Common Troubleshooting Cases
+
+### Decision Is No Longer Executable
+
+Likely cause:
+
+- an upstream fact changed after the decision was created
+
+What to do:
+
+- run `execute-check`
+- review `blocked_by`
+- call `GET /v1/s/{session_id}/decisions/{decision_id}/why-blocked`
+
+### Fact Does Not Appear In The Slice
+
+Likely cause:
+
+- the fact resolved below the confidence threshold
+- one of its required parents was invalidated
+
+What to do:
+
+- fetch the fact directly
+- inspect explanation endpoints
+
+### Session Access Feels Slow
+
+Likely cause:
+
+- engine rebuild from persisted state
+- large history or snapshot load
+
+What to do:
+
+- verify storage path health
+- use the shared-store path for production validation
+

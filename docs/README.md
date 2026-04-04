@@ -1,44 +1,58 @@
-# Velarix Documentation
+# Documentation
 
-Welcome to the Velarix documentation. Velarix is a production-hardened belief-tracking engine designed for AI agents operating in regulated, high-stakes environments. It replaces logically flat memory with a **Stateful Logical Graph** that enforces reasoning integrity.
+Velarix should be understood as an approval guardrail service for AI-assisted internal operations.
 
-## 📚 Table of Contents
+Its job is simple:
 
-- [**Architecture**](ARCHITECTURE.md): Deep dive into the Epistemic Kernel, Dominator Trees, and Causal Logic.
-- [**API Reference**](API_REFERENCE.md): Detailed documentation for the Velarix REST API (v1).
-- [**Security & Compliance**](SECURITY.md): Authentication, Tenant Isolation, Encryption, and SOC2/HIPAA audit trails.
-- [**Integration Guide**](INTEGRATION_GUIDE.md): Using Velarix with Python/TypeScript SDKs and LLM frameworks like LangChain and LlamaIndex.
-- [**Operations & Maintenance**](OPERATIONS.md): Monitoring, backups, rate limiting, and persistence.
-- [**Error Codes & Troubleshooting**](ERRORS.md): Common error scenarios and how to resolve them.
+- record the facts behind an approval recommendation
+- track the dependencies that support the decision
+- block execution when those dependencies go stale
 
-## 🚀 Quick Start
+The first wedge for this repo is:
 
-To get Velarix running locally:
+- finance ops approval integrity
 
-1. **Start the Kernel**:
-   ```bash
-   export VELARIX_ENCRYPTION_KEY="your-32-byte-secure-key-here"
-   go run main.go
-   ```
+## What The Repo Ships Today
 
-2. **Access the API**:
-   The API is available at `http://localhost:8080/v1`.
+- Go API for facts, invalidation, history, explanation, and first-class decisions
+- Python and TypeScript SDKs
+- local Badger adapter for development and tests
+- shared-state path using Postgres with optional Redis coordination
+- one maintained demo: `demo/approval_integrity.py`
 
-3. **Explore with Swagger**:
-   View the OpenAPI specification at `http://localhost:8080/docs/openapi.yaml`.
+## What The Repo Does Not Claim
 
-## 🛠 SDKs
+- a finished finance ops SaaS product
+- a generic memory platform for agents
+- audited compliance posture
+- production-complete object storage, billing, support, or policy workflows
 
-- [**Python SDK**](../sdks/python/README.md)
-- [**TypeScript SDK**](../sdks/typescript/README.md)
+## Key References
 
-## 🌐 Control Plane
+- [Architecture](ARCHITECTURE.md)
+- [Integration Guide](INTEGRATION_GUIDE.md)
+- [Operations](OPERATIONS.md)
+- [Security Notes](SECURITY.md)
+- [Threat Model](THREAT_MODEL.md)
+- [Errors](ERRORS.md)
+- OpenAPI document: [`openapi.yaml`](openapi.yaml)
 
-The Velarix Console provides a visual interface for managing sessions and visualizing causal graphs.
-```bash
-cd console
-npm install && npm run dev
-```
+## Read This Repo In Order
 
----
-*Velarix: Building the trust layer for autonomous healthcare.*
+1. `README.md`
+2. `docs/ARCHITECTURE.md`
+3. `api/models/decision.go`
+4. `api/decision_contracts.go`
+5. `api/server.go`
+6. `store/interfaces.go`
+7. `store/badger.go`
+8. `store/postgres/`
+9. `demo/approval_integrity.py`
+10. `tests/e2e_test.go`
+
+## Review Notes
+
+- The canonical product flow is in `api/decision_contracts.go`.
+- The canonical demo is `demo/approval_integrity.py`.
+- The Postgres path is the production direction.
+- The Badger path exists for local development and tests.

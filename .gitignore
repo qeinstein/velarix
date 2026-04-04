@@ -1,7 +1,10 @@
 todo.txt
 
+.env
 .venv/
 venv/
+.pytest_cache/
+.mypy_cache/
 
 # CausalDB Data and Logs
 velarix.data/
@@ -19,3 +22,5 @@ velarix.data/
 velarix_test_bin
 __pycache__/
 *.pyc
+node_modules/
+sdks/typescript/node_modules/

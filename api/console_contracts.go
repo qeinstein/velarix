@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -542,82 +541,30 @@ type searchResult struct {
 
 func (s *Server) handleOrgSearch(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
-	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-	typ := strings.TrimSpace(r.URL.Query().Get("type"))
-	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	offset := 0
-	if cursor != "" {
-		if strings.HasPrefix(cursor, "o:") {
-			if v, err := strconv.Atoi(strings.TrimPrefix(cursor, "o:")); err == nil && v >= 0 {
-				offset = v
-			}
-		}
-	}
-	if q == "" {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"items": []searchResult{}, "next_cursor": ""})
 		return
 	}
-
-	sessions, _, err := s.Store.ListOrgSessions(orgID, "", 10000)
+	filter := store.SearchDocumentsFilter{
+		Query:        query,
+		DocumentType: strings.TrimSpace(r.URL.Query().Get("type")),
+		Status:       strings.TrimSpace(r.URL.Query().Get("status")),
+		SubjectRef:   strings.TrimSpace(r.URL.Query().Get("subject")),
+		Cursor:       strings.TrimSpace(r.URL.Query().Get("cursor")),
+		Limit:        50,
+	}
+	if limit, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && limit > 0 && limit <= 200 {
+		filter.Limit = limit
+	}
+	items, next, err := s.Store.SearchDocuments(orgID, filter)
 	if err != nil {
-		http.Error(w, "failed to list sessions", http.StatusInternalServerError)
+		http.Error(w, "failed to search documents", http.StatusInternalServerError)
 		return
 	}
-
-	results := []searchResult{}
-	matchCount := 0
-	hasMore := false
-	for _, sm := range sessions {
-		if typ == "" || typ == "session" {
-			if strings.Contains(strings.ToLower(sm.ID), q) {
-				matchCount++
-				if matchCount > offset && len(results) < limit {
-					results = append(results, searchResult{Type: "session", SessionID: sm.ID, Snippet: "session id match"})
-				} else if matchCount > offset+limit {
-					hasMore = true
-					break
-				}
-			}
-		}
-		if typ == "session" {
-			continue
-		}
-		// For fact/audit, search within stored history for asserts
-		history, _ := s.Store.GetSessionHistory(sm.ID)
-		for _, entry := range history {
-			raw, _ := json.Marshal(entry)
-			if !strings.Contains(strings.ToLower(string(raw)), q) {
-				continue
-			}
-			factID := entry.FactID
-			if factID == "" && entry.Fact != nil {
-				factID = entry.Fact.ID
-			}
-			matchCount++
-			if matchCount > offset && len(results) < limit {
-				results = append(results, searchResult{
-					Type:      "audit",
-					SessionID: sm.ID,
-					FactID:    factID,
-					Timestamp: entry.Timestamp,
-					Snippet:   string(entry.Type),
-				})
-			} else if matchCount > offset+limit {
-				hasMore = true
-				break
-			}
-		}
-		if hasMore {
-			break
-		}
-	}
-	next := ""
-	if hasMore {
-		next = fmt.Sprintf("o:%d", offset+limit)
+	results := make([]searchResult, 0, len(items))
+	for _, doc := range items {
+		results = append(results, searchResultFromDocument(doc))
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"items": results, "next_cursor": next})
 }
@@ -692,8 +639,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	_ = s.Store.UpsertOrgSessionIndex(orgID, id, time.Now().UnixMilli())
 	go s.Store.IncrementOrgMetric(orgID, "sessions_created", 1)
 
-	// touch engine so that subsequent calls work immediately
-	_, _, _ = s.getEngine(id, orgID)
+	config := &store.SessionConfig{EnforcementMode: "strict"}
+	_ = s.Store.UpsertSearchDocuments([]store.SearchDocument{sessionSearchDocument(orgID, id, config, time.Now().UnixMilli())})
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 }
 
@@ -895,6 +842,28 @@ type createInviteRequest struct {
 	Role  string `json:"role"`
 }
 
+type invitationView struct {
+	ID         string `json:"id"`
+	Email      string `json:"email"`
+	Role       string `json:"role"`
+	CreatedAt  int64  `json:"created_at"`
+	ExpiresAt  int64  `json:"expires_at"`
+	AcceptedAt int64  `json:"accepted_at,omitempty"`
+	RevokedAt  int64  `json:"revoked_at,omitempty"`
+}
+
+func sanitizeInvitation(inv *store.Invitation) invitationView {
+	return invitationView{
+		ID:         inv.ID,
+		Email:      inv.Email,
+		Role:       inv.Role,
+		CreatedAt:  inv.CreatedAt,
+		ExpiresAt:  inv.ExpiresAt,
+		AcceptedAt: inv.AcceptedAt,
+		RevokedAt:  inv.RevokedAt,
+	}
+}
+
 func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) {
 	if getUserRole(r) != "admin" {
 		http.Error(w, "forbidden: admin role required", http.StatusForbidden)
@@ -933,7 +902,22 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "failed to persist", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusCreated, inv)
+	_ = s.Store.AppendOrgActivity(orgID, store.JournalEntry{
+		Type:    store.EventAdminAction,
+		ActorID: getActorID(r),
+		Payload: map[string]interface{}{
+			"action":        "invitation_created",
+			"invitation_id": inv.ID,
+			"email":         inv.Email,
+			"role":          inv.Role,
+			"expires_at":    inv.ExpiresAt,
+		},
+		Timestamp: now,
+	})
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"invitation":   sanitizeInvitation(inv),
+		"invite_token": token,
+	})
 }
 
 func (s *Server) handleListInvitations(w http.ResponseWriter, r *http.Request) {
@@ -947,7 +931,11 @@ func (s *Server) handleListInvitations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to list invites", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"items": list})
+	items := make([]invitationView, 0, len(list))
+	for i := range list {
+		items = append(items, sanitizeInvitation(&list[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
 }
 
 func (s *Server) handleRevokeInvitation(w http.ResponseWriter, r *http.Request) {
@@ -967,7 +955,17 @@ func (s *Server) handleRevokeInvitation(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "failed to persist", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+	_ = s.Store.AppendOrgActivity(orgID, store.JournalEntry{
+		Type:    store.EventAdminAction,
+		ActorID: getActorID(r),
+		Payload: map[string]interface{}{
+			"action":        "invitation_revoked",
+			"invitation_id": inv.ID,
+			"email":         inv.Email,
+		},
+		Timestamp: inv.RevokedAt,
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "revoked", "invitation": sanitizeInvitation(inv)})
 }
 
 type acceptInviteRequest struct {
@@ -992,6 +990,17 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	}
 	now := time.Now().UnixMilli()
 	if inv.RevokedAt != 0 || inv.AcceptedAt != 0 || now > inv.ExpiresAt {
+		_ = s.Store.AppendOrgActivity(orgID, store.JournalEntry{
+			Type:    store.EventAdminAction,
+			ActorID: "system",
+			Payload: map[string]interface{}{
+				"action":        "invitation_accept_rejected",
+				"invitation_id": inv.ID,
+				"email":         inv.Email,
+				"reason":        "expired_or_revoked",
+			},
+			Timestamp: now,
+		})
 		http.Error(w, "invite expired or revoked", http.StatusUnauthorized)
 		return
 	}
@@ -1013,6 +1022,17 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	}
 	inv.AcceptedAt = now
 	_ = s.Store.UpdateInvitation(orgID, inv)
+	_ = s.Store.AppendOrgActivity(orgID, store.JournalEntry{
+		Type:    store.EventAdminAction,
+		ActorID: inv.Email,
+		Payload: map[string]interface{}{
+			"action":        "invitation_accepted",
+			"invitation_id": inv.ID,
+			"email":         inv.Email,
+			"role":          inv.Role,
+		},
+		Timestamp: now,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 }
 
