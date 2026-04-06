@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -12,14 +15,15 @@ import (
 	"velarix/core"
 	"velarix/store"
 	storepostgres "velarix/store/postgres"
-	storeredis "velarix/store/redis"
-
-	"log/slog"
 )
 
 func main() {
-	// Load environment variables from .env file if it exists
 	_ = godotenv.Load()
+
+	liteFlag := flag.Bool("lite", false, "Run in Lite mode (no auth, local storage)")
+	flag.Parse()
+
+	isLite := *liteFlag || os.Getenv("VELARIX_LITE") == "true"
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -35,62 +39,36 @@ func main() {
 		}()
 	}
 
-	slog.Info("Velarix | Decision Integrity For AI-Assisted Internal Approvals")
+	slog.Info("Velarix | Epistemic Layer for AI Agents", "lite_mode", isLite)
 
 	encryptionKey := []byte(os.Getenv("VELARIX_ENCRYPTION_KEY"))
 	env := os.Getenv("VELARIX_ENV")
-	jwtSecret := os.Getenv("VELARIX_JWT_SECRET")
-	if len(encryptionKey) == 0 {
+
+	if !isLite && len(encryptionKey) == 0 {
 		if env != "dev" {
-			slog.Error(" [SECURITY] CRITICAL: Encryption at rest is REQUIRED in production. Set VELARIX_ENCRYPTION_KEY (16, 24, or 32 bytes) or set VELARIX_ENV=dev to override for local development.")
+			slog.Error("CRITICAL: Encryption at rest is REQUIRED in production.")
 			os.Exit(1)
 		}
-		slog.Warn(" [SECURITY] WARNING: Encryption at rest is disabled (DEV MODE).")
-	} else {
-		slog.Info(" [SECURITY] Encryption at rest enabled", "bits", len(encryptionKey)*8)
 	}
 
-	if jwtSecret == "" && env != "dev" {
-		slog.Error(" [SECURITY] CRITICAL: JWT signing secret is REQUIRED in production. Set VELARIX_JWT_SECRET or set VELARIX_ENV=dev to override for local development.")
-		os.Exit(1)
-	}
-
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("VELARIX_STORE_BACKEND")))
-	if backend == "" {
-		if strings.TrimSpace(os.Getenv("VELARIX_POSTGRES_DSN")) != "" {
+	backend := "badger"
+	if !isLite {
+		backend = strings.ToLower(strings.TrimSpace(os.Getenv("VELARIX_STORE_BACKEND")))
+		if backend == "" && strings.TrimSpace(os.Getenv("VELARIX_POSTGRES_DSN")) != "" {
 			backend = "postgres"
-		} else {
-			backend = "badger"
 		}
 	}
 
 	var runtimeStore store.RuntimeStore
-	switch backend {
-	case "postgres":
+	if backend == "postgres" && !isLite {
 		pgStore, err := storepostgres.Open(context.Background(), os.Getenv("VELARIX_POSTGRES_DSN"))
 		if err != nil {
 			slog.Error("Failed to open Postgres store", "error", err)
 			os.Exit(1)
 		}
-
-		redisAddr := strings.TrimSpace(os.Getenv("VELARIX_REDIS_URL"))
-		if redisAddr == "" {
-			redisAddr = strings.TrimSpace(os.Getenv("VELARIX_REDIS_ADDR"))
-		}
-		if redisAddr != "" {
-			redisStore, err := storeredis.Open(redisAddr)
-			if err != nil {
-				slog.Error("Failed to open Redis store", "error", err)
-				os.Exit(1)
-			}
-			runtimeStore = store.NewCompositeRuntimeStore(pgStore, redisStore, redisStore, redisStore, pgStore)
-			slog.Info("Using shared Postgres + Redis backend", "store_backend", backend)
-		} else {
-			runtimeStore = store.NewCompositeRuntimeStore(pgStore, nil, nil, pgStore)
-			slog.Warn("Using Postgres without Redis; idempotency and rate limiting fall back to Postgres tables")
-		}
-	case "badger":
-		dbPath := strings.TrimSpace(os.Getenv("VELARIX_BADGER_PATH"))
+		runtimeStore = store.NewCompositeRuntimeStore(pgStore, nil, nil, pgStore)
+	} else {
+		dbPath := os.Getenv("VELARIX_BADGER_PATH")
 		if dbPath == "" {
 			dbPath = "velarix.data"
 		}
@@ -100,10 +78,6 @@ func main() {
 			os.Exit(1)
 		}
 		runtimeStore = localStore
-		slog.Info("Using local Badger adapter for storage", "mode", "development/test")
-	default:
-		slog.Error("Unknown store backend", "backend", backend)
-		os.Exit(1)
 	}
 
 	defer runtimeStore.Close()
@@ -116,9 +90,8 @@ func main() {
 		SliceCache: make(map[string]*api.SliceCacheEntry),
 		Store:      runtimeStore,
 		StartTime:  time.Now(),
+		LiteMode:   isLite,
 	}
-
-	slog.Info("Session engines will rebuild lazily from shared state", "store_backend", backend)
 
 	server.StartEvictionTicker()
 	server.StartRetentionTicker()
@@ -135,7 +108,7 @@ func main() {
 		port = ":" + port
 	}
 
-	slog.Info("Server ready", "url", "http://localhost"+port)
+	slog.Info(fmt.Sprintf("Server ready at http://localhost%s", port))
 
 	if err := http.ListenAndServe(port, server.Routes()); err != nil {
 		slog.Error("Server failed", "error", err)
