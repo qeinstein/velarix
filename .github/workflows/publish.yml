@@ -1,0 +1,42 @@
+name: Publish to PyPI and NPM
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish-pypi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build twine
+      - name: Build and publish
+        run: |
+          cd sdks/python
+          python -m build
+          twine upload dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+  publish-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Publish to NPM
+        run: |
+          cd sdks/typescript
+          npm install
+          npm run build
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

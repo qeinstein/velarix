@@ -15,7 +15,7 @@ The first wedge for this repo is:
 ## What The Repo Ships Today
 
 - Go API for facts, invalidation, history, explanation, and first-class decisions
-- Python and TypeScript SDKs
+- Python SDK
 - local Badger adapter for development and tests
 - shared-state path using Postgres with optional Redis coordination
 - one maintained demo: `demo/approval_integrity.py`

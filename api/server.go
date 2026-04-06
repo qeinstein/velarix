@@ -85,6 +85,7 @@ type Server struct {
 	SliceCache map[string]*SliceCacheEntry
 	Store      store.ServerStore
 	StartTime  time.Time
+	LiteMode   bool
 
 	writeLimiters sync.Map // org_id -> chan struct{}
 }
@@ -1704,6 +1705,48 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}/why-blocked", s.handleDecisionWhyBlocked)
 
 	var h http.Handler = mux
+
+	if s.LiteMode {
+		mux = http.NewServeMux()
+		mux.HandleFunc("GET /docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "docs/openapi.yaml") })
+		mux.HandleFunc("GET /docs/postman.json", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "docs/postman.json") })
+		mux.Handle("GET /metrics", promhttp.Handler())
+		mux.HandleFunc("GET /health", s.handleHealth)
+		mux.HandleFunc("GET /health/full", s.handleFullHealth)
+
+		mux.HandleFunc("POST /v1/s/{session_id}/facts", s.handleAssertFact)
+		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/invalidate", s.handleInvalidateRoot)
+		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}", s.handleGetFact)
+		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/why", s.handleExplain)
+		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/impact", s.handleGetImpact)
+		mux.HandleFunc("GET /v1/s/{session_id}/facts", s.handleListFacts)
+		mux.HandleFunc("POST /v1/s/{session_id}/config", s.handleUpdateConfig)
+		mux.HandleFunc("POST /v1/s/{session_id}/revalidate", s.handleRevalidate)
+		mux.HandleFunc("GET /v1/s/{session_id}/export", s.handleExport)
+		mux.HandleFunc("POST /v1/s/{session_id}/export-jobs", s.handleCreateExportJob)
+		mux.HandleFunc("GET /v1/s/{session_id}/export-jobs", s.handleListExportJobs)
+		mux.HandleFunc("GET /v1/s/{session_id}/export-jobs/{id}", s.handleGetExportJob)
+		mux.HandleFunc("GET /v1/s/{session_id}/export-jobs/{id}/download", s.handleDownloadExportJob)
+		mux.HandleFunc("GET /v1/s/{session_id}/history", s.handleGetHistory)
+		mux.HandleFunc("POST /v1/s/{session_id}/history", s.handleAppendHistory)
+		mux.HandleFunc("GET /v1/s/{session_id}/slice", s.handleGetSlice)
+		mux.HandleFunc("GET /v1/s/{session_id}/events", s.handleEvents)
+		mux.HandleFunc("GET /v1/s/{session_id}/graph", s.handleGetGraph)
+		mux.HandleFunc("GET /v1/s/{session_id}/explain", s.handleExplainReasoning)
+		mux.HandleFunc("GET /v1/s/{session_id}/explanations", s.handleGetExplanations)
+		mux.HandleFunc("GET /v1/s/{session_id}/history/page", s.handleHistoryPage)
+		mux.HandleFunc("GET /v1/s/{session_id}/config", s.handleGetConfig)
+		mux.HandleFunc("POST /v1/s/{session_id}/decisions", s.handleCreateDecision)
+		mux.HandleFunc("GET /v1/s/{session_id}/decisions", s.handleListSessionDecisions)
+		mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}", s.handleGetDecision)
+		mux.HandleFunc("POST /v1/s/{session_id}/decisions/{decision_id}/recompute", s.handleRecomputeDecision)
+		mux.HandleFunc("POST /v1/s/{session_id}/decisions/{decision_id}/execute-check", s.handleExecuteDecisionCheck)
+		mux.HandleFunc("POST /v1/s/{session_id}/decisions/{decision_id}/execute", s.handleExecuteDecision)
+		mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}/lineage", s.handleDecisionLineage)
+		mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}/why-blocked", s.handleDecisionWhyBlocked)
+		h = mux
+	}
+
 	h = s.orgMetricsMiddleware(h)
 	h = s.accessLogMiddleware(h)
 	h = s.writeLimitMiddleware(h)
