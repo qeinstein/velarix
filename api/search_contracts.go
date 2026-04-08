@@ -27,6 +27,12 @@ func searchResultFromDocument(doc store.SearchDocument) searchResult {
 	}
 }
 
+func (s *Server) syncSemanticFactEmbedding(orgID, sessionID string, fact *core.Fact, status core.Status) {
+	if semanticStore, ok := s.Store.(store.SemanticStore); ok && fact != nil {
+		_ = semanticStore.UpsertFactEmbedding(orgID, sessionID, fact, status)
+	}
+}
+
 func (s *Server) syncSessionSearchDocuments(orgID, sessionID string, engine *core.Engine, config *store.SessionConfig) {
 	if engine == nil || orgID == "" || sessionID == "" {
 		return
@@ -36,6 +42,7 @@ func (s *Server) syncSessionSearchDocuments(orgID, sessionID string, engine *cor
 	for _, fact := range engine.ListFacts() {
 		fact.ResolvedStatus = engine.GetStatus(fact.ID)
 		docs = append(docs, decisionFactSearchDocuments(orgID, sessionID, fact, now)...)
+		s.syncSemanticFactEmbedding(orgID, sessionID, fact, fact.ResolvedStatus)
 	}
 	_ = s.Store.UpsertSearchDocuments(docs)
 }
@@ -49,4 +56,5 @@ func (s *Server) syncFactSearchDocument(orgID, sessionID string, config *store.S
 	docs := []store.SearchDocument{sessionSearchDocument(orgID, sessionID, config, now)}
 	docs = append(docs, decisionFactSearchDocuments(orgID, sessionID, fact, now)...)
 	_ = s.Store.UpsertSearchDocuments(docs)
+	s.syncSemanticFactEmbedding(orgID, sessionID, fact, status)
 }
