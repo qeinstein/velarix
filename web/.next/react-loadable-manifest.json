@@ -1,13 +1,1 @@
-{
-  "app/dashboard/session/[id]/page.tsx -> ../../../../components/DAGExplorer": {
-    "id": 224,
-    "files": [
-      "static/chunks/b536a0f1.0cca5fa2ccc62e36.js",
-      "static/chunks/6cccc9b2.f9dc7ef445e3b989.js",
-      "static/chunks/5009c5b3.b7ac9b160db7ee4b.js",
-      "static/chunks/5991df85.6dfcebdcc7076608.js",
-      "static/chunks/206.d18e98724cebe413.js",
-      "static/chunks/224.98bc35beb173be34.js"
-    ]
-  }
-}
+{}

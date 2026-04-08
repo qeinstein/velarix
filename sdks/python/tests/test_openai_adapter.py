@@ -16,6 +16,7 @@ def test_openai_interceptor_parallel_calls():
     mock_session.observe.return_value = {}
     mock_session.derive.return_value = {}
     mock_session.append_history.return_value = {}
+    mock_session.consistency_check.return_value = {"issue_count": 0, "issues": []}
     
     # Mock Velarix Client
     mock_client = MagicMock()
@@ -81,6 +82,7 @@ def test_openai_overconfidence_downgrade():
     mock_session = MagicMock(spec=VelarixSession)
     mock_session.observe.return_value = {}
     mock_session.append_history.return_value = {}
+    mock_session.consistency_check.return_value = {"issue_count": 0, "issues": []}
     
     # Mock Velarix Client
     mock_client = MagicMock()
@@ -128,6 +130,7 @@ def test_openai_provenance_injection():
     mock_session.get_slice.return_value = "## Fact: F1\n```json\n{}\n```"
     mock_session.observe.return_value = {}
     mock_session.append_history.return_value = {}
+    mock_session.consistency_check.return_value = {"issue_count": 0, "issues": []}
     
     # Mock Client
     mock_client = MagicMock()
@@ -169,7 +172,52 @@ def test_openai_provenance_injection():
 
         print("PASS: test_openai_provenance_injection")
 
+def test_openai_verify_revise_loop():
+    mock_session = MagicMock(spec=VelarixSession)
+    mock_session.get_slice.return_value = "## Fact: F1\n```json\n{}\n```"
+    mock_session.observe.return_value = {}
+    mock_session.append_history.return_value = {}
+    mock_session.consistency_check.side_effect = [
+        {"issue_count": 1, "issues": [{"type": "claim_value_conflict"}]},
+        {"issue_count": 0, "issues": []},
+    ]
+
+    mock_client = MagicMock()
+    mock_client.session.return_value = mock_session
+    mock_client.headers = {}
+
+    with patch('openai.resources.chat.completions.Completions.create') as mock_create:
+        first_response = MagicMock()
+        first_tool_call = MagicMock()
+        first_tool_call.id = "call_1"
+        first_tool_call.function.name = "record_observation"
+        first_tool_call.function.arguments = json.dumps({"id": "obs_conflict", "payload": {"claim_key": "x", "claim_value": "a"}})
+        first_response.model = "gpt-4o"
+        first_response.created = 123
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.tool_calls = [first_tool_call]
+
+        second_response = MagicMock()
+        second_response.model = "gpt-4o"
+        second_response.created = 124
+        second_response.choices = [MagicMock()]
+        second_response.choices[0].message.tool_calls = []
+
+        mock_create.side_effect = [first_response, second_response]
+
+        client = OpenAI(api_key="sk-test", velarix_session_id="test-session", velarix_verify_rounds=1)
+        client.velarix_client = mock_client
+        result = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "Test"}])
+
+        assert result is second_response
+        assert mock_create.call_count == 2
+        _, second_kwargs = mock_create.call_args_list[1]
+        assert any("Velarix verification failed" in msg["content"] for msg in second_kwargs["messages"] if msg["role"] == "user")
+
+        print("PASS: test_openai_verify_revise_loop")
+
 if __name__ == "__main__":
     test_openai_interceptor_parallel_calls()
     test_openai_overconfidence_downgrade()
     test_openai_provenance_injection()
+    test_openai_verify_revise_loop()

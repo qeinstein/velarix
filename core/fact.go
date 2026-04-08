@@ -3,8 +3,8 @@ package core
 type Status float64
 
 const (
-	Invalid Status = 0.0	// invalid if it's 0.0, the closer it is to 0.0, the lower it's validity
-	Valid   Status = 1.0	// Valid if it's 1, the closer it is to 1, the higher it's validity 
+	Invalid Status = 0.0 // invalid if it's 0.0, the closer it is to 0.0, the lower it's validity
+	Valid   Status = 1.0 // Valid if it's 1, the closer it is to 1, the higher it's validity
 )
 
 type JustificationSet struct {
@@ -27,6 +27,9 @@ type Fact struct {
 
 	// Internal system metadata (ignored by schema validation)
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
+
+	// Optional semantic embedding used for retrieval and consistency scans.
+	Embedding []float64 `json:"embedding,omitempty"`
 
 	// Root control
 	IsRoot       bool   `json:"is_root"`

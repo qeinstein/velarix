@@ -1,10 +1,10 @@
 package tests
 
 import (
-	"testing"
 	"fmt"
-	"velarix/core"
 	"github.com/xeipuuv/gojsonschema"
+	"testing"
+	"velarix/core"
 )
 
 func TestSimpleInvalidationChain(t *testing.T) {
@@ -120,7 +120,7 @@ func TestDeepDominatorChain(t *testing.T) {
 	// Invalidate the root
 	engine.InvalidateRoot("Fact0")
 
-	// Even if propagation were slow, the Dominator Tree check 
+	// Even if propagation were slow, the Dominator Tree check
 	// would identify the collapse.
 	if engine.GetStatus("Fact100") != core.Invalid {
 		t.Fatalf("expected Fact100 to be invalid via dominator collapse")
@@ -128,14 +128,14 @@ func TestDeepDominatorChain(t *testing.T) {
 }
 
 func TestGlobalRevalidation(t *testing.T) {
-	// We'll test this via the API logic in a real integration test later, 
+	// We'll test this via the API logic in a real integration test later,
 	// but here we can simulate the "Clear and Re-Assert" logic.
 	engine := core.NewEngine()
-	
+
 	// 1. Assert a fact that will later fail schema
 	f1 := &core.Fact{ID: "F1", IsRoot: true, ManualStatus: core.Valid, Payload: map[string]interface{}{"age": "invalid_string"}}
 	engine.AssertFact(f1)
-	
+
 	if engine.GetStatus("F1") != core.Valid {
 		t.Fatal("expected F1 to be valid initially")
 	}
@@ -143,19 +143,19 @@ func TestGlobalRevalidation(t *testing.T) {
 	// 2. Simulate "Revalidation" with a strict schema (age must be int)
 	// In the real server, this happens by clearing and re-playing from Journal.
 	engine2 := core.NewEngine()
-	
+
 	// Logic from handleRevalidate:
 	passed := 0
 	violations := 0
-	
+
 	history := []*core.Fact{f1}
 	schema := `{"type": "object", "properties": {"age": {"type": "integer"}}}`
-	
+
 	for _, f := range history {
 		loader := gojsonschema.NewStringLoader(schema)
 		doc := gojsonschema.NewGoLoader(f.Payload)
 		res, _ := gojsonschema.Validate(loader, doc)
-		
+
 		if !res.Valid() {
 			violations++
 			continue
@@ -191,5 +191,130 @@ func TestSnapshotCorruption(t *testing.T) {
 	}
 	if err.Error() != "snapshot integrity check failed: checksum mismatch" {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestRetractFactInvalidatesChildren(t *testing.T) {
+	engine := core.NewEngine()
+
+	if err := engine.AssertFact(&core.Fact{ID: "root", IsRoot: true, ManualStatus: core.Valid}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AssertFact(&core.Fact{ID: "derived", JustificationSets: [][]string{{"root"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if engine.GetStatus("derived") != core.Valid {
+		t.Fatalf("expected derived to start valid")
+	}
+
+	if err := engine.RetractFact("root", "contradicted"); err != nil {
+		t.Fatal(err)
+	}
+	if engine.GetStatus("root") != core.Invalid {
+		t.Fatalf("expected retracted root to be invalid")
+	}
+	if engine.GetStatus("derived") != core.Invalid {
+		t.Fatalf("expected child fact to be invalid after root retraction")
+	}
+}
+
+func TestConsistencyCheckDetectsClaimConflict(t *testing.T) {
+	engine := core.NewEngine()
+
+	engine.AssertFact(&core.Fact{
+		ID:           "claim_a",
+		IsRoot:       true,
+		ManualStatus: core.Valid,
+		Payload: map[string]interface{}{
+			"claim_key":   "ticket_status",
+			"claim_value": "open",
+		},
+	})
+	engine.AssertFact(&core.Fact{
+		ID:           "claim_b",
+		IsRoot:       true,
+		ManualStatus: core.Valid,
+		Payload: map[string]interface{}{
+			"claim_key":   "ticket_status",
+			"claim_value": "closed",
+		},
+	})
+
+	report := engine.CheckConsistency([]string{"claim_a", "claim_b"}, false)
+	if report.IssueCount != 1 {
+		t.Fatalf("expected exactly one contradiction, got %+v", report)
+	}
+	if report.Issues[0].Type != "claim_value_conflict" {
+		t.Fatalf("expected claim_value_conflict, got %+v", report.Issues[0])
+	}
+}
+
+func TestSemanticSearchFindsRelevantFact(t *testing.T) {
+	engine := core.NewEngine()
+
+	engine.AssertFact(&core.Fact{
+		ID:           "apple_fact",
+		IsRoot:       true,
+		ManualStatus: core.Valid,
+		Payload:      map[string]interface{}{"text": "red apple on the kitchen table"},
+	})
+	engine.AssertFact(&core.Fact{
+		ID:           "car_fact",
+		IsRoot:       true,
+		ManualStatus: core.Valid,
+		Payload:      map[string]interface{}{"text": "blue sedan in the garage"},
+	})
+
+	results := engine.SearchSimilarFacts("apple", 2, true)
+	if len(results) == 0 {
+		t.Fatalf("expected at least one semantic search result")
+	}
+	if results[0].FactID != "apple_fact" {
+		t.Fatalf("expected apple_fact to rank first, got %+v", results)
+	}
+}
+
+func TestReasoningAuditMarksEarlierContradictionForRetraction(t *testing.T) {
+	engine := core.NewEngine()
+
+	engine.AssertFact(&core.Fact{
+		ID:           "weather_sunny",
+		IsRoot:       true,
+		ManualStatus: core.Valid,
+		Payload: map[string]interface{}{
+			"claim_key":   "weather_outlook",
+			"claim_value": "sunny",
+		},
+	})
+	engine.AssertFact(&core.Fact{
+		ID:           "weather_rainy",
+		IsRoot:       true,
+		ManualStatus: core.Valid,
+		Payload: map[string]interface{}{
+			"claim_key":   "weather_outlook",
+			"claim_value": "rainy",
+		},
+	})
+
+	report := engine.AuditReasoningChain(&core.ReasoningChain{
+		ChainID: "chain_weather",
+		Steps: []core.ReasoningStep{
+			{ID: "step_1", Content: "initial weather belief", OutputFactID: "weather_sunny"},
+			{ID: "step_2", Content: "later contradictory weather belief", OutputFactID: "weather_rainy"},
+		},
+	})
+
+	if report.Valid {
+		t.Fatalf("expected reasoning audit to fail on contradiction")
+	}
+	found := false
+	for _, factID := range report.RetractCandidateFactIDs {
+		if factID == "weather_sunny" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected earlier output fact to be marked for retraction, got %+v", report)
 	}
 }

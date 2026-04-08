@@ -37,16 +37,16 @@ type ExplanationSource struct {
 
 // ExplanationOutput is the full structured explanation returned by ExplainReasoning.
 type ExplanationOutput struct {
-	FactID         string                `json:"fact_id"`
-	SessionID      string                `json:"session_id"`
-	Timestamp      int64                 `json:"timestamp"`
-	Summary        string                `json:"summary,omitempty"`
-	Structured     map[string]interface{} `json:"structured,omitempty"`
-	InvalidatedFactIDs []string          `json:"invalidated_fact_ids,omitempty"`
-	Sources        []ExplanationSource   `json:"sources,omitempty"`
-	PolicyVersions []string              `json:"policy_versions,omitempty"`
-	CausalChain    []BeliefExplanation   `json:"causal_chain"`
-	Counterfactual *CounterfactualResult `json:"counterfactual,omitempty"`
+	FactID             string                 `json:"fact_id"`
+	SessionID          string                 `json:"session_id"`
+	Timestamp          int64                  `json:"timestamp"`
+	Summary            string                 `json:"summary,omitempty"`
+	Structured         map[string]interface{} `json:"structured,omitempty"`
+	InvalidatedFactIDs []string               `json:"invalidated_fact_ids,omitempty"`
+	Sources            []ExplanationSource    `json:"sources,omitempty"`
+	PolicyVersions     []string               `json:"policy_versions,omitempty"`
+	CausalChain        []BeliefExplanation    `json:"causal_chain"`
+	Counterfactual     *CounterfactualResult  `json:"counterfactual,omitempty"`
 }
 
 // confidenceTier returns a human-readable tier for a confidence score.
@@ -87,12 +87,12 @@ func (e *Engine) ExplainReasoning(factID string, counterfactualFactID string) (*
 		output.Counterfactual = e.computeCounterfactual(factID, counterfactualFactID)
 	}
 
-	output.enrichForDecisionContext(fact)
+	output.enrichForDecisionContext(fact, float64(e.effectiveStatusUnsafe(fact)))
 
 	return output, nil
 }
 
-func (o *ExplanationOutput) enrichForDecisionContext(fact *Fact) {
+func (o *ExplanationOutput) enrichForDecisionContext(fact *Fact, currentStatus float64) {
 	if fact == nil {
 		return
 	}
@@ -139,18 +139,14 @@ func (o *ExplanationOutput) enrichForDecisionContext(fact *Fact) {
 	}
 	sort.Strings(o.PolicyVersions)
 
-	status := float64(fact.DerivedStatus)
-	if fact.IsRoot {
-		status = float64(fact.ManualStatus)
-	}
-	if status < float64(ConfidenceThreshold) {
+	if currentStatus < float64(ConfidenceThreshold) {
 		o.Summary = fmt.Sprintf("Fact %s is blocked or stale because one or more dependencies are no longer valid.", fact.ID)
 	} else {
 		o.Summary = fmt.Sprintf("Fact %s is supported by the current dependency set.", fact.ID)
 	}
 	o.Structured = map[string]interface{}{
 		"fact_id":              fact.ID,
-		"current_status":       status,
+		"current_status":       currentStatus,
 		"invalidated_fact_ids": o.InvalidatedFactIDs,
 		"policy_versions":      o.PolicyVersions,
 		"source_count":         len(o.Sources),
@@ -164,10 +160,7 @@ func (e *Engine) buildCausalChain(fact *Fact, visited map[string]struct{}) []Bel
 	}
 	visited[fact.ID] = struct{}{}
 
-	conf := float64(fact.DerivedStatus)
-	if fact.IsRoot {
-		conf = float64(fact.ManualStatus)
-	}
+	conf := float64(e.effectiveStatusUnsafe(fact))
 
 	belief := BeliefExplanation{
 		FactID:     fact.ID,
@@ -276,7 +269,7 @@ func (e *Engine) Explain(factID string) ([]*ExplanationNode, error) {
 		return nil, errors.New("fact not found")
 	}
 
-	if fact.DerivedStatus != Valid {
+	if e.effectiveStatusUnsafe(fact) != Valid {
 		return []*ExplanationNode{}, nil
 	}
 
@@ -306,7 +299,7 @@ func (e *Engine) explainFact(factID string, visited map[string]struct{}) []*Expl
 		setValid := true
 		for _, parentID := range set {
 			parent := e.Facts[parentID]
-			if parent.DerivedStatus != Valid {
+			if e.effectiveStatusUnsafe(parent) != Valid {
 				setValid = false
 				break
 			}

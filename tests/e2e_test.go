@@ -275,6 +275,180 @@ func TestDecisionLifecycleContract(t *testing.T) {
 	}
 }
 
+func TestReasoningAndConsistencyContracts(t *testing.T) {
+	server, _ := setupTestServer(t)
+	sessionID := "reasoning_contract_session"
+
+	assertFact := func(body map[string]interface{}) {
+		payload, _ := json.Marshal(body)
+		resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", payload)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("failed to create fact: status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	}
+
+	assertFact(map[string]interface{}{
+		"id":            "belief.weather.sunny",
+		"is_root":       true,
+		"manual_status": 1.0,
+		"payload": map[string]interface{}{
+			"claim_key":   "weather_outlook",
+			"claim_value": "sunny",
+			"text":        "the weather is sunny",
+		},
+	})
+	assertFact(map[string]interface{}{
+		"id":            "belief.weather.rainy",
+		"is_root":       true,
+		"manual_status": 1.0,
+		"payload": map[string]interface{}{
+			"claim_key":   "weather_outlook",
+			"claim_value": "rainy",
+			"text":        "the weather is rainy",
+		},
+	})
+
+	resp := performRequest(t, server, http.MethodGet, "/v1/s/"+sessionID+"/semantic-search?q=sunny&limit=1", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("semantic search failed: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var semanticResults []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&semanticResults); err != nil {
+		t.Fatalf("failed to decode semantic search response: %v", err)
+	}
+	if len(semanticResults) == 0 || semanticResults[0]["fact_id"] != "belief.weather.sunny" {
+		t.Fatalf("unexpected semantic search results: %+v", semanticResults)
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/consistency-check", []byte(`{}`))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("consistency check failed: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var consistencyReport map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&consistencyReport); err != nil {
+		t.Fatalf("failed to decode consistency report: %v", err)
+	}
+	if consistencyReport["issue_count"].(float64) < 1 {
+		t.Fatalf("expected at least one consistency issue, got %+v", consistencyReport)
+	}
+
+	chainBody, _ := json.Marshal(map[string]interface{}{
+		"chain_id": "chain_weather",
+		"summary":  "weather chain with later contradiction",
+		"steps": []map[string]interface{}{
+			{"id": "step_1", "content": "initial belief", "output_fact_id": "belief.weather.sunny"},
+			{"id": "step_2", "content": "later contradictory belief", "output_fact_id": "belief.weather.rainy"},
+		},
+	})
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/reasoning-chains", chainBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to record reasoning chain: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/reasoning-chains/chain_weather/verify", []byte(`{"auto_retract": true}`))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to verify reasoning chain: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var auditReport map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&auditReport); err != nil {
+		t.Fatalf("failed to decode reasoning audit: %v", err)
+	}
+	if auditReport["valid"].(bool) {
+		t.Fatalf("expected reasoning audit to fail on contradiction: %+v", auditReport)
+	}
+
+	resp = performRequest(t, server, http.MethodGet, "/v1/s/"+sessionID+"/facts/belief.weather.sunny", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to fetch retracted fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var factResp struct {
+		ID             string  `json:"id"`
+		ResolvedStatus float64 `json:"resolved_status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&factResp); err != nil {
+		t.Fatalf("failed to decode fact response: %v", err)
+	}
+	if factResp.ResolvedStatus != 0.0 {
+		t.Fatalf("expected earlier contradicted fact to be retracted, got %+v", factResp)
+	}
+}
+
+func TestConsistencyCheckUsesModelVerifierWhenConfigured(t *testing.T) {
+	server, _ := setupTestServer(t)
+	sessionID := "verifier_contract_session"
+
+	verifyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"content": `{"label":"contradiction","confidence":0.97,"reason":"Both facts cannot be true at the same time."}`,
+					},
+				},
+			},
+		})
+	}))
+	defer verifyServer.Close()
+
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("VELARIX_VERIFIER_MODEL", "gpt-4o-mini")
+	t.Setenv("VELARIX_OPENAI_BASE_URL", verifyServer.URL)
+
+	for _, fact := range []map[string]interface{}{
+		{
+			"id":            "shipment_arrived",
+			"is_root":       true,
+			"manual_status": 1.0,
+			"payload": map[string]interface{}{
+				"text": "Alice is available tomorrow for the warehouse shift.",
+			},
+		},
+		{
+			"id":            "shipment_in_transit",
+			"is_root":       true,
+			"manual_status": 1.0,
+			"payload": map[string]interface{}{
+				"text": "Alice is unavailable tomorrow for the warehouse shift.",
+			},
+		},
+	} {
+		body, _ := json.Marshal(fact)
+		resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("failed to create verifier fact: status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	}
+
+	resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/consistency-check", []byte(`{}`))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("consistency check failed: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var report map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		t.Fatalf("failed to decode verifier report: %v", err)
+	}
+	if report["issue_count"].(float64) < 1 {
+		t.Fatalf("expected verifier-backed issue, got %+v", report)
+	}
+	issues, _ := report["issues"].([]interface{})
+	found := false
+	for _, raw := range issues {
+		issue, _ := raw.(map[string]interface{})
+		if issue["type"] == "model_verifier_contradiction" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected model_verifier_contradiction issue, got %+v", report)
+	}
+}
+
 func TestMultiInstanceDecisionRefresh(t *testing.T) {
 	serverOne, sharedStore := setupTestServer(t)
 	serverTwo := newTestServerWithStore(sharedStore)

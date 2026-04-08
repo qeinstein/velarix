@@ -210,6 +210,88 @@ class VelarixSession:
         resp.raise_for_status()
         return resp.json()
 
+    def record_perception(
+        self,
+        fact_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        confidence: float = 0.75,
+        modality: Optional[str] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        embedding: Optional[List[float]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self._clear_cache()
+        body: Dict[str, Any] = {
+            "id": fact_id,
+            "payload": payload or {},
+            "confidence": float(confidence),
+        }
+        if modality:
+            body["modality"] = modality
+        if provider:
+            body["provider"] = provider
+        if model:
+            body["model"] = model
+        if embedding is not None:
+            body["embedding"] = embedding
+        if metadata:
+            body["metadata"] = metadata
+        resp = self.client._request("POST", f"{self.base_url}/percepts", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    def retract(self, fact_id: str, reason: str = "", idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        self._clear_cache()
+        body = {"reason": reason} if reason else {}
+        resp = self.client._request("POST", f"{self.base_url}/facts/{fact_id}/retract", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    def semantic_search(self, query: str, *, limit: int = 10, valid_only: bool = True) -> List[Dict[str, Any]]:
+        params = {"q": query, "limit": limit, "valid_only": str(valid_only).lower()}
+        resp = self.client._request("GET", f"{self.base_url}/semantic-search", params=params, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    def consistency_check(
+        self,
+        *,
+        fact_ids: Optional[List[str]] = None,
+        max_facts: Optional[int] = None,
+        include_invalid: bool = False,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"include_invalid": include_invalid}
+        if fact_ids:
+            body["fact_ids"] = fact_ids
+        if max_facts is not None:
+            body["max_facts"] = max_facts
+        resp = self.client._request("POST", f"{self.base_url}/consistency-check", json=body, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    def record_reasoning_chain(self, chain: Dict[str, Any]) -> Dict[str, Any]:
+        resp = self.client._request("POST", f"{self.base_url}/reasoning-chains", json=chain, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_reasoning_chains(self) -> List[Dict[str, Any]]:
+        resp = self.client._request("GET", f"{self.base_url}/reasoning-chains", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json().get("items", [])
+
+    def verify_reasoning_chain(self, chain_id: str, *, auto_retract: bool = False) -> Dict[str, Any]:
+        resp = self.client._request(
+            "POST",
+            f"{self.base_url}/reasoning-chains/{chain_id}/verify",
+            json={"auto_retract": auto_retract},
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def create_decision(
         self,
         decision_type: str,
@@ -578,6 +660,88 @@ class AsyncVelarixSession:
     async def revalidate(self, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self._clear_cache()
         resp = await self.client._request("POST", f"{self.base_url}/revalidate", headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def record_perception(
+        self,
+        fact_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        confidence: float = 0.75,
+        modality: Optional[str] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        embedding: Optional[List[float]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self._clear_cache()
+        body: Dict[str, Any] = {
+            "id": fact_id,
+            "payload": payload or {},
+            "confidence": float(confidence),
+        }
+        if modality:
+            body["modality"] = modality
+        if provider:
+            body["provider"] = provider
+        if model:
+            body["model"] = model
+        if embedding is not None:
+            body["embedding"] = embedding
+        if metadata:
+            body["metadata"] = metadata
+        resp = await self.client._request("POST", f"{self.base_url}/percepts", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def retract(self, fact_id: str, reason: str = "", idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        self._clear_cache()
+        body = {"reason": reason} if reason else {}
+        resp = await self.client._request("POST", f"{self.base_url}/facts/{fact_id}/retract", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def semantic_search(self, query: str, *, limit: int = 10, valid_only: bool = True) -> List[Dict[str, Any]]:
+        params = {"q": query, "limit": limit, "valid_only": str(valid_only).lower()}
+        resp = await self.client._request("GET", f"{self.base_url}/semantic-search", params=params, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def consistency_check(
+        self,
+        *,
+        fact_ids: Optional[List[str]] = None,
+        max_facts: Optional[int] = None,
+        include_invalid: bool = False,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"include_invalid": include_invalid}
+        if fact_ids:
+            body["fact_ids"] = fact_ids
+        if max_facts is not None:
+            body["max_facts"] = max_facts
+        resp = await self.client._request("POST", f"{self.base_url}/consistency-check", json=body, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def record_reasoning_chain(self, chain: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self.client._request("POST", f"{self.base_url}/reasoning-chains", json=chain, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def list_reasoning_chains(self) -> List[Dict[str, Any]]:
+        resp = await self.client._request("GET", f"{self.base_url}/reasoning-chains", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json().get("items", [])
+
+    async def verify_reasoning_chain(self, chain_id: str, *, auto_retract: bool = False) -> Dict[str, Any]:
+        resp = await self.client._request(
+            "POST",
+            f"{self.base_url}/reasoning-chains/{chain_id}/verify",
+            json={"auto_retract": auto_retract},
+            headers=self._headers(),
+        )
         resp.raise_for_status()
         return resp.json()
 

@@ -54,6 +54,12 @@ type SearchStore interface {
 	SearchDocuments(orgID string, filter SearchDocumentsFilter) ([]SearchDocument, string, error)
 }
 
+// SemanticStore owns vector-backed fact embeddings and semantic retrieval.
+type SemanticStore interface {
+	UpsertFactEmbedding(orgID, sessionID string, fact *core.Fact, status core.Status) error
+	SemanticSearchFacts(orgID, sessionID string, queryEmbedding []float64, limit int, validOnly bool) ([]core.SemanticMatch, error)
+}
+
 // AuditStore owns append-only audit and access-log writes.
 type AuditStore interface {
 	AppendOrgActivity(orgID string, entry JournalEntry) error
