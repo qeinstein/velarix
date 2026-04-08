@@ -16,7 +16,7 @@ func main() {
 
 	switch command {
 	case "status":
-		resp, err := http.Get("http://localhost:8080/health")
+		resp, err := http.Get("http://localhost:8080/health")	// would be replaced w real URL after deployment(In .env)
 		if err != nil {
 			fmt.Printf("Error connecting to Velarix server: %v\n", err)
 			return

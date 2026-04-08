@@ -38,6 +38,7 @@ type Engine struct {
 	// Root management for Dominator pruning
 	CollapsedRoots  map[string]struct{}
 	DirtyDominators bool
+	RetractedFacts  map[string]string
 
 	// Event listeners
 	listeners []chan ChangeEvent
@@ -62,6 +63,7 @@ func NewEngine() *Engine {
 		JustificationSets: make(map[string]*JustificationSet),
 		ChildrenIndex:     make(map[string]map[string]struct{}),
 		CollapsedRoots:    make(map[string]struct{}),
+		RetractedFacts:    make(map[string]string),
 	}
 }
 
@@ -112,6 +114,19 @@ func (e *Engine) notify(factID string, status Status) {
 	}
 }
 
+func (e *Engine) effectiveStatusUnsafe(fact *Fact) Status {
+	if fact == nil {
+		return Invalid
+	}
+	if _, ok := e.RetractedFacts[fact.ID]; ok {
+		return Invalid
+	}
+	if fact.IsRoot {
+		return fact.ManualStatus
+	}
+	return fact.DerivedStatus
+}
+
 // propagate processes state changes using a work queue and probabilistic logic.
 // Callers MUST hold e.mu.Lock().
 func (e *Engine) propagate(queue []string) {
@@ -125,7 +140,9 @@ func (e *Engine) propagate(queue []string) {
 		}
 
 		newStatus := Invalid
-		if fact.IsRoot {
+		if _, retracted := e.RetractedFacts[fact.ID]; retracted {
+			newStatus = Invalid
+		} else if fact.IsRoot {
 			newStatus = fact.ManualStatus
 		} else {
 			// Derived Fact: max(JustificationSets)
@@ -172,7 +189,7 @@ func (e *Engine) propagate(queue []string) {
 					if !ok {
 						continue
 					}
-					pStatus := pFact.DerivedStatus
+					pStatus := e.effectiveStatusUnsafe(pFact)
 					if pStatus < minConf {
 						minConf = pStatus
 					}
@@ -185,7 +202,7 @@ func (e *Engine) propagate(queue []string) {
 				oldConfidence := jSet.Confidence
 
 				jSet.CurrentValidParents = validCount
-				
+
 				// Set confidence only if all parents are above threshold
 				if validCount == jSet.TargetValidParents {
 					jSet.Confidence = minConf
@@ -285,7 +302,7 @@ func (e *Engine) AssertFact(f *Fact) error {
 			if parentStatus >= ConfidenceThreshold {
 				validCount++
 			}
-			
+
 			if _, ok := e.ChildrenIndex[parentID]; !ok {
 				e.ChildrenIndex[parentID] = make(map[string]struct{})
 			}
@@ -329,6 +346,27 @@ func (e *Engine) InvalidateRoot(factID string) error {
 	return nil
 }
 
+// RetractFact explicitly marks a fact as no longer usable for downstream reasoning.
+func (e *Engine) RetractFact(factID string, reason string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if _, exists := e.Facts[factID]; !exists {
+		return errors.New("fact not found")
+	}
+	if reason == "" {
+		reason = "retracted"
+	}
+	if existingReason, exists := e.RetractedFacts[factID]; exists && existingReason == reason {
+		return nil
+	}
+
+	e.RetractedFacts[factID] = reason
+	e.MutationCount++
+	e.propagate([]string{factID})
+	return nil
+}
+
 // GetStatus returns the logically resolved status of a fact.
 // It uses the Dominator Tree for O(1) pruning of deep chains.
 func (e *Engine) GetStatus(factID string) Status {
@@ -346,7 +384,8 @@ func (e *Engine) GetStatus(factID string) Status {
 		return Invalid
 	}
 
-	if fact.DerivedStatus < ConfidenceThreshold {
+	currentStatus := e.effectiveStatusUnsafe(fact)
+	if currentStatus < ConfidenceThreshold {
 		return Invalid
 	}
 
@@ -356,7 +395,7 @@ func (e *Engine) GetStatus(factID string) Status {
 		}
 	}
 
-	return fact.DerivedStatus
+	return currentStatus
 }
 
 // ImpactReport contains metrics for a potential retraction.
@@ -377,7 +416,7 @@ func (e *Engine) GetImpact(factID string) *ImpactReport {
 	// factID -> simulated DerivedStatus
 	simStatus := make(map[string]Status)
 	for id, f := range e.Facts {
-		simStatus[id] = f.DerivedStatus
+		simStatus[id] = e.effectiveStatusUnsafe(f)
 	}
 
 	// jSetID -> simulated Confidence
@@ -400,7 +439,7 @@ func (e *Engine) GetImpact(factID string) *ImpactReport {
 		// For each dependent JustificationSet
 		for jSetID := range e.ChildrenIndex[uID] {
 			js := e.JustificationSets[jSetID]
-			
+
 			// Recalculate JSet Confidence
 			minConf := Valid
 			validCount := 0
@@ -421,11 +460,11 @@ func (e *Engine) GetImpact(factID string) *ImpactReport {
 
 			if newJSetConf != simJSetConf[jSetID] {
 				simJSetConf[jSetID] = newJSetConf
-				
+
 				// Recalculate Child Fact Status
 				childID := js.ChildFactID
 				childFact := e.Facts[childID]
-				
+
 				maxConf := Invalid
 				for i := range childFact.JustificationSets {
 					jsID := fmt.Sprintf("%s_jset_%d", childID, i)
@@ -456,7 +495,7 @@ func (e *Engine) GetImpact(factID string) *ImpactReport {
 	for id := range impacted {
 		report.ImpactedIDs = append(report.ImpactedIDs, id)
 		report.Loss += float64(e.Facts[id].DerivedStatus)
-		
+
 		// Direct child check (simplified for simulation)
 		if f, ok := e.Facts[id]; ok && f.IDom == factID {
 			report.DirectCount++
@@ -489,12 +528,14 @@ func (e *Engine) ToSnapshot() (*Snapshot, error) {
 		JustificationSets map[string]*JustificationSet
 		ChildrenIndex     map[string]map[string]struct{}
 		CollapsedRoots    map[string]struct{}
+		RetractedFacts    map[string]string
 		MutationCount     int
 	}{
 		Facts:             e.Facts,
 		JustificationSets: e.JustificationSets,
 		ChildrenIndex:     e.ChildrenIndex,
 		CollapsedRoots:    e.CollapsedRoots,
+		RetractedFacts:    e.RetractedFacts,
 		MutationCount:     e.MutationCount,
 	}
 
@@ -535,6 +576,7 @@ func (e *Engine) FromSnapshot(snap *Snapshot) error {
 		JustificationSets map[string]*JustificationSet
 		ChildrenIndex     map[string]map[string]struct{}
 		CollapsedRoots    map[string]struct{}
+		RetractedFacts    map[string]string
 		MutationCount     int
 	}
 
@@ -547,6 +589,10 @@ func (e *Engine) FromSnapshot(snap *Snapshot) error {
 	e.JustificationSets = payload.JustificationSets
 	e.ChildrenIndex = payload.ChildrenIndex
 	e.CollapsedRoots = payload.CollapsedRoots
+	if payload.RetractedFacts == nil {
+		payload.RetractedFacts = make(map[string]string)
+	}
+	e.RetractedFacts = payload.RetractedFacts
 	e.MutationCount = payload.MutationCount
 	e.DirtyDominators = true // Force recompute on next access
 

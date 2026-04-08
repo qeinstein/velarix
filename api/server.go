@@ -157,6 +157,14 @@ func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store
 				engine.AssertFact(entry.Fact)
 			case store.EventInvalidate:
 				engine.InvalidateRoot(entry.FactID)
+			case store.EventRetract:
+				reason := ""
+				if entry.Payload != nil {
+					if v, ok := entry.Payload["reason"].(string); ok {
+						reason = v
+					}
+				}
+				engine.RetractFact(entry.FactID, reason)
 			}
 		}
 	}
@@ -619,6 +627,14 @@ func (s *Server) handleRevalidate(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if entry.Type == store.EventInvalidate {
 			engine.InvalidateRoot(entry.FactID)
+		} else if entry.Type == store.EventRetract {
+			reason := ""
+			if entry.Payload != nil {
+				if v, ok := entry.Payload["reason"].(string); ok {
+					reason = v
+				}
+			}
+			engine.RetractFact(entry.FactID, reason)
 		}
 	}
 
@@ -1531,6 +1547,14 @@ func (s *Server) handleExplainReasoning(w http.ResponseWriter, r *http.Request) 
 				}
 			case store.EventInvalidate:
 				engine.InvalidateRoot(entry.FactID)
+			case store.EventRetract:
+				reason := ""
+				if entry.Payload != nil {
+					if v, ok := entry.Payload["reason"].(string); ok {
+						reason = v
+					}
+				}
+				engine.RetractFact(entry.FactID, reason)
 			}
 		}
 	} else {
@@ -1674,11 +1698,15 @@ func (s *Server) Routes() http.Handler {
 
 	// Session-scoped V1 Routes
 	mux.HandleFunc("POST /v1/s/{session_id}/facts", s.handleAssertFact)
+	mux.HandleFunc("POST /v1/s/{session_id}/percepts", s.handleRecordPerception)
 	mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/invalidate", s.handleInvalidateRoot)
+	mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/retract", s.handleRetractFact)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}", s.handleGetFact)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/why", s.handleExplain)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/impact", s.handleGetImpact)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts", s.handleListFacts)
+	mux.HandleFunc("GET /v1/s/{session_id}/semantic-search", s.handleSemanticSearch)
+	mux.HandleFunc("POST /v1/s/{session_id}/consistency-check", s.handleConsistencyCheck)
 	mux.HandleFunc("POST /v1/s/{session_id}/config", s.handleUpdateConfig)
 	mux.HandleFunc("POST /v1/s/{session_id}/revalidate", s.handleRevalidate)
 	mux.HandleFunc("GET /v1/s/{session_id}/export", s.handleExport)
@@ -1693,6 +1721,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/s/{session_id}/graph", s.handleGetGraph)
 	mux.HandleFunc("GET /v1/s/{session_id}/explain", s.handleExplainReasoning)
 	mux.HandleFunc("GET /v1/s/{session_id}/explanations", s.handleGetExplanations)
+	mux.HandleFunc("POST /v1/s/{session_id}/reasoning-chains", s.handleRecordReasoningChain)
+	mux.HandleFunc("GET /v1/s/{session_id}/reasoning-chains", s.handleListReasoningChains)
+	mux.HandleFunc("POST /v1/s/{session_id}/reasoning-chains/{chain_id}/verify", s.handleVerifyReasoningChain)
 	mux.HandleFunc("GET /v1/s/{session_id}/history/page", s.handleHistoryPage)
 	mux.HandleFunc("GET /v1/s/{session_id}/config", s.handleGetConfig)
 	mux.HandleFunc("POST /v1/s/{session_id}/decisions", s.handleCreateDecision)
@@ -1715,11 +1746,15 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc("GET /health/full", s.handleFullHealth)
 
 		mux.HandleFunc("POST /v1/s/{session_id}/facts", s.handleAssertFact)
+		mux.HandleFunc("POST /v1/s/{session_id}/percepts", s.handleRecordPerception)
 		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/invalidate", s.handleInvalidateRoot)
+		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/retract", s.handleRetractFact)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}", s.handleGetFact)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/why", s.handleExplain)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/impact", s.handleGetImpact)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts", s.handleListFacts)
+		mux.HandleFunc("GET /v1/s/{session_id}/semantic-search", s.handleSemanticSearch)
+		mux.HandleFunc("POST /v1/s/{session_id}/consistency-check", s.handleConsistencyCheck)
 		mux.HandleFunc("POST /v1/s/{session_id}/config", s.handleUpdateConfig)
 		mux.HandleFunc("POST /v1/s/{session_id}/revalidate", s.handleRevalidate)
 		mux.HandleFunc("GET /v1/s/{session_id}/export", s.handleExport)
@@ -1734,6 +1769,9 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc("GET /v1/s/{session_id}/graph", s.handleGetGraph)
 		mux.HandleFunc("GET /v1/s/{session_id}/explain", s.handleExplainReasoning)
 		mux.HandleFunc("GET /v1/s/{session_id}/explanations", s.handleGetExplanations)
+		mux.HandleFunc("POST /v1/s/{session_id}/reasoning-chains", s.handleRecordReasoningChain)
+		mux.HandleFunc("GET /v1/s/{session_id}/reasoning-chains", s.handleListReasoningChains)
+		mux.HandleFunc("POST /v1/s/{session_id}/reasoning-chains/{chain_id}/verify", s.handleVerifyReasoningChain)
 		mux.HandleFunc("GET /v1/s/{session_id}/history/page", s.handleHistoryPage)
 		mux.HandleFunc("GET /v1/s/{session_id}/config", s.handleGetConfig)
 		mux.HandleFunc("POST /v1/s/{session_id}/decisions", s.handleCreateDecision)

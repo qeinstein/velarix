@@ -15,6 +15,7 @@ type EventType string
 const (
 	EventAssert               EventType = "assert"
 	EventInvalidate           EventType = "invalidate"
+	EventRetract              EventType = "retract"
 	EventCycleViolation       EventType = "cycle_violation"
 	EventSnapshotCorruption   EventType = "snapshot_corruption"
 	EventConfidenceAdjusted   EventType = "confidence_adjusted"
@@ -138,6 +139,16 @@ func Replay(path string, engines map[string]*core.Engine) error {
 		case EventInvalidate:
 			if err := engine.InvalidateRoot(entry.FactID); err != nil {
 				return fmt.Errorf("line %d [Session: %s]: failed to replay invalidate: %w", lineNum, entry.SessionID, err)
+			}
+		case EventRetract:
+			reason := ""
+			if entry.Payload != nil {
+				if v, ok := entry.Payload["reason"].(string); ok {
+					reason = v
+				}
+			}
+			if err := engine.RetractFact(entry.FactID, reason); err != nil {
+				return fmt.Errorf("line %d [Session: %s]: failed to replay retract: %w", lineNum, entry.SessionID, err)
 			}
 		}
 	}

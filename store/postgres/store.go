@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +28,9 @@ var migrationsFS embed.FS
 type Store struct {
 	pool *pgxpool.Pool
 	now  func() time.Time
+
+	vectorColumnOnce  sync.Once
+	vectorColumnReady bool
 }
 
 type backupEnvelope struct {
@@ -62,6 +66,7 @@ var backupTableOrder = []string{
 	"decision_dependencies",
 	"decision_checks",
 	"search_documents",
+	"semantic_fact_embeddings",
 	"idempotency_records",
 	"rate_limits",
 }
