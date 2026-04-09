@@ -1,58 +1,71 @@
 ---
 title: "Getting Started"
-description: "Installation, prerequisites, and a Quick Start guide."
+description: "Local startup and production prerequisites."
 order: 2
 ---
 
 # Getting Started
 
-This guide will walk you through the prerequisites, installation process, and a quick start to get you up and running with Velarix.
+Velarix runs as a Go API with SDK clients and framework integrations on top.
 
 ## Prerequisites
 
-Before you begin, ensure you have the following installed:
+- Go 1.23 or later for the API
+- Python 3.10 or later for the SDK and demos
+- Docker for containerized deployment
 
-- Node.js (v18 or higher)
-- npm or yarn
-- Go (if running the backend locally)
-- Docker (optional, for self-hosted deployment)
+## Local API
 
-## Installation
+Start the API from the project root:
 
-To integrate Velarix into your existing project, replace your standard OpenAI import with the Velarix adapter.
+```bash
+export VELARIX_ENV=dev
+export VELARIX_API_KEY=dev-admin-key
+export VELARIX_BADGER_PATH="$(mktemp -d)"
+go run main.go
+```
 
-\`\`\`python
-# Standard client
-from openai import OpenAI
-client = OpenAI()
+## Python SDK
 
-# With Velarix
-from velarix.adapters.openai import OpenAI
-client = OpenAI(velarix_session_id="research-1")
-\`\`\`
+Install the SDK:
 
-## Quick Start
+```bash
+pip install -e ./sdks/python
+```
 
-1. **Start the local server:**
+Initialize a session:
 
-   \`\`\`bash
-   go run main.go
-   \`\`\`
+```python
+from velarix import VelarixClient
 
-2. **Initialize the client:**
+client = VelarixClient(
+    base_url="http://localhost:8080",
+    api_key="dev-admin-key",
+)
+session = client.session("my-first-session")
+```
 
-   \`\`\`python
-   from velarix.client import VelarixClient
+Record a fact:
 
-   client = VelarixClient(
-       base_url="http://localhost:8080",
-       api_key="your-api-key"
-   )
-   session = client.session("my-first-session")
-   \`\`\`
+```python
+session.observe("user_authenticated", {"user_id": "123"})
+```
 
-3. **Make an observation:**
+Retrieve the current belief slice:
 
-   \`\`\`python
-   session.observe("user_authenticated", {"user_id": "123"})
-   \`\`\`
+```python
+session.get_slice(
+    query="user authentication state",
+    strategy="hybrid",
+    include_dependencies=True,
+)
+```
+
+## Production Path
+
+Production deployments use:
+
+- Postgres for runtime state
+- Redis for shared coordination
+- `VELARIX_JWT_SECRET` for console authentication
+- `VELARIX_ALLOWED_ORIGINS` for browser access

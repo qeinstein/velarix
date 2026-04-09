@@ -1,33 +1,41 @@
 # Documentation
 
-Velarix should be understood as an approval guardrail service for AI-assisted internal operations.
+Velarix is the decision-integrity service for AI-assisted approvals and operational actions.
 
-Its job is simple:
+The product is built around four guarantees:
 
-- record the facts behind an approval recommendation
-- track the dependencies that support the decision
-- block execution when those dependencies go stale
+- facts are explicit
+- support is traceable
+- stale conclusions are retractable
+- unsafe decisions are blocked before execution
 
-The first wedge for this repo is:
+## What Ships In This Repository
 
-- finance ops approval integrity
+- Go API for facts, explanations, slices, governance, and first-class decisions
+- symbolic reasoning engine with dependency tracking and negated support
+- query-aware belief retrieval for agent runtimes
+- Python SDK and runtime helpers
+- LangGraph, CrewAI, LlamaIndex, and OpenAI integration surfaces
+- `vlx` CLI for core operational workflows
+- reproducible contradiction benchmark harness
+- maintained demos for approval integrity and framework integrations
 
-## What The Repo Ships Today
+## Product Boundary
 
-- Go API for facts, invalidation, history, explanation, and first-class decisions
-- Python SDK
-- local Badger adapter for development and tests
-- shared-state path using Postgres with optional Redis coordination
-- one maintained demo: `demo/approval_integrity.py`
+Velarix is positioned as:
 
-## What The Repo Does Not Claim
+- a decision-integrity service
+- an approval-guardrail layer
+- a truth-maintenance system for operational AI
 
-- a finished finance ops SaaS product
-- a generic memory platform for agents
-- audited compliance posture
-- production-complete object storage, billing, support, or policy workflows
+Velarix is not positioned as:
 
-## Key References
+- a generic agent-memory platform
+- a finished compliance product
+- a complete enterprise control plane
+- a multi-region hosted service
+
+## Reference Map
 
 - [Architecture](ARCHITECTURE.md)
 - [Integration Guide](INTEGRATION_GUIDE.md)
@@ -35,24 +43,27 @@ The first wedge for this repo is:
 - [Security Notes](SECURITY.md)
 - [Threat Model](THREAT_MODEL.md)
 - [Errors](ERRORS.md)
-- OpenAPI document: [`openapi.yaml`](openapi.yaml)
+- [Python SDK](../sdks/python/README.md)
+- Workflow-focused OpenAPI document: [`openapi.yaml`](openapi.yaml)
+- Broader generated Swagger surface: [`swagger.yaml`](swagger.yaml)
 
-## Read This Repo In Order
+## Read In Order
 
 1. `README.md`
 2. `docs/ARCHITECTURE.md`
-3. `api/models/decision.go`
+3. `api/server.go`
 4. `api/decision_contracts.go`
-5. `api/server.go`
+5. `core/engine.go`
 6. `store/interfaces.go`
 7. `store/badger.go`
 8. `store/postgres/`
 9. `demo/approval_integrity.py`
 10. `tests/e2e_test.go`
+11. `tests/reproducibility/hallucination_benchmark.py`
 
-## Review Notes
+## Canonical References
 
-- The canonical product flow is in `api/decision_contracts.go`.
+- The canonical product flow is decision creation plus `execute-check`.
 - The canonical demo is `demo/approval_integrity.py`.
-- The Postgres path is the production direction.
-- The Badger path exists for local development and tests.
+- LangGraph and CrewAI are supported surfaces, not the primary product narrative.
+- Postgres plus Redis is the production operating path.
