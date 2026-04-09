@@ -8,12 +8,14 @@ const (
 )
 
 type JustificationSet struct {
-	ID                  string
-	ChildFactID         string
-	ParentFactIDs       []string
-	TargetValidParents  int    // How many parents MUST be valid
-	CurrentValidParents int    // How many are CURRENTLY valid above threshold
-	Confidence          Status // Minimum confidence of its valid parents
+	ID                    string
+	ChildFactID           string
+	ParentFactIDs         []string
+	PositiveParentFactIDs []string
+	NegativeParentFactIDs []string
+	TargetValidParents    int    // How many parents MUST be valid
+	CurrentValidParents   int    // How many are CURRENTLY valid above threshold
+	Confidence            Status // Minimum confidence of its valid parents
 
 	// Dominator Tree
 	IDom string // Immediate Dominator (Fact ID)
@@ -32,8 +34,12 @@ type Fact struct {
 	Embedding []float64 `json:"embedding,omitempty"`
 
 	// Root control
-	IsRoot       bool   `json:"is_root"`
-	ManualStatus Status `json:"manual_status"`
+	IsRoot       bool    `json:"is_root"`
+	ManualStatus Status  `json:"manual_status"`
+	Entrenchment float64 `json:"entrenchment,omitempty"`
+	ReviewStatus string  `json:"review_status,omitempty"`
+	ReviewReason string  `json:"review_reason,omitempty"`
+	ReviewedAt   int64   `json:"reviewed_at,omitempty"`
 
 	// Computed only by the engine
 	DerivedStatus           Status `json:"derived_status"`

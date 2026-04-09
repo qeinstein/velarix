@@ -12,8 +12,9 @@ setup(
     ],
     extras_require={
         "langchain": ["langchain-core>=1.0.0", "langchain-openai>=1.0.0"],
-        "langgraph": ["langgraph>=0.0.10", "langchain-core>=1.0.0", "langchain-openai>=1.0.0"],
+        "langgraph": ["langgraph>=0.3.0", "langgraph-checkpoint>=2.1.0", "langchain-core>=1.0.0", "langchain-openai>=1.0.0"],
         "llamaindex": ["llama-index>=0.10.0"],
+        "crewai": ["crewai>=0.108.0"],
         "local": [] # Marker for local binary support
     }
 )

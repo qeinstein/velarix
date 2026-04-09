@@ -218,6 +218,34 @@ func TestRetractFactInvalidatesChildren(t *testing.T) {
 	}
 }
 
+func TestNegativeDependencyBecomesValidWhenRiskIsInvalidated(t *testing.T) {
+	engine := core.NewEngine()
+
+	if err := engine.AssertFact(&core.Fact{ID: "policy_ready", IsRoot: true, ManualStatus: core.Valid}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AssertFact(&core.Fact{ID: "risk_flag", IsRoot: true, ManualStatus: core.Valid}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AssertFact(&core.Fact{
+		ID:                "safe_to_execute",
+		JustificationSets: [][]string{{"policy_ready", "!risk_flag"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := engine.GetStatus("safe_to_execute"); got != core.Invalid {
+		t.Fatalf("expected safe_to_execute to start invalid while risk is present, got %.2f", got)
+	}
+
+	if err := engine.InvalidateRoot("risk_flag"); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.GetStatus("safe_to_execute"); got != core.Valid {
+		t.Fatalf("expected safe_to_execute to become valid after risk invalidation, got %.2f", got)
+	}
+}
+
 func TestConsistencyCheckDetectsClaimConflict(t *testing.T) {
 	engine := core.NewEngine()
 

@@ -154,6 +154,9 @@ func (s *Server) buildDecisionDependencies(engine *core.Engine, decision *store.
 			SourceRef:       factMetadataString(fact, "source_ref"),
 			PolicyVersion:   firstNonEmpty(decision.PolicyVersion, factMetadataString(fact, "policy_version")),
 			ExplanationHint: factMetadataString(fact, "explanation_hint"),
+			Entrenchment:    fact.EffectiveEntrenchment(),
+			ReviewStatus:    fact.ReviewStatus,
+			ReviewRequired:  fact.RequiresHumanReview(),
 		})
 	}
 	return deps, nil
@@ -197,7 +200,11 @@ func (s *Server) issueExecutionToken(orgID string, decision *store.Decision, che
 			Subject:   decision.ID,
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSigningKey())
+	signingKey, err := jwtSigningKey()
+	if err != nil {
+		return "", err
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(signingKey)
 }
 
 func (s *Server) parseExecutionToken(raw string) (*executionTokenClaims, error) {
@@ -206,11 +213,15 @@ func (s *Server) parseExecutionToken(raw string) (*executionTokenClaims, error) 
 		return nil, fmt.Errorf("execution_token is required")
 	}
 	claims := &executionTokenClaims{}
+	signingKey, err := jwtSigningKey()
+	if err != nil {
+		return nil, err
+	}
 	token, err := jwt.ParseWithClaims(raw, claims, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method")
 		}
-		return jwtSigningKey(), nil
+		return signingKey, nil
 	})
 	if err != nil {
 		return nil, err
@@ -257,6 +268,27 @@ func (s *Server) computeDecisionCheck(engine *core.Engine, decision *store.Decis
 				SourceRef:       dep.SourceRef,
 				PolicyVersion:   dep.PolicyVersion,
 				ExplanationHint: dep.ExplanationHint,
+				Entrenchment:    dep.Entrenchment,
+				ReviewStatus:    dep.ReviewStatus,
+				ReviewRequired:  dep.ReviewRequired,
+			})
+			continue
+		}
+		if dep.ReviewRequired {
+			check.Executable = false
+			check.ReasonCodes = append(check.ReasonCodes, "human_review_required")
+			check.BlockedBy = append(check.BlockedBy, store.DecisionBlocker{
+				FactID:          dep.FactID,
+				DependencyType:  dep.DependencyType,
+				RequiredStatus:  dep.RequiredStatus,
+				CurrentStatus:   currentStatus,
+				ReasonCode:      "human_review_required",
+				SourceRef:       dep.SourceRef,
+				PolicyVersion:   dep.PolicyVersion,
+				ExplanationHint: dep.ExplanationHint,
+				Entrenchment:    dep.Entrenchment,
+				ReviewStatus:    dep.ReviewStatus,
+				ReviewRequired:  true,
 			})
 		}
 	}

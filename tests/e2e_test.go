@@ -3,11 +3,11 @@ package tests
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -21,7 +21,9 @@ import (
 func setupTestServer(t *testing.T) (*api.Server, *store.BadgerStore) {
 	dbPath := t.TempDir()
 
-	os.Setenv("VELARIX_API_KEY", "test_admin_key")
+	t.Setenv("VELARIX_API_KEY", "test_admin_key")
+	t.Setenv("VELARIX_ENV", "test")
+	t.Setenv("VELARIX_JWT_SECRET", "test_jwt_secret_32_bytes_minimum_value")
 	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	badgerStore, err := store.OpenBadger(dbPath, nil)
@@ -188,6 +190,229 @@ func TestE2ELifecycle(t *testing.T) {
 	}
 	if statusResp.ResolvedStatus != 0.0 {
 		t.Fatalf("Expected access_granted to be invalid (0.0) after root invalidation, got %f", statusResp.ResolvedStatus)
+	}
+}
+
+func TestDecisionBlockedUntilHumanReviewApproved(t *testing.T) {
+	server, _ := setupTestServer(t)
+	sessionID := "review_required_session"
+
+	err := server.Store.SavePolicy("admin", &store.Policy{
+		ID:      "review_gate",
+		Name:    "Review Gate",
+		Enabled: true,
+		Rules: map[string]interface{}{
+			"review_source_types":          []string{"external_tool"},
+			"protected_mutation_threshold": 0.8,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to seed policy: %v", err)
+	}
+
+	factBody, _ := json.Marshal(map[string]interface{}{
+		"id":            "tool_claim_ready",
+		"is_root":       true,
+		"manual_status": 1.0,
+		"entrenchment":  0.95,
+		"metadata": map[string]interface{}{
+			"source_type": "external_tool",
+		},
+		"payload": map[string]interface{}{"summary": "external tool confirmed readiness"},
+	})
+	resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", factBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create governed fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	createDecisionBody, _ := json.Marshal(map[string]interface{}{
+		"decision_type":       "approval_release",
+		"fact_id":             "tool_claim_ready",
+		"subject_ref":         "invoice-99",
+		"target_ref":          "vendor-99",
+		"dependency_fact_ids": []string{"tool_claim_ready"},
+	})
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions", createDecisionBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create decision: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var decision store.Decision
+	if err := json.NewDecoder(resp.Body).Decode(&decision); err != nil {
+		t.Fatalf("failed to decode decision: %v", err)
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute-check", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected execute-check response before review: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var blockedCheck store.DecisionCheck
+	if err := json.NewDecoder(resp.Body).Decode(&blockedCheck); err != nil {
+		t.Fatalf("failed to decode blocked decision check: %v", err)
+	}
+	if blockedCheck.Executable {
+		t.Fatalf("expected decision to remain blocked before review, got %+v", blockedCheck)
+	}
+
+	reviewBody, _ := json.Marshal(map[string]interface{}{"status": "approved", "reason": "human verified benchmark fact"})
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts/tool_claim_ready/review", reviewBody)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to approve fact review: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute-check", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected execute-check to pass after review: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestQueryAwareSliceReturnsRelevantFacts(t *testing.T) {
+	server, _ := setupTestServer(t)
+	sessionID := "slice_query_session"
+
+	facts := []map[string]interface{}{
+		{
+			"id":            "invoice_risk",
+			"is_root":       true,
+			"manual_status": 1.0,
+			"payload":       map[string]interface{}{"text": "Invoice 42 has a payment risk escalation and needs review"},
+		},
+		{
+			"id":            "vendor_profile",
+			"is_root":       true,
+			"manual_status": 1.0,
+			"payload":       map[string]interface{}{"text": "Vendor profile is verified and stable"},
+		},
+		{
+			"id":            "deployment_status",
+			"is_root":       true,
+			"manual_status": 1.0,
+			"payload":       map[string]interface{}{"text": "Deployment window is green"},
+		},
+	}
+	for _, fact := range facts {
+		body, _ := json.Marshal(fact)
+		resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("failed to seed slice fact: status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	}
+
+	resp := performRequest(t, server, http.MethodGet, "/v1/s/"+sessionID+"/slice?format=json&query=invoice+risk+review&strategy=hybrid&max_facts=2&include_dependencies=true", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("failed to fetch query-aware slice: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	var slice []*core.Fact
+	if err := json.NewDecoder(resp.Body).Decode(&slice); err != nil {
+		t.Fatalf("failed to decode slice: %v", err)
+	}
+	if len(slice) == 0 || len(slice) > 2 {
+		t.Fatalf("expected 1-2 facts in slice, got %d", len(slice))
+	}
+	found := false
+	for _, fact := range slice {
+		if fact.ID == "invoice_risk" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected invoice_risk to be selected in query-aware slice, got %+v", slice)
+	}
+}
+
+func TestLongHorizonContradictionMission(t *testing.T) {
+	server, _ := setupTestServer(t)
+	sessionID := "long_horizon_session"
+	topics := []string{"research.evidence_ranker", "coding.build_api", "tool_use.deploy_gate"}
+	currentRootIDs := map[string]string{}
+	currentPlanIDs := map[string]string{}
+
+	for _, topic := range topics {
+		body, _ := json.Marshal(map[string]interface{}{
+			"id":            topic + ".ready",
+			"is_root":       true,
+			"manual_status": 1.0,
+			"payload":       map[string]interface{}{"topic": topic, "kind": "prerequisite"},
+		})
+		resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", body)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("failed to seed prerequisite: status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	}
+
+	for step := 0; step < 90; step++ {
+		topic := topics[step%len(topics)]
+		version := (step / len(topics)) + 1
+		rootID := fmt.Sprintf("%s.obs.v%d", topic, version)
+		planID := fmt.Sprintf("%s.plan.v%d", topic, version)
+
+		if previousRoot := currentRootIDs[topic]; previousRoot != "" {
+			resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts/"+previousRoot+"/invalidate", nil)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("failed to invalidate prior root: status=%d body=%s", resp.Code, resp.Body.String())
+			}
+		}
+
+		rootBody, _ := json.Marshal(map[string]interface{}{
+			"id":            rootID,
+			"is_root":       true,
+			"manual_status": 1.0,
+			"payload":       map[string]interface{}{"topic": topic, "version": version},
+		})
+		resp := performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", rootBody)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("failed to assert horizon root: status=%d body=%s", resp.Code, resp.Body.String())
+		}
+
+		planBody, _ := json.Marshal(map[string]interface{}{
+			"id":                 planID,
+			"justification_sets": [][]string{{topic + ".ready", rootID}},
+			"payload":            map[string]interface{}{"topic": topic, "version": version, "kind": "plan"},
+		})
+		resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", planBody)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("failed to assert horizon plan: status=%d body=%s", resp.Code, resp.Body.String())
+		}
+
+		if previousPlan := currentPlanIDs[topic]; previousPlan != "" {
+			resp = performRequest(t, server, http.MethodGet, "/v1/s/"+sessionID+"/facts/"+previousPlan, nil)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("failed to inspect prior plan: status=%d body=%s", resp.Code, resp.Body.String())
+			}
+			var fact core.Fact
+			if err := json.NewDecoder(resp.Body).Decode(&fact); err != nil {
+				t.Fatalf("failed to decode prior plan: %v", err)
+			}
+			if fact.ResolvedStatus != core.Invalid {
+				t.Fatalf("expected prior plan to be invalidated after contradiction, got %.2f", fact.ResolvedStatus)
+			}
+		}
+
+		currentRootIDs[topic] = rootID
+		currentPlanIDs[topic] = planID
+	}
+
+	for _, topic := range topics {
+		resp := performRequest(t, server, http.MethodGet, "/v1/s/"+sessionID+"/slice?format=json&query="+topic+"&strategy=hybrid&max_facts=4&include_dependencies=true", nil)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("failed to fetch horizon slice: status=%d body=%s", resp.Code, resp.Body.String())
+		}
+		var slice []*core.Fact
+		if err := json.NewDecoder(resp.Body).Decode(&slice); err != nil {
+			t.Fatalf("failed to decode horizon slice: %v", err)
+		}
+		expectedPlan := currentPlanIDs[topic]
+		found := false
+		for _, fact := range slice {
+			if fact.ID == expectedPlan {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected latest plan %s to appear in slice for topic %s", expectedPlan, topic)
+		}
 	}
 }
 
