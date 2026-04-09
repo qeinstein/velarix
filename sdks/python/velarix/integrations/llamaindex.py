@@ -24,9 +24,14 @@ class VelarixRetriever(BaseRetriever):
     def _retrieve(self, query_bundle: Any) -> List[NodeWithScore]:
         """Fetch the valid slice from Velarix and convert to LlamaIndex nodes."""
         session = self.client.session(self.session_id)
-        
-        # Get the logically valid facts
-        facts = session.get_slice(format="json", max_facts=self.max_facts)
+        query = getattr(query_bundle, "query_str", "") or str(query_bundle)
+        facts = session.get_slice(
+            format="json",
+            max_facts=self.max_facts,
+            query=query,
+            strategy="hybrid",
+            include_dependencies=True,
+        )
         
         nodes = []
         for fact in facts:

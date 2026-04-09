@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { apiFetch } from "../../lib/api";
 
 export default function Signup() {
   const router = useRouter();
@@ -16,7 +17,7 @@ export default function Signup() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_VELARIX_API_URL || "http://localhost:8080"}/v1/auth/register`, {
+      const res = await apiFetch("/v1/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -26,7 +27,7 @@ export default function Signup() {
         throw new Error("Failed to create account");
       }
 
-      const loginRes = await fetch(`${process.env.NEXT_PUBLIC_VELARIX_API_URL || "http://localhost:8080"}/v1/auth/login`, {
+      const loginRes = await apiFetch("/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -36,8 +37,7 @@ export default function Signup() {
         throw new Error("Account created, but failed to log in automatically");
       }
 
-      const data = await loginRes.json();
-      localStorage.setItem("vlx_token", data.token);
+      localStorage.removeItem("vlx_token");
       router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create account");

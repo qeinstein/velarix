@@ -686,6 +686,12 @@ func (s *Server) handleGetOrgSettings(w http.ResponseWriter, r *http.Request) {
 	if _, ok := org.Settings["retention_days_notifications"]; !ok {
 		org.Settings["retention_days_notifications"] = 30
 	}
+	if _, ok := org.Settings["rate_limit_rpm"]; !ok {
+		org.Settings["rate_limit_rpm"] = 60
+	}
+	if _, ok := org.Settings["rate_limit_window_seconds"]; !ok {
+		org.Settings["rate_limit_window_seconds"] = 60
+	}
 	writeJSON(w, http.StatusOK, org.Settings)
 }
 
@@ -712,6 +718,8 @@ func (s *Server) handlePatchOrgSettings(w http.ResponseWriter, r *http.Request) 
 		"retention_days_activity":      true,
 		"retention_days_access_logs":   true,
 		"retention_days_notifications": true,
+		"rate_limit_rpm":               true,
+		"rate_limit_window_seconds":    true,
 	}
 	for k := range body {
 		if !allowed[k] {
@@ -725,6 +733,15 @@ func (s *Server) handlePatchOrgSettings(w http.ResponseWriter, r *http.Request) 
 			n, ok := asInt(v)
 			if !ok || n < 1 || n > 3650 {
 				http.Error(w, "invalid "+key+" (expected integer 1..3650)", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	for _, key := range []string{"rate_limit_rpm", "rate_limit_window_seconds"} {
+		if v, ok := body[key]; ok {
+			n, ok := asInt(v)
+			if !ok || n < 1 || n > 100000 {
+				http.Error(w, "invalid "+key+" (expected integer 1..100000)", http.StatusBadRequest)
 				return
 			}
 		}

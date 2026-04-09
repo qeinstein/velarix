@@ -27,6 +27,16 @@ def _audit_is_valid(report: Any) -> bool:
     return True
 
 
+def _latest_user_query(messages: Optional[List[Dict[str, Any]]]) -> str:
+    for message in reversed(messages or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return ""
+
+
 def build_system_instruction(context_markdown: str) -> str:
     return (
         "\n\n## VELARIX EPISTEMIC PROTOCOL\n"
@@ -235,7 +245,18 @@ class VelarixChatRuntime:
 
     def prepare_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         prepared = dict(params)
-        context_markdown = self.session.get_slice(format="markdown")
+        query = str(prepared.pop("velarix_query", "") or _latest_user_query(prepared.get("messages")))
+        max_facts = int(prepared.pop("velarix_max_facts", 120))
+        max_chars = int(prepared.pop("velarix_max_context_chars", 12000))
+        strategy = str(prepared.pop("velarix_slice_strategy", "hybrid"))
+        context_markdown = self.session.get_slice(
+            format="markdown",
+            max_facts=max_facts,
+            query=query or None,
+            strategy=strategy,
+            include_dependencies=True,
+            max_chars=max_chars,
+        )
         prepared["messages"] = inject_system_instruction(prepared.get("messages"), context_markdown)
         prepared["tools"] = merge_tools(prepared.get("tools"))
         if "tool_choice" not in prepared:
@@ -396,7 +417,18 @@ class AsyncVelarixChatRuntime:
 
     async def prepare_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         prepared = dict(params)
-        context_markdown = await self.session.get_slice(format="markdown")
+        query = str(prepared.pop("velarix_query", "") or _latest_user_query(prepared.get("messages")))
+        max_facts = int(prepared.pop("velarix_max_facts", 120))
+        max_chars = int(prepared.pop("velarix_max_context_chars", 12000))
+        strategy = str(prepared.pop("velarix_slice_strategy", "hybrid"))
+        context_markdown = await self.session.get_slice(
+            format="markdown",
+            max_facts=max_facts,
+            query=query or None,
+            strategy=strategy,
+            include_dependencies=True,
+            max_chars=max_chars,
+        )
         prepared["messages"] = inject_system_instruction(prepared.get("messages"), context_markdown)
         prepared["tools"] = merge_tools(prepared.get("tools"))
         if "tool_choice" not in prepared:
