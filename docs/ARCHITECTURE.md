@@ -1,60 +1,60 @@
 # Architecture
 
-Velarix is built around one core capability:
+Velarix is built to stop stale AI-generated decisions from reaching execution.
 
-- prevent stale approval decisions from reaching execution after upstream facts change
+## Runtime Shape
 
-## Current Runtime Shape
-
-The codebase currently runs as:
+Velarix currently runs as:
 
 - a Go HTTP API
 - per-session in-memory reasoning engines
-- local Badger-backed persistence for development and tests
-- a shared-store path using Postgres with optional Redis coordination
-- SDK clients that talk to the public `/v1` API
+- Badger-backed local persistence for development and tests
+- Postgres-backed shared persistence for production-style deployments
+- optional Redis coordination for rate limiting and idempotency
+- SDK and integration clients that talk to the public `/v1` API
 
-## Current Logical Model
+## Reasoning Model
 
-- a fact is either asserted directly or derived from other facts
+Velarix uses a symbolic dependency graph:
+
+- facts are asserted directly or derived from other facts
 - derived facts use OR-of-AND justification sets
-- decisions depend on facts and persist dependency snapshots
-- invalidating a root fact collapses downstream reasoning that no longer has valid support
-- `execute-check` and `execute` determine whether an action is still safe to run
+- negated dependencies block conclusions when a fact becomes valid
+- decisions persist dependency snapshots at creation time
+- invalidating a root fact retracts unsupported downstream conclusions
+- governance rules can require review before a fact is eligible for execution-critical use
 
-## Approval Guardrail Flow
+## Retrieval And Runtime Layer
 
-1. approval facts are recorded into a session
-2. a derived fact represents the recommendation
-3. a first-class decision is created from that derived fact
-4. dependencies are checked right before execution
-5. execution is blocked if any required dependency has gone stale
-6. explanation endpoints expose the exact blocking reason
+The reasoning core is symbolic.
 
-## Current Architectural Risk
+The surrounding runtime is hybrid:
 
-The main risk still in the repo is over-reliance on:
+- semantic embeddings support query-aware belief selection
+- dependency expansion keeps slices causally complete
+- model-facing runtimes inject current valid beliefs into prompt context
+- verification surfaces can feed corrections back into the same fact graph
 
-- process-local engine ownership
-- local Badger assumptions
-- replay-heavy rebuild behavior
+## Execution Integrity Flow
 
-That is acceptable for local development.
+1. record the approval facts
+2. derive the recommendation
+3. create the decision
+4. run `execute-check`
+5. execute only while the decision remains valid
+6. inspect lineage and explanation when execution is blocked
 
-It is not the final production architecture.
+## Production Direction
 
-## Target Runtime Shape
-
-The target architecture for the product is:
+The production architecture centers on:
 
 - Postgres as the system of record
-- Redis for idempotency, rate limiting, and coordination
-- rebuildable in-memory engine caches only
-- object storage for large artifacts and snapshots
+- Redis as the shared coordination layer
+- rebuildable in-memory engine caches
+- durable export and artifact storage outside the reasoning process
 
 ## Design Rule
 
 Badger is a local adapter.
 
-The product should not be designed around one node remaining warm or authoritative.
-
+Production architecture does not depend on one warm process remaining authoritative.

@@ -1,23 +1,56 @@
-# The Science of Velarix
+# Theory
 
-Velarix is a Neuro-Symbolic Hybrid Truth Maintenance System (TMS). It bridges the gap between the probabilistic, noisy world of LLMs and the deterministic, causal world of symbolic logic.
+Velarix combines symbolic truth maintenance with retrieval-aware runtime context assembly.
 
-## 1. The Dominator Tree Advantage
-In a standard Directed Acyclic Graph (DAG), if you delete a node, you have to traverse the entire graph to find its children. In an **AND/OR graph** (which agents use to reason: *I believe Z because of (A AND B) OR (C)*), this is complex.
+## 1. Dependency Graph First
 
-Velarix reduces this complexity to an **Ancestor Check** using a **Dominator Tree**. If Root Fact $A$ dominates Fact $Z$, and $A$ becomes invalid, we know $Z$ is invalid in $O(1)$ time. This is the only way to scale agent memory to 100,000+ facts without slowing down inference.
+Velarix models belief state as a dependency graph:
 
-## 2. Epistemic Confidence Capping
-Agents are notoriously overconfident. Velarix implements **Confidence Decay**:
-*   Root observations (Direct from the LLM) are capped at `0.75`.
-*   Derived conclusions (Supported by 3+ independent sources/justifications) can climb to `0.95`.
-*   This prevents "Circular Certainty" from locking the agent into a hallucinated plan.
+- root facts are asserted directly
+- derived facts are supported by OR-of-AND justification sets
+- invalid support retracts downstream conclusions
+- negated dependencies express cases where a fact must remain absent for a conclusion to stay valid
 
-## 3. Counterfactual Reasoning
-When the `explain_reasoning` tool is called, Velarix doesn't just look at what happened. It performs a **Graph Retraction Simulation**. It hypothetically removes the fact in question and re-runs the propagation. The difference between the "Actual State" and the "Simulated State" is returned as the causal explanation.
+This is the foundation for every higher-level capability in the product.
 
-## 4. The Sandwich Pattern
-Velarix integrates with model providers (like OpenAI) using the Sandwich Pattern:
-1.  **Inject:** Fetches the current "Ground Truth" from the Go server and injects it into the system prompt.
-2.  **Instrument:** Auto-injects the `record_observation` and `explain_reasoning` tools.
-3.  **Inspect:** The model output is scanned; any new tool calls are automatically asserted back to the Go engine as new facts or justifications.
+## 2. Dominator-Based Invalidation
+
+Velarix uses dominator indexes to accelerate dependency analysis on large graphs.
+
+The practical result is fast ancestor membership checks during invalidation and explanation work without re-walking the entire graph for every question.
+
+Propagation still remains incremental and graph-aware. Velarix is optimized for real agent workloads, not just static graph proofs.
+
+## 3. Confidence Discipline
+
+Velarix treats direct observations and derived conclusions differently.
+
+- root observations can be capped or downgraded by runtime policy
+- derived facts inherit support from their justifications
+- governance rules can hold sensitive facts in review before they are allowed to affect execution
+
+This keeps model confidence and operational eligibility separate.
+
+## 4. Counterfactual Explanation
+
+Velarix explanations are causal, not decorative.
+
+The engine can simulate the removal or invalidation of supporting facts and expose the difference between current state and counterfactual state. That produces:
+
+- blocking reason traces
+- impact reports
+- decision lineage
+- reviewable causal summaries
+
+## 5. Query-Aware Belief Slices
+
+Velarix does not treat every prompt as a full memory dump.
+
+Instead, it assembles a ranked slice of current belief state using:
+
+- fact validity
+- semantic similarity
+- graph relationships
+- dependency expansion
+
+This keeps prompt context aligned to the task without discarding the causal structure behind the result.
