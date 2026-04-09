@@ -1,40 +1,58 @@
 # Security Notes
 
-This file describes the security posture of the repository today and the gaps that still remain.
+Velarix is secured for decision-integrity workloads, not broad compliance theater.
 
-## What Exists Today
+The security objective is straightforward:
 
-- API key authentication for service access
-- JWT-based user authentication for console-oriented flows
+- keep organizations isolated
+- keep decision provenance intact
+- prevent stale or unreviewed approvals from executing
+
+## Current Security Controls
+
+- scoped API keys for service access
+- JWT-based console access with httpOnly browser cookies
 - org-scoped request handling
-- optional Badger encryption at rest, required outside `dev`
+- credential revocation on password reset
+- bootstrap admin disabled by default outside development
+- production CORS allowlisting
+- baseline security headers on API responses
 - append-only history with verification hashes
-- scope-aware route checks
+- route-level authorization checks
 
-## What Matters For This Product
+## Deployment Requirements
 
-The real security value of Velarix is not broad compliance marketing.
+Production deployments require:
 
-It is:
+- `VELARIX_ENV=prod`
+- `VELARIX_JWT_SECRET`
+- `VELARIX_ALLOWED_ORIGINS`
+- Postgres-backed runtime state
 
-- preventing stale approvals from executing
-- preserving decision provenance
-- enforcing org boundaries
+Recommended for multi-instance operation:
 
-## Important Gaps
+- `VELARIX_REDIS_URL`
 
-- password reset is not a finished production delivery flow
-- rate limiting and idempotency still need the shared-store production path to be the default
-- retention and deletion are not the same thing as invalidation
-- export integrity hashes are not audited compliance evidence
+If Badger is used outside development:
 
-## Practical Guidance
+- `VELARIX_ENCRYPTION_KEY`
+- explicit production opt-in
 
-Use this repository as:
+## Current Limits
+
+- password reset depends on SMTP or development-only token return
+- Redis coordination is recommended for shared rate limiting and idempotency
+- retention policy is not the same thing as epistemic invalidation
+- export integrity hashes are useful audit material, not audited compliance evidence
+- bootstrap admin remains a recovery path and should stay disabled in production unless required
+
+## Product Position
+
+Velarix is suitable as:
 
 - a focused approval-guardrail service under active development
 
-Do not represent it as:
+Velarix is not positioned as:
 
 - a finished compliance product
 - a healthcare-ready platform
@@ -43,4 +61,3 @@ Do not represent it as:
 ## Security Rule
 
 If a workflow can move money, change access, or create audit exposure, require a fresh `execute-check` before the action is performed.
-

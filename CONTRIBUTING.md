@@ -1,23 +1,35 @@
 # Contributing to Velarix
 
-Thank you for your interest in contributing to the Velarix Epistemic Protocol!
+Velarix accepts contributions across the reasoning engine, API, SDKs, integrations, benchmarks, and docs.
 
-## Development Guidelines
+## Development Standards
 
-### Go Core (`/core`, `/api`)
-- Use idiomatic Go formatting (`go fmt`).
-- Ensure all core logic changes include unit tests. We strive for >80% test coverage in the `core` package.
-- If you are modifying the Dominator Tree logic, please explain the complexity impacts in your PR.
+### Go Core
 
-### SDKs (`/sdks`)
-- **Python:** Use `black` and `isort` for formatting. Ensure type hints are accurate.
+- use idiomatic Go formatting
+- include tests with reasoning, API, or persistence changes
+- call out complexity impact when changing graph or invalidation logic
 
-### Pull Request Process
-1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/your-feature-name`).
-3. Commit your changes (`git commit -m 'Add some feature'`).
-4. Push to the branch (`git push origin feature/your-feature-name`).
-5. Open a Pull Request on GitHub.
+### Python SDK
 
-## Reporting Issues
-Please use the GitHub Issue templates for bug reports and feature requests. Include reproduction steps whenever possible!
+- keep type hints accurate
+- keep integration examples aligned with shipped SDK surfaces
+
+### Documentation
+
+- keep public docs product-facing
+- keep operational claims aligned with the code
+- update examples when interfaces change
+
+## Pull Requests
+
+1. create a branch
+2. make the change
+3. run the relevant tests
+4. open a pull request with a concise description of the behavior change and the affected product surface
+
+## Issues
+
+Use GitHub issues for bugs, regressions, and feature requests.
+
+Include reproduction steps whenever possible.
