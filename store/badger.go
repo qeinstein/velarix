@@ -866,12 +866,20 @@ type User struct {
 	HashedPassword string   `json:"hashed_password"`
 	OrgID          string   `json:"org_id"`
 	Role           string   `json:"role"` // "admin" or "member"
+	TokenVersion   int64    `json:"token_version,omitempty"`
 	Keys           []APIKey `json:"keys"`
 	ResetToken     string   `json:"reset_token,omitempty"`
 	ResetExpiry    int64    `json:"reset_expiry,omitempty"`
 
 	// Optional console state (backwards compatible)
 	Onboarding map[string]bool `json:"onboarding,omitempty"`
+}
+
+func (u *User) GetTokenVersion() int64 {
+	if u == nil {
+		return 0
+	}
+	return u.TokenVersion
 }
 
 type OrgSessionMeta struct {
@@ -916,10 +924,16 @@ type Integration struct {
 }
 
 type BillingSubscription struct {
-	Plan         string `json:"plan"`
-	Status       string `json:"status"`
-	BillingEmail string `json:"billing_email"`
-	UpdatedAt    int64  `json:"updated_at"`
+	Plan                 string            `json:"plan"`
+	Status               string            `json:"status"`
+	BillingEmail         string            `json:"billing_email"`
+	StripeCustomerID     string            `json:"stripe_customer_id,omitempty"`
+	StripeSubscriptionID string            `json:"stripe_subscription_id,omitempty"`
+	CurrentPeriodEnd     int64             `json:"current_period_end,omitempty"`
+	Seats                int               `json:"seats,omitempty"`
+	Features             map[string]bool   `json:"features,omitempty"`
+	Metadata             map[string]string `json:"metadata,omitempty"`
+	UpdatedAt            int64             `json:"updated_at"`
 }
 
 type Invitation struct {
@@ -1959,10 +1973,35 @@ func (s *BadgerStore) ReplayAll(engines map[string]*core.Engine, configs map[str
 					engines[entry.SessionID] = engine
 				}
 
-				if entry.Type == EventAssert {
-					engine.AssertFact(entry.Fact)
-				} else if entry.Type == EventInvalidate {
-					engine.InvalidateRoot(entry.FactID)
+				switch entry.Type {
+				case EventAssert:
+					_ = engine.AssertFact(entry.Fact)
+				case EventInvalidate:
+					_ = engine.InvalidateRoot(entry.FactID)
+				case EventRetract:
+					reason := ""
+					if entry.Payload != nil {
+						if v, ok := entry.Payload["reason"].(string); ok {
+							reason = v
+						}
+					}
+					_ = engine.RetractFact(entry.FactID, reason)
+				case EventReview:
+					status := ""
+					reason := ""
+					reviewedAt := entry.Timestamp
+					if entry.Payload != nil {
+						if v, ok := entry.Payload["status"].(string); ok {
+							status = v
+						}
+						if v, ok := entry.Payload["reason"].(string); ok {
+							reason = v
+						}
+						if v, ok := entry.Payload["reviewed_at"].(float64); ok {
+							reviewedAt = int64(v)
+						}
+					}
+					_ = engine.SetFactReview(entry.FactID, status, reason, reviewedAt)
 				}
 			}
 		}

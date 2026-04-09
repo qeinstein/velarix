@@ -14,6 +14,51 @@ class VelarixRuntimeError(Exception):
     """Raised when the Velarix sidecar fails to start or crashes."""
     pass
 
+
+def _build_slice_params(
+    format: str,
+    max_facts: int,
+    *,
+    query: Optional[str] = None,
+    strategy: Optional[str] = None,
+    include_dependencies: Optional[bool] = None,
+    include_invalid: bool = False,
+    max_chars: Optional[int] = None,
+) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"format": format, "max_facts": max_facts}
+    if query:
+        params["query"] = query
+    if strategy:
+        params["strategy"] = strategy
+    if include_dependencies is not None:
+        params["include_dependencies"] = str(bool(include_dependencies)).lower()
+    if include_invalid:
+        params["include_invalid"] = "true"
+    if max_chars is not None:
+        params["max_chars"] = int(max_chars)
+    return params
+
+
+def _slice_cache_key(
+    format: str,
+    max_facts: int,
+    *,
+    query: Optional[str] = None,
+    strategy: Optional[str] = None,
+    include_dependencies: Optional[bool] = None,
+    include_invalid: bool = False,
+    max_chars: Optional[int] = None,
+) -> Tuple[Any, ...]:
+    return (
+        format,
+        int(max_facts),
+        (query or "").strip(),
+        (strategy or "").strip().lower(),
+        include_dependencies,
+        bool(include_invalid),
+        int(max_chars or 0),
+    )
+
 class SidecarManager:
     """Manages the lifecycle of the Go-based Velarix sidecar process."""
     def __init__(self, binary_path: Optional[str] = None, data_dir: Optional[str] = None):
@@ -125,28 +170,53 @@ class VelarixSession:
         resp.raise_for_status()
         return resp.json()
 
-    def invalidate(self, fact_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
-        self._clear_cache()
-        resp = self.client._request("POST", f"{self.base_url}/facts/{fact_id}/invalidate", headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
-        return resp.json()
-
-    def get_slice(self, format: str = "json", max_facts: int = 50) -> Union[List[Dict[str, Any]], str]:
+    def get_slice(
+        self,
+        format: str = "json",
+        max_facts: int = 50,
+        *,
+        query: Optional[str] = None,
+        strategy: Optional[str] = None,
+        include_dependencies: Optional[bool] = None,
+        include_invalid: bool = False,
+        max_chars: Optional[int] = None,
+    ) -> Union[List[Dict[str, Any]], str]:
         # Cache Check
+        cache_key = _slice_cache_key(
+            format,
+            max_facts,
+            query=query,
+            strategy=strategy,
+            include_dependencies=include_dependencies,
+            include_invalid=include_invalid,
+            max_chars=max_chars,
+        )
         if self.client.cache_ttl > 0:
-            key = (format, max_facts)
-            if key in self._slice_cache:
-                timestamp, data = self._slice_cache[key]
+            if cache_key in self._slice_cache:
+                timestamp, data = self._slice_cache[cache_key]
                 if time.time() - timestamp < self.client.cache_ttl:
                     return data
 
-        resp = self.client._request("GET", f"{self.base_url}/slice", params={"format": format, "max_facts": max_facts}, headers=self._headers())
+        resp = self.client._request(
+            "GET",
+            f"{self.base_url}/slice",
+            params=_build_slice_params(
+                format,
+                max_facts,
+                query=query,
+                strategy=strategy,
+                include_dependencies=include_dependencies,
+                include_invalid=include_invalid,
+                max_chars=max_chars,
+            ),
+            headers=self._headers(),
+        )
         resp.raise_for_status()
         data = resp.text if format == "markdown" else resp.json()
         
         # Cache Update
         if self.client.cache_ttl > 0:
-            self._slice_cache[(format, max_facts)] = (time.time(), data)
+            self._slice_cache[cache_key] = (time.time(), data)
             
         return data
 
@@ -243,10 +313,63 @@ class VelarixSession:
         resp.raise_for_status()
         return resp.json()
 
-    def retract(self, fact_id: str, reason: str = "", idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+    def invalidate(
+        self,
+        fact_id: str,
+        idempotency_key: Optional[str] = None,
+        *,
+        reason: str = "",
+        force: bool = False,
+    ) -> Dict[str, Any]:
         self._clear_cache()
-        body = {"reason": reason} if reason else {}
+        body: Dict[str, Any] = {}
+        if reason:
+            body["reason"] = reason
+        if force:
+            body["force"] = True
+        kwargs: Dict[str, Any] = {"headers": self._idem_headers(idempotency_key)}
+        if body:
+            kwargs["json"] = body
+        resp = self.client._request("POST", f"{self.base_url}/facts/{fact_id}/invalidate", **kwargs)
+        resp.raise_for_status()
+        return resp.json()
+
+    def retract(
+        self,
+        fact_id: str,
+        reason: str = "",
+        idempotency_key: Optional[str] = None,
+        *,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        self._clear_cache()
+        body: Dict[str, Any] = {}
+        if reason:
+            body["reason"] = reason
+        if force:
+            body["force"] = True
         resp = self.client._request("POST", f"{self.base_url}/facts/{fact_id}/retract", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    def review_fact(
+        self,
+        fact_id: str,
+        status: str,
+        *,
+        reason: str = "",
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self._clear_cache()
+        body = {"status": status}
+        if reason:
+            body["reason"] = reason
+        resp = self.client._request(
+            "POST",
+            f"{self.base_url}/facts/{fact_id}/review",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -578,28 +701,53 @@ class AsyncVelarixSession:
         resp.raise_for_status()
         return resp.json()
 
-    async def invalidate(self, fact_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
-        self._clear_cache()
-        resp = await self.client._request("POST", f"{self.base_url}/facts/{fact_id}/invalidate", headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
-        return resp.json()
-
-    async def get_slice(self, format: str = "json", max_facts: int = 50) -> Union[List[Dict[str, Any]], str]:
+    async def get_slice(
+        self,
+        format: str = "json",
+        max_facts: int = 50,
+        *,
+        query: Optional[str] = None,
+        strategy: Optional[str] = None,
+        include_dependencies: Optional[bool] = None,
+        include_invalid: bool = False,
+        max_chars: Optional[int] = None,
+    ) -> Union[List[Dict[str, Any]], str]:
         # Cache Check
+        cache_key = _slice_cache_key(
+            format,
+            max_facts,
+            query=query,
+            strategy=strategy,
+            include_dependencies=include_dependencies,
+            include_invalid=include_invalid,
+            max_chars=max_chars,
+        )
         if self.client.cache_ttl > 0:
-            key = (format, max_facts)
-            if key in self._slice_cache:
-                timestamp, data = self._slice_cache[key]
+            if cache_key in self._slice_cache:
+                timestamp, data = self._slice_cache[cache_key]
                 if time.time() - timestamp < self.client.cache_ttl:
                     return data
 
-        resp = await self.client._request("GET", f"{self.base_url}/slice", params={"format": format, "max_facts": max_facts}, headers=self._headers())
+        resp = await self.client._request(
+            "GET",
+            f"{self.base_url}/slice",
+            params=_build_slice_params(
+                format,
+                max_facts,
+                query=query,
+                strategy=strategy,
+                include_dependencies=include_dependencies,
+                include_invalid=include_invalid,
+                max_chars=max_chars,
+            ),
+            headers=self._headers(),
+        )
         resp.raise_for_status()
         data = resp.text if format == "markdown" else resp.json()
         
         # Cache Update
         if self.client.cache_ttl > 0:
-            self._slice_cache[(format, max_facts)] = (time.time(), data)
+            self._slice_cache[cache_key] = (time.time(), data)
             
         return data
 
@@ -696,10 +844,63 @@ class AsyncVelarixSession:
         resp.raise_for_status()
         return resp.json()
 
-    async def retract(self, fact_id: str, reason: str = "", idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+    async def invalidate(
+        self,
+        fact_id: str,
+        idempotency_key: Optional[str] = None,
+        *,
+        reason: str = "",
+        force: bool = False,
+    ) -> Dict[str, Any]:
         self._clear_cache()
-        body = {"reason": reason} if reason else {}
+        body: Dict[str, Any] = {}
+        if reason:
+            body["reason"] = reason
+        if force:
+            body["force"] = True
+        kwargs: Dict[str, Any] = {"headers": self._idem_headers(idempotency_key)}
+        if body:
+            kwargs["json"] = body
+        resp = await self.client._request("POST", f"{self.base_url}/facts/{fact_id}/invalidate", **kwargs)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def retract(
+        self,
+        fact_id: str,
+        reason: str = "",
+        idempotency_key: Optional[str] = None,
+        *,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        self._clear_cache()
+        body: Dict[str, Any] = {}
+        if reason:
+            body["reason"] = reason
+        if force:
+            body["force"] = True
         resp = await self.client._request("POST", f"{self.base_url}/facts/{fact_id}/retract", json=body, headers=self._idem_headers(idempotency_key))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def review_fact(
+        self,
+        fact_id: str,
+        status: str,
+        *,
+        reason: str = "",
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self._clear_cache()
+        body = {"status": status}
+        if reason:
+            body["reason"] = reason
+        resp = await self.client._request(
+            "POST",
+            f"{self.base_url}/facts/{fact_id}/review",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
         resp.raise_for_status()
         return resp.json()
 

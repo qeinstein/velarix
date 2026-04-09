@@ -32,6 +32,9 @@ type DecisionDependency struct {
 	SourceRef       string  `json:"source_ref,omitempty"`
 	PolicyVersion   string  `json:"policy_version,omitempty"`
 	ExplanationHint string  `json:"explanation_hint,omitempty"`
+	Entrenchment    float64 `json:"entrenchment,omitempty"`
+	ReviewStatus    string  `json:"review_status,omitempty"`
+	ReviewRequired  bool    `json:"review_required,omitempty"`
 }
 
 type DecisionBlocker struct {
@@ -43,6 +46,9 @@ type DecisionBlocker struct {
 	SourceRef       string  `json:"source_ref,omitempty"`
 	PolicyVersion   string  `json:"policy_version,omitempty"`
 	ExplanationHint string  `json:"explanation_hint,omitempty"`
+	Entrenchment    float64 `json:"entrenchment,omitempty"`
+	ReviewStatus    string  `json:"review_status,omitempty"`
+	ReviewRequired  bool    `json:"review_required,omitempty"`
 }
 
 type DecisionCheck struct {

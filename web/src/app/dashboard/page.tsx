@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { apiFetch } from "../../lib/api";
 
 type ApiKey = {
   id?: string;
@@ -36,35 +37,31 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem("vlx_token");
-    if (!token) {
-      router.push("/login");
-      return;
-    }
-
     const fetchData = async () => {
       try {
-        const headers = { "Authorization": `Bearer ${token}` };
-
-        const keysRes = await fetch(`${process.env.NEXT_PUBLIC_VELARIX_API_URL || "http://localhost:8080"}/v1/keys`, { headers });
+        const keysRes = await apiFetch("/v1/keys");
+        if (keysRes.status === 401) {
+          router.push("/login");
+          return;
+        }
         if (keysRes.ok) {
           const keysData = await keysRes.json();
           setApiKeys(keysData || []);
         }
 
-        const usageRes = await fetch(`${process.env.NEXT_PUBLIC_VELARIX_API_URL || "http://localhost:8080"}/v1/org/usage`, { headers });
+        const usageRes = await apiFetch("/v1/org/usage");
         if (usageRes.ok) {
           const usageData = await usageRes.json();
           setUsage(usageData || { api_requests: 0, facts_asserted: 0, logic_prunings: 0 });
         }
 
-        const sessionsRes = await fetch(`${process.env.NEXT_PUBLIC_VELARIX_API_URL || "http://localhost:8080"}/v1/org/sessions`, { headers });
+        const sessionsRes = await apiFetch("/v1/org/sessions");
         if (sessionsRes.ok) {
           const sessionsData = await sessionsRes.json();
           setSessions(sessionsData?.items || []);
         }
 
-        const billingRes = await fetch(`${process.env.NEXT_PUBLIC_VELARIX_API_URL || "http://localhost:8080"}/v1/org/billing`, { headers });
+        const billingRes = await apiFetch("/v1/org/billing");
         if (billingRes.ok) {
           const billingData = await billingRes.json();
           setBilling(billingData);
@@ -80,12 +77,15 @@ export default function Dashboard() {
   }, [router]);
 
   const generateKey = async () => {
-    const token = localStorage.getItem("vlx_token");
-    const res = await fetch(`${process.env.NEXT_PUBLIC_VELARIX_API_URL || "http://localhost:8080"}/v1/keys/generate`, {
+    const res = await apiFetch("/v1/keys/generate", {
       method: "POST",
-      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ label: "Production", scopes: ["read", "write"] }),
     });
+    if (res.status === 401) {
+      router.push("/login");
+      return;
+    }
     if (res.ok) {
       const newKey = await res.json();
       setApiKeys((current) => [...current, newKey]);
@@ -99,6 +99,7 @@ export default function Dashboard() {
   };
 
   const handleSignOut = () => {
+    void apiFetch("/v1/auth/logout", { method: "POST" });
     localStorage.removeItem("vlx_token");
     router.push("/");
   };

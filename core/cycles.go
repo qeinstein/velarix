@@ -11,7 +11,7 @@ type CycleError struct {
 }
 
 func (e *CycleError) Error() string {
-	return fmt.Sprintf("Justification cycle detected. Fact '%s' cannot depend on '%s' because a cycle exists: %s. Please retract one of these facts to proceed.", 
+	return fmt.Sprintf("Justification cycle detected. Fact '%s' cannot depend on '%s' because a cycle exists: %s. Please retract one of these facts to proceed.",
 		e.Path[len(e.Path)-1], e.Path[0], strings.Join(e.Path, " -> "))
 }
 
@@ -21,10 +21,14 @@ func (e *Engine) detectCycle(newFact *Fact) error {
 	newID := newFact.ID
 
 	for _, set := range newFact.JustificationSets {
-		for _, parentID := range set {
+		for _, token := range set {
+			parentID, err := normalizeDependencyToken(token)
+			if err != nil {
+				return err
+			}
 			visited := make(map[string]struct{})
 			if path := e.reachable(parentID, newID, visited); path != nil {
-				// The path goes from parentID to newID. 
+				// The path goes from parentID to newID.
 				// The cycle is newID -> parentID -> ... -> newID
 				fullPath := append([]string{newID}, path...)
 				return &CycleError{Path: fullPath}
