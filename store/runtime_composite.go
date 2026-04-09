@@ -7,7 +7,7 @@ import (
 	"velarix/core"
 )
 
-type compositeCloser interface {
+type RuntimeCloser interface {
 	Close() error
 }
 
@@ -19,10 +19,10 @@ type CompositeRuntimeStore struct {
 
 	idempotency IdempotencyStore
 	rateLimits  RateLimitStore
-	closers     []compositeCloser
+	closers     []RuntimeCloser
 }
 
-func NewCompositeRuntimeStore(primary ServerStore, idempotency IdempotencyStore, rateLimits RateLimitStore, closers ...compositeCloser) *CompositeRuntimeStore {
+func NewCompositeRuntimeStore(primary ServerStore, idempotency IdempotencyStore, rateLimits RateLimitStore, closers ...RuntimeCloser) *CompositeRuntimeStore {
 	return &CompositeRuntimeStore{
 		ServerStore: primary,
 		idempotency: idempotency,
@@ -60,10 +60,19 @@ func (s *CompositeRuntimeStore) SaveRateLimit(apiKey string, limits []time.Time)
 }
 
 func (s *CompositeRuntimeStore) ReplayAll(engines map[string]*core.Engine, configs map[string][]byte) error {
+	if runtimeStore, ok := s.ServerStore.(interface {
+		ReplayAll(map[string]*core.Engine, map[string][]byte) error
+	}); ok {
+		return runtimeStore.ReplayAll(engines, configs)
+	}
 	return nil
 }
 
-func (s *CompositeRuntimeStore) StartGC() {}
+func (s *CompositeRuntimeStore) StartGC() {
+	if starter, ok := s.ServerStore.(interface{ StartGC() }); ok {
+		starter.StartGC()
+	}
+}
 
 func (s *CompositeRuntimeStore) BackendName() string {
 	if reporter, ok := s.ServerStore.(HealthReporter); ok {

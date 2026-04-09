@@ -23,16 +23,19 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-func jwtSigningKey() []byte {
+func jwtSigningKey() ([]byte, error) {
 	if v := os.Getenv("VELARIX_JWT_SECRET"); v != "" {
-		return []byte(v)
+		return []byte(v), nil
 	}
-	// Dev fallback only. Production should set VELARIX_JWT_SECRET.
-	return []byte("velarix_dev_insecure_jwt_secret_change_me")
+	if isDevLikeEnv() {
+		return []byte("velarix_dev_insecure_jwt_secret_change_me"), nil
+	}
+	return nil, fmt.Errorf("VELARIX_JWT_SECRET is required outside dev/test")
 }
 
 type Claims struct {
-	Email string `json:"email"`
+	Email        string `json:"email"`
+	TokenVersion int64  `json:"token_version"`
 	jwt.RegisteredClaims
 }
 
@@ -85,6 +88,23 @@ func comparePassword(password, encodedHash string) (bool, error) {
 	comparisonHash := argon2.IDKey([]byte(password), salt, t, m, uint8(p), uint32(len(hash)))
 
 	return subtle.ConstantTimeCompare(hash, comparisonHash) == 1, nil
+}
+
+func nextUserTokenVersion(user *store.User) int64 {
+	return currentUserTokenVersion(user) + 1
+}
+
+func revokeUserKeys(keys []store.APIKey) []store.APIKey {
+	if len(keys) == 0 {
+		return keys
+	}
+	revoked := make([]store.APIKey, len(keys))
+	for i, key := range keys {
+		key.IsRevoked = true
+		key.Key = ""
+		revoked[i] = key
+	}
+	return revoked
 }
 
 type RegisterRequest struct {
@@ -260,6 +280,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	body.Email = normalizeEmail(body.Email)
+	if body.Email == "" {
+		http.Error(w, "email is required", http.StatusBadRequest)
+		return
+	}
+	if !s.enforceAuthRateLimit(w, r, "register", body.Email) {
+		return
+	}
+	if _, err := s.Store.GetUser(body.Email); err == nil {
+		http.Error(w, "account already exists", http.StatusConflict)
+		return
+	}
 
 	hashed, err := hashPassword(body.Password)
 	if err != nil {
@@ -282,6 +314,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		HashedPassword: hashed,
 		OrgID:          orgID,
 		Role:           role,
+		TokenVersion:   1,
 		Keys:           []store.APIKey{},
 	}
 
@@ -323,6 +356,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	body.Email = normalizeEmail(body.Email)
+	if !s.enforceAuthRateLimit(w, r, "login", body.Email) {
+		return
+	}
 
 	user, err := s.Store.GetUser(body.Email)
 	if err != nil {
@@ -337,31 +374,36 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	expirationTime := time.Now().Add(24 * time.Hour)
+	issuedAt := time.Now()
 	claims := &Claims{
-		Email: body.Email,
+		Email:        body.Email,
+		TokenVersion: currentUserTokenVersion(user),
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			IssuedAt:  jwt.NewNumericDate(issuedAt),
 		},
 	}
 
+	signingKey, err := jwtSigningKey()
+	if err != nil {
+		http.Error(w, "console auth is not configured", http.StatusServiceUnavailable)
+		return
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(jwtSigningKey())
+	tokenString, err := token.SignedString(signingKey)
 	if err != nil {
 		http.Error(w, "token generation failure", http.StatusInternalServerError)
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     "token",
-		Value:    tokenString,
-		Expires:  expirationTime,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   os.Getenv("VELARIX_ENV") != "dev",
-	})
+	setAuthCookie(w, tokenString, expirationTime)
 
 	writeJSON(w, http.StatusOK, map[string]string{"token": tokenString})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	clearAuthCookies(w)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
 // handleResetRequest godoc
@@ -379,9 +421,12 @@ func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	body.Email = strings.TrimSpace(strings.ToLower(body.Email))
+	body.Email = normalizeEmail(body.Email)
+	if !s.enforceAuthRateLimit(w, r, "reset_request", body.Email) {
+		return
+	}
 
-	devMode := strings.TrimSpace(os.Getenv("VELARIX_ENV")) == "dev"
+	devMode := isDevLikeEnv()
 	if !devMode && !loadSMTPResetConfig().Enabled() {
 		http.Error(w, "password reset is not configured on this deployment", http.StatusNotImplemented)
 		return
@@ -435,6 +480,10 @@ func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	body.Email = normalizeEmail(body.Email)
+	if !s.enforceAuthRateLimit(w, r, "reset_confirm", body.Email) {
+		return
+	}
 
 	user, err := s.Store.GetUser(body.Email)
 	if err != nil {
@@ -449,9 +498,15 @@ func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 
 	hashed, _ := hashPassword(body.NewPassword)
 	user.HashedPassword = hashed
+	user.TokenVersion = nextUserTokenVersion(user)
+	user.Keys = revokeUserKeys(user.Keys)
 	user.ResetToken = ""
 	user.ResetExpiry = 0
-	s.Store.SaveUser(user)
+	if err := s.Store.SaveUser(user); err != nil {
+		http.Error(w, "failed to update password", http.StatusInternalServerError)
+		return
+	}
+	clearAuthCookies(w)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password updated"})
 }

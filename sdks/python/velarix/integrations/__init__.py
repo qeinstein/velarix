@@ -8,9 +8,9 @@ except ImportError:  # pragma: no cover - optional dependency
     pass
 
 try:
-    from .langgraph import VelarixLangGraphMemory
+    from .langgraph import VelarixLangGraphMemory, epistemic_check_node
 
-    __all__.append("VelarixLangGraphMemory")
+    __all__.extend(["VelarixLangGraphMemory", "epistemic_check_node"])
 except ImportError:  # pragma: no cover - optional dependency
     pass
 
@@ -18,5 +18,12 @@ try:
     from .llamaindex import VelarixRetriever
 
     __all__.append("VelarixRetriever")
+except ImportError:  # pragma: no cover - optional dependency
+    pass
+
+try:
+    from .crewai import VelarixCrewAIMemory
+
+    __all__.append("VelarixCrewAIMemory")
 except ImportError:  # pragma: no cover - optional dependency
     pass

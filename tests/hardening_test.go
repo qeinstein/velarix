@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 	"velarix/store"
@@ -107,6 +108,207 @@ func TestPasswordResetIsDisabledOutsideDev(t *testing.T) {
 	}
 	if resetResponse["dev_reset_token"] == "" {
 		t.Fatalf("expected dev reset response to include a one-time token")
+	}
+}
+
+func TestRegisterRejectsDuplicateAccount(t *testing.T) {
+	server, _ := setupTestServer(t)
+
+	body, _ := json.Marshal(map[string]string{
+		"email":    "duplicate@example.com",
+		"password": "password123",
+	})
+	resp := performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/register", "", body)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected initial registration to succeed, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/register", "", body)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected duplicate registration to be rejected, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestCookieAuthAndResetRevocation(t *testing.T) {
+	server, _ := setupTestServer(t)
+	t.Setenv("VELARIX_ENV", "dev")
+
+	registerBody, _ := json.Marshal(map[string]string{
+		"email":    "cookie-auth@example.com",
+		"password": "password123",
+	})
+	resp := performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/register", "", registerBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected registration to succeed, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	loginBody, _ := json.Marshal(map[string]string{
+		"email":    "cookie-auth@example.com",
+		"password": "password123",
+	})
+	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/login", "", loginBody)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected login to succeed, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var loginResponse map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&loginResponse); err != nil {
+		t.Fatalf("failed to decode login response: %v", err)
+	}
+	if loginResponse["token"] == "" {
+		t.Fatalf("expected login response to include a jwt")
+	}
+	cookies := resp.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatalf("expected login to set an auth cookie")
+	}
+	authCookie := cookies[0]
+
+	cookieReq := httptest.NewRequest(http.MethodGet, "/v1/keys", nil)
+	cookieReq.AddCookie(authCookie)
+	cookieResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(cookieResp, cookieReq)
+	if cookieResp.Code != http.StatusOK {
+		t.Fatalf("expected cookie-authenticated request to succeed, got %d body=%s", cookieResp.Code, cookieResp.Body.String())
+	}
+
+	generateKeyBody, _ := json.Marshal(map[string]interface{}{
+		"label":  "reset-test",
+		"scopes": []string{"read", "write"},
+	})
+	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/keys/generate", loginResponse["token"], generateKeyBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected api key generation to succeed, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var keyView map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&keyView); err != nil {
+		t.Fatalf("failed to decode key response: %v", err)
+	}
+	apiKey, _ := keyView["key"].(string)
+	if apiKey == "" {
+		t.Fatalf("expected generated api key in response")
+	}
+
+	resetReqBody, _ := json.Marshal(map[string]string{"email": "cookie-auth@example.com"})
+	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/reset-request", "", resetReqBody)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected reset request to succeed, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var resetRequest map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&resetRequest); err != nil {
+		t.Fatalf("failed to decode reset request response: %v", err)
+	}
+	resetToken := resetRequest["dev_reset_token"]
+	if resetToken == "" {
+		t.Fatalf("expected dev reset token in response")
+	}
+
+	resetConfirmBody, _ := json.Marshal(map[string]string{
+		"email":        "cookie-auth@example.com",
+		"token":        resetToken,
+		"new_password": "newpassword123",
+	})
+	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/reset-confirm", "", resetConfirmBody)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected reset confirmation to succeed, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performAuthenticatedRequest(t, server, http.MethodGet, "/v1/keys", loginResponse["token"], nil)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected old jwt to be rejected after reset, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performAuthenticatedRequest(t, server, http.MethodGet, "/v1/sessions", apiKey, nil)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected old api key to be revoked after reset, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	staleCookieReq := httptest.NewRequest(http.MethodGet, "/v1/keys", nil)
+	staleCookieReq.AddCookie(authCookie)
+	staleCookieResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(staleCookieResp, staleCookieReq)
+	if staleCookieResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected stale auth cookie to be rejected after reset, got %d body=%s", staleCookieResp.Code, staleCookieResp.Body.String())
+	}
+}
+
+func TestBootstrapAdminKeyRequiresExplicitProdOptIn(t *testing.T) {
+	server, _ := setupTestServer(t)
+	t.Setenv("VELARIX_ENV", "prod")
+	t.Setenv("VELARIX_ENABLE_BOOTSTRAP_ADMIN_KEY", "false")
+
+	resp := performAuthenticatedRequest(t, server, http.MethodGet, "/v1/sessions", "test_admin_key", nil)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected bootstrap admin key to be disabled in prod, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	t.Setenv("VELARIX_ENABLE_BOOTSTRAP_ADMIN_KEY", "true")
+	resp = performAuthenticatedRequest(t, server, http.MethodGet, "/v1/sessions", "test_admin_key", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected explicit prod opt-in to restore bootstrap admin key, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestAuthResetRequestRateLimited(t *testing.T) {
+	server, _ := setupTestServer(t)
+	t.Setenv("VELARIX_ENV", "dev")
+	if err := server.Store.SaveUser(&store.User{
+		Email:          "limited-reset@example.com",
+		OrgID:          "test_org",
+		Role:           "member",
+		TokenVersion:   1,
+		HashedPassword: "$argon2id$v=19$m=65536,t=3,p=2$c29tZXNhbHQ$ZmFrZWhhc2g",
+	}); err != nil {
+		t.Fatalf("failed to save reset test user: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"email": "limited-reset@example.com"})
+	for i := 0; i < 6; i++ {
+		resp := performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/reset-request", "", body)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected reset request %d to succeed, got %d body=%s", i+1, resp.Code, resp.Body.String())
+		}
+	}
+
+	resp := performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/reset-request", "", body)
+	if resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected reset request throttling, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestProdCORSFailsClosedAndSecurityHeadersAreSet(t *testing.T) {
+	server, _ := setupTestServer(t)
+	t.Setenv("VELARIX_ENV", "prod")
+	t.Setenv("VELARIX_ALLOWED_ORIGINS", "")
+
+	preflight := httptest.NewRequest(http.MethodOptions, "/v1/auth/login", nil)
+	preflight.Header.Set("Origin", "https://evil.example")
+	preflight.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	preflightResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(preflightResp, preflight)
+	if preflightResp.Code != http.StatusForbidden {
+		t.Fatalf("expected prod preflight from unconfigured origin to be rejected, got %d", preflightResp.Code)
+	}
+	if preflightResp.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("expected no access-control-allow-origin header for rejected origin")
+	}
+
+	healthReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+	healthResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(healthResp, healthReq)
+	if healthResp.Code != http.StatusOK {
+		t.Fatalf("expected health check to succeed, got %d", healthResp.Code)
+	}
+	for key, expected := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "no-referrer",
+	} {
+		if got := healthResp.Header().Get(key); got != expected {
+			t.Fatalf("expected %s=%q, got %q", key, expected, got)
+		}
+	}
+	if healthResp.Header().Get("Strict-Transport-Security") == "" {
+		t.Fatalf("expected strict transport security header in prod responses")
 	}
 }
 

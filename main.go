@@ -15,6 +15,7 @@ import (
 	"velarix/core"
 	"velarix/store"
 	storepostgres "velarix/store/postgres"
+	storeredis "velarix/store/redis"
 )
 
 func main() {
@@ -42,13 +43,21 @@ func main() {
 	slog.Info("Velarix | Epistemic Layer for AI Agents", "lite_mode", isLite)
 
 	encryptionKey := []byte(os.Getenv("VELARIX_ENCRYPTION_KEY"))
-	env := os.Getenv("VELARIX_ENV")
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("VELARIX_ENV")))
+	if env == "" {
+		env = "prod"
+	}
+	devLike := env == "dev" || env == "test"
 
 	if !isLite && len(encryptionKey) == 0 {
-		if env != "dev" {
+		if !devLike {
 			slog.Error("CRITICAL: Encryption at rest is REQUIRED in production.")
 			os.Exit(1)
 		}
+	}
+	if !isLite && !devLike && strings.TrimSpace(os.Getenv("VELARIX_JWT_SECRET")) == "" {
+		slog.Error("CRITICAL: VELARIX_JWT_SECRET is REQUIRED in production.")
+		os.Exit(1)
 	}
 
 	backend := "badger"
@@ -58,15 +67,34 @@ func main() {
 			backend = "postgres"
 		}
 	}
+	postgresDSN := strings.TrimSpace(os.Getenv("VELARIX_POSTGRES_DSN"))
+	allowBadgerProd := strings.EqualFold(strings.TrimSpace(os.Getenv("VELARIX_ALLOW_BADGER_PROD")), "true")
+	if !isLite && !devLike {
+		switch backend {
+		case "", "postgres":
+			if postgresDSN == "" && !allowBadgerProd {
+				slog.Error("CRITICAL: production requires Postgres or VELARIX_ALLOW_BADGER_PROD=true.")
+				os.Exit(1)
+			}
+		case "badger":
+			if !allowBadgerProd {
+				slog.Error("CRITICAL: production Badger fallback is disabled by default. Set VELARIX_ALLOW_BADGER_PROD=true to opt in.")
+				os.Exit(1)
+			}
+		}
+	}
 
 	var runtimeStore store.RuntimeStore
+	var primaryStore store.ServerStore
+	var compositeClosers []store.RuntimeCloser
 	if backend == "postgres" && !isLite {
-		pgStore, err := storepostgres.Open(context.Background(), os.Getenv("VELARIX_POSTGRES_DSN"))
+		pgStore, err := storepostgres.Open(context.Background(), postgresDSN)
 		if err != nil {
 			slog.Error("Failed to open Postgres store", "error", err)
 			os.Exit(1)
 		}
-		runtimeStore = store.NewCompositeRuntimeStore(pgStore, nil, nil, pgStore)
+		primaryStore = pgStore
+		compositeClosers = append(compositeClosers, pgStore)
 	} else {
 		dbPath := os.Getenv("VELARIX_BADGER_PATH")
 		if dbPath == "" {
@@ -77,7 +105,28 @@ func main() {
 			slog.Error("Failed to open BadgerDB", "error", err)
 			os.Exit(1)
 		}
-		runtimeStore = localStore
+		primaryStore = localStore
+		compositeClosers = append(compositeClosers, localStore)
+	}
+
+	if !isLite {
+		redisURL := strings.TrimSpace(os.Getenv("VELARIX_REDIS_URL"))
+		if redisURL != "" {
+			redisStore, err := storeredis.Open(redisURL)
+			if err != nil {
+				slog.Error("Failed to open Redis coordination store", "error", err)
+				os.Exit(1)
+			}
+			compositeClosers = append(compositeClosers, redisStore)
+			runtimeStore = store.NewCompositeRuntimeStore(primaryStore, redisStore, redisStore, compositeClosers...)
+		}
+	}
+	if runtimeStore == nil {
+		if asRuntime, ok := primaryStore.(store.RuntimeStore); ok {
+			runtimeStore = asRuntime
+		} else {
+			runtimeStore = store.NewCompositeRuntimeStore(primaryStore, nil, nil, compositeClosers...)
+		}
 	}
 
 	defer runtimeStore.Close()
@@ -110,7 +159,16 @@ func main() {
 
 	slog.Info(fmt.Sprintf("Server ready at http://localhost%s", port))
 
-	if err := http.ListenAndServe(port, server.Routes()); err != nil {
+	httpServer := &http.Server{
+		Addr:              port,
+		Handler:           server.Routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	if err := httpServer.ListenAndServe(); err != nil {
 		slog.Error("Server failed", "error", err)
 		os.Exit(1)
 	}

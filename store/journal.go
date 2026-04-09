@@ -16,6 +16,7 @@ const (
 	EventAssert               EventType = "assert"
 	EventInvalidate           EventType = "invalidate"
 	EventRetract              EventType = "retract"
+	EventReview               EventType = "review"
 	EventCycleViolation       EventType = "cycle_violation"
 	EventSnapshotCorruption   EventType = "snapshot_corruption"
 	EventConfidenceAdjusted   EventType = "confidence_adjusted"
@@ -149,6 +150,24 @@ func Replay(path string, engines map[string]*core.Engine) error {
 			}
 			if err := engine.RetractFact(entry.FactID, reason); err != nil {
 				return fmt.Errorf("line %d [Session: %s]: failed to replay retract: %w", lineNum, entry.SessionID, err)
+			}
+		case EventReview:
+			status := ""
+			reason := ""
+			reviewedAt := entry.Timestamp
+			if entry.Payload != nil {
+				if v, ok := entry.Payload["status"].(string); ok {
+					status = v
+				}
+				if v, ok := entry.Payload["reason"].(string); ok {
+					reason = v
+				}
+				if v, ok := entry.Payload["reviewed_at"].(float64); ok {
+					reviewedAt = int64(v)
+				}
+			}
+			if err := engine.SetFactReview(entry.FactID, status, reason, reviewedAt); err != nil {
+				return fmt.Errorf("line %d [Session: %s]: failed to replay review: %w", lineNum, entry.SessionID, err)
 			}
 		}
 	}
