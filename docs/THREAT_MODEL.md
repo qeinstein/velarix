@@ -1,6 +1,6 @@
 # Threat Model
 
-This threat model is written for Velarix as an approval-guardrail service for AI-assisted internal operations.
+Velarix is threat-modeled as a decision-integrity service for AI-assisted operations.
 
 ## Protected Assets
 
@@ -8,15 +8,15 @@ This threat model is written for Velarix as an approval-guardrail service for AI
 - decision records and dependency snapshots
 - execute-check and execute outcomes
 - audit trail and access logs
-- API keys and JWTs
+- API keys, JWTs, and browser sessions
 - organization-scoped operational metadata
 
 ## Trust Boundaries
 
 - public network to reverse proxy to Velarix API
-- internal operator or service to Velarix API
+- operator or service to Velarix API
 - Velarix API to Postgres, Redis, or local Badger
-- Velarix API to any downstream execution owner
+- Velarix API to downstream execution owners
 
 ## Primary Threats
 
@@ -35,32 +35,33 @@ Mitigation:
 
 Risk:
 
-- an upstream fact changes but a previously generated approval still executes
+- an upstream fact changes after approval creation and the original action still executes
 
 Mitigation:
 
 - dependency snapshots
 - fresh `execute-check`
-- blocked `execute` when dependencies are invalid
+- blocked `execute` when required facts are invalid or pending review
 
-### 3. Stolen Service Credentials
+### 3. Credential Theft
 
 Risk:
 
-- attacker replays writes or reads approval history
+- attacker replays writes or reads approval history with stolen API keys or sessions
 
 Mitigation:
 
 - scoped API keys
 - revocation and rotation
-- rate limiting
+- auth throttling
 - org-aware auditing
+- httpOnly browser cookies for console sessions
 
-### 4. Tampering With Decision History
+### 4. History Tampering
 
 Risk:
 
-- approval provenance becomes untrustworthy
+- provenance becomes untrustworthy
 
 Mitigation:
 
@@ -68,36 +69,37 @@ Mitigation:
 - verification hashes
 - persisted decision and dependency records
 
-### 5. Denial Of Service From Bursty Writers
+### 5. Bursty Write DoS
 
 Risk:
 
-- approval checks degrade under agent bursts
+- approval checks degrade under agent bursts or repeated retries
 
 Mitigation:
 
 - per-org write backpressure
 - idempotency keys
-- distributed coordination on the production path
+- shared coordination in production deployments
 
-### 6. Data Exposure Through Broad Platform Surfaces
+### 6. Browser Session Exposure
 
 Risk:
 
-- non-core routes expand the attack surface without strengthening the approval workflow
+- browser-side credentials are exposed through overly broad frontend storage or origin policy
 
 Mitigation:
 
-- narrow the product narrative
-- reduce dependence on broad admin features
-- treat non-core surfaces as secondary
+- httpOnly auth cookies
+- SameSite cookie controls
+- explicit production CORS allowlist
+- security headers on API responses
 
 ## Hardening Defaults
 
 - set `VELARIX_ENV=prod`
 - set `VELARIX_JWT_SECRET`
 - set `VELARIX_ALLOWED_ORIGINS`
-- prefer Postgres plus Redis for production-like work
-- avoid broad admin credentials in agent traffic
-- require execute checks immediately before final action
-
+- use Postgres for production state
+- add Redis for shared rate limiting and idempotency
+- keep bootstrap admin disabled unless recovery requires it
+- require `execute-check` immediately before the final action

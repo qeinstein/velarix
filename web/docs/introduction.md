@@ -1,21 +1,24 @@
 ---
 title: "Introduction"
-description: "Project overview and Why Velarix?"
+description: "Velarix product overview."
 order: 1
 ---
 
 # Introduction
 
-Welcome to Velarix. This document provides an overview of the project and explains why Velarix exists.
+Velarix is the decision-integrity layer for AI-assisted operations.
 
-## Project Overview
+## Product Overview
 
-Velarix gives AI agents a causal memory layer. When a fact changes, stale reasoning is pruned instead of quietly surviving in context. It is designed to track dependencies across facts, beliefs, and decisions, giving models a verifiable layer of state.
+It keeps facts, derived conclusions, and execution paths tied together. When a premise changes, Velarix retracts unsupported reasoning instead of allowing stale plans to survive in context.
 
-## Why Velarix?
+## Product Guarantees
 
-Models are good at continuation, but they struggle with un-learning things when premises change. Velarix acts as the layer that notices when a premise changes and removes downstream fiction, ensuring that reasoning chains remain logically consistent over time.
+- Causal tracking across facts, justifications, and decisions
+- Correctable state when upstream facts change
+- Execution checks that block stale or unreviewed actions
+- Framework integrations that keep belief state available without dumping full history
 
-- **Causal Tracking**: Every decision can be traced back through the beliefs that produced it.
-- **Correctable State**: Stale reasoning is pruned automatically.
-- **Familiar Integration**: Works alongside the runtime and orchestration layers you already use.
+## Product Position
+
+Velarix is designed for approval workflows, operational actions, and other AI-assisted paths where state must stay valid at execution time.
