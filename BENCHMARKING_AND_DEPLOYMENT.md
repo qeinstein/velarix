@@ -1,91 +1,126 @@
-# Velarix: Benchmarking & Deployment Guide
+# Velarix: Benchmarking And Deployment
 
-This guide details how to empirically measure Velarix's performance advantages (specifically the $O(1)$ logic pruning and hallucination reduction) and how to deploy the production Control Plane to Google Cloud Platform (GCP).
+Velarix ships with a deterministic contradiction benchmark and a production deployment path centered on shared infrastructure.
 
 ---
 
 ## Part 1: Benchmarking Velarix
 
-Velarix's primary claims are computational efficiency (via Dominator Trees) and epistemic integrity (reducing stale plans). Here is how you prove it.
+The benchmark exercises long-horizon contradiction handling.
 
-### 1. The Hallucination Benchmark
+The benchmark compares four strategies:
 
-This benchmark measures how often an AI agent acts on "stale" or retracted information during a multi-step task.
+- `tms`
+- `plain_rag`
+- `self_reflection`
+- `memory_refresh`
 
-**Setup:**
-1. Navigate to the tests directory: `cd tests/reproducibility`
-2. Run the baseline script (requires `OPENAI_API_KEY`):
-   ```bash
-   python3 hallucination_benchmark.py
-   ```
+### 1. Run The Benchmark
 
-**What it does under the hood:**
-*   **The Scenario:** An agent is asked to research a company and plan an acquisition. Halfway through the research, a critical "Root Fact" (e.g., "The company has $50M in debt") is injected, and then later *retracted*.
-*   **Vanilla Prompting (Control):** The agent typically keeps the retracted fact in its context window or fails to update its derived conclusions, resulting in a ~35% "Stale Plan" failure rate.
-*   **Velarix Agent (Test):** The agent's beliefs are piped through the Velarix engine. When the root fact is retracted, Velarix's Dominator Tree instantly invalidates the derived acquisition plan. The agent is forced to re-plan. Failure rate drops to 0%.
+From the project root:
 
-### 2. Testing $O(1)$ Pruning Speed
+```bash
+python3 tests/reproducibility/hallucination_benchmark.py --spawn-server --steps 120
+```
 
-To benchmark the raw Go engine performance against a standard DAG traversal:
+Optional flags:
 
-1. Start the Velarix server locally in lite mode:
-   ```bash
-   go run main.go --lite
-   ```
-2. Use the provided benchmarking script (or write a quick Python script) to assert 10,000 facts in a deep causal chain.
-3. Invalidate the root fact:
-   ```bash
-   curl -X POST http://localhost:8080/v1/s/bench-session/facts/root-fact-1/invalidate
-   ```
-4. Observe the latency in the server logs. Because Velarix uses PreOrder/PostOrder ancestry checks (Dominator Trees), pruning 10,000 facts takes sub-millisecond time ($O(1)$), whereas traditional Truth Maintenance Systems take $O(N+E)$ time.
+```bash
+python3 tests/reproducibility/hallucination_benchmark.py \
+  --spawn-server \
+  --steps 240 \
+  --contradiction-interval 17 \
+  --output benchmark-results.json
+```
+
+If a Velarix server is already running:
+
+```bash
+python3 tests/reproducibility/hallucination_benchmark.py \
+  --base-url http://127.0.0.1:8080 \
+  --api-key your_api_key
+```
+
+### 2. Benchmark Metrics
+
+The output includes:
+
+- `task_success_rate`
+- `consistency_rate`
+- `stale_action_rate`
+- `missing_context_rate`
+- `context_recall_rate`
+- `retraction_efficiency`
+- `max_latent_stale_plans`
+- `runtime_s`
+
+### 3. Workload Shape
+
+Each run executes a long mission across research, coding, and tool-use topics.
+
+At fixed intervals it injects a contradiction by invalidating the previously trusted version of a topic and replacing it with a new one.
+
+The `tms` strategy routes those updates through Velarix facts, invalidation, decisions, and query-aware slices.
+
+The baseline strategies simulate:
+
+- plain retrieval of older context
+- self-reflection with newest remembered items
+- simple memory refresh windows
+
+### 4. Result Interpretation
+
+The benchmark is designed to show:
+
+- how often stale actions survive a contradiction
+- how often the correct plan remains present in context
+- how efficiently retraction removes outdated plans
+
+It is a workload benchmark for contradiction handling, state correction, and execution safety.
 
 ---
 
-## Part 2: Deploying to Google Cloud Platform (GCP)
+## Part 2: Deploying Velarix
 
-You mentioned wanting to use "Google Compute" (Google Cloud Platform). The most robust, scalable, and zero-maintenance way to deploy Velarix's hybrid architecture on GCP is using **Cloud Run**, **Cloud SQL**, and **Memorystore**.
+Velarix is deployed as a stateless API tier backed by shared infrastructure.
 
-### The GCP Architecture
+### Recommended Production Shape
 
-1.  **Google Cloud Run (The Compute Layer):** This will host your stateless Go backend (`api/server.go`). It automatically scales from 0 to 1000 containers based on traffic.
-2.  **Google Cloud SQL (The Source of Truth):** A managed PostgreSQL 14+ database to permanently store users, API keys, and audit logs.
-3.  **Google Memorystore (The Coordinator):** A managed Redis instance to handle cross-container rate-limiting and idempotency.
+- compute: containerized Go API
+- primary store: Postgres
+- coordination: Redis
+- browser app: separate frontend deployment pointed at the API origin
 
-### Deployment Steps
+### Production Requirements
 
-#### Step 1: Provision the Databases (Cloud SQL & Memorystore)
+Set these environment variables:
 
-1.  **Create a Postgres Instance:**
-    *   Go to GCP Console -> Cloud SQL -> Create Instance -> PostgreSQL.
-    *   Set a password for the default `postgres` user.
-    *   Create a database named `velarix`.
-2.  **Create a Redis Instance:**
-    *   Go to GCP Console -> Memorystore -> Redis -> Create Instance.
-    *   Note the IP address and port (usually `6379`).
+- `VELARIX_ENV=prod`
+- `VELARIX_STORE_BACKEND=postgres`
+- `VELARIX_POSTGRES_DSN=...`
+- `VELARIX_JWT_SECRET=...`
+- `VELARIX_ALLOWED_ORIGINS=...`
 
-#### Step 2: Build and Push the Docker Image
+Recommended for multi-instance deployments:
 
-Google Cloud Run deploys Docker containers. You need to push your image to the Google Container Registry (GCR) or Artifact Registry.
+- `VELARIX_REDIS_URL=...`
 
-```bash
-# Set your GCP Project ID
-export PROJECT_ID="your-gcp-project-id"
+Only set these if you intentionally need them:
 
-# Authenticate Docker with GCP
-gcloud auth configure-docker
+- `VELARIX_ENABLE_BOOTSTRAP_ADMIN_KEY=true`
+- `VELARIX_API_KEY=...`
+- `VELARIX_ALLOW_BADGER_PROD=true`
 
-# Build the production image (Note: We do NOT use the --lite flag in prod)
-docker build -t gcr.io/$PROJECT_ID/velarix-engine:latest .
+### Google Cloud Platform Reference Shape
 
-# Push the image to GCP
-docker push gcr.io/$PROJECT_ID/velarix-engine:latest
-```
+For GCP deployments, the recommended stack is:
 
-*Note: Ensure your `Dockerfile` `CMD` in production does not include `--lite` so the enterprise routes are mounted.*
+1. Cloud Run for the Go API
+2. Cloud SQL for Postgres
+3. Memorystore for Redis
+4. a separate frontend deployment for the Next.js app
 
-#### Step 3: Deploy to Google Cloud Run
-
-Deploy the container and inject your production environment variables (the ones from your `.env` file).
+### Example Cloud Run Deployment
 
 ```bash
 gcloud run deploy velarix-api \
@@ -97,26 +132,23 @@ gcloud run deploy velarix-api \
   --set-env-vars="VELARIX_STORE_BACKEND=postgres" \
   --set-env-vars="VELARIX_POSTGRES_DSN=postgres://postgres:YOUR_DB_PASSWORD@YOUR_CLOUD_SQL_IP:5432/velarix?sslmode=disable" \
   --set-env-vars="VELARIX_REDIS_URL=redis://YOUR_MEMORYSTORE_IP:6379" \
-  --set-env-vars="VELARIX_ENCRYPTION_KEY=YOUR_32_BYTE_HEX_STRING" \
   --set-env-vars="VELARIX_JWT_SECRET=YOUR_SECURE_JWT_SECRET" \
+  --set-env-vars="VELARIX_ALLOWED_ORIGINS=https://app.yourdomain.com" \
   --vpc-connector=YOUR_VPC_CONNECTOR_NAME
 ```
 
-*(Crucial: Cloud Run needs a "Serverless VPC Access Connector" to talk to private Cloud SQL and Redis instances securely without routing traffic over the public internet.)*
+### Browser App Deployment
 
-#### Step 4: Deploy the Frontend (Vercel or Cloud Run)
+Set the frontend environment variable:
 
-For your Next.js minimalist frontend (`web/` directory), the easiest deployment path is **Vercel** (the creators of Next.js).
-1. Connect your GitHub repo to Vercel.
-2. Set the Root Directory to `web`.
-3. Add the Environment Variable: `NEXT_PUBLIC_VELARIX_API_URL=https://velarix-api-xxx.run.app` (The URL GCP gave you in Step 3).
+```bash
+NEXT_PUBLIC_VELARIX_API_URL=https://api.yourdomain.com
+```
 
-If you strictly want to keep it all on GCP, you can Dockerize the `web/` directory and deploy it to a second Google Cloud Run service exactly like you did the backend.
+The web console uses cookie-based auth against that API origin.
 
-### Post-Deployment (The Control Plane)
+### Operating Rule
 
-Once your API is live on Cloud Run and your frontend is live on Vercel:
-1.  Users visit your frontend, sign up, and generate API keys.
-2.  The API keys are securely hashed and stored in Google Cloud SQL.
-3.  When their agents make requests, Cloud Run hits Google Memorystore (Redis) to check their rate limits.
-4.  If they exceed their Free Tier limits, your Control Plane (Stripe Webhooks) prompts them to upgrade.
+Run Postgres as the source of truth.
+
+Treat Redis as required whenever more than one API instance is handling live traffic.

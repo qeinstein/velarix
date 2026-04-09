@@ -1,17 +1,21 @@
 # Demo
 
-`approval_integrity.py` is the canonical demo for this repository.
+Velarix ships with one canonical product demo and two framework integration demos.
 
-It demonstrates the product the repo should be judged on:
+## Canonical Demo
+
+`approval_integrity.py` is the canonical product demo.
+
+It covers the full product loop:
 
 - approval facts are recorded
-- a decision is created from those facts
+- a decision is created
 - an upstream fact changes
 - the decision becomes stale
 - execution is blocked
 - the API explains why
 
-## Run The Demo
+### Run The Canonical Demo
 
 Start the API from the project root:
 
@@ -30,12 +34,30 @@ export VELARIX_API_KEY=dev-admin-key
 python demo/approval_integrity.py
 ```
 
-## Notes
+## Framework Demos
 
-- `approval_integrity.py` is the maintained demo path
-- other integration examples in this directory are exploratory
-- the repo should not be pitched around those exploratory examples
-# Demo Scripts
+### LangGraph
 
-- `langgraph_integration.py`: uses `VelarixLangGraphMemory` as a LangGraph checkpointer backed by Velarix session history.
-- `crewai_integration.py`: injects a query-aware Velarix belief slice into a CrewAI task and persists the result back as a fact.
+`langgraph_integration.py` demonstrates `VelarixLangGraphMemory` as a LangGraph checkpoint layer backed by Velarix session history.
+
+Install requirements:
+
+```bash
+pip install -e './sdks/python[langgraph]'
+```
+
+### CrewAI
+
+`crewai_integration.py` demonstrates `VelarixCrewAIMemory` injecting a query-aware belief slice into a CrewAI task and persisting the resulting output back into Velarix.
+
+Install requirements:
+
+```bash
+pip install -e './sdks/python[crewai]' crewai
+```
+
+## Product Position
+
+`approval_integrity.py` is the canonical product demo.
+
+The LangGraph and CrewAI examples show supported integration surfaces around the core execution-integrity flow.
