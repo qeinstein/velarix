@@ -1,88 +1,219 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/stripe/stripe-go/v76"
 	"github.com/stripe/stripe-go/v76/webhook"
+
+	"velarix/store"
+	"velarix/store/postgres"
 )
 
-// This is a standalone microservice for the Control Plane.
-// It listens for Stripe webhooks and updates the central Velarix Postgres database
-// to grant or revoke Enterprise access based on payment status.
-
 func main() {
-	_ = godotenv.Load("../../.env") // Load root env if running locally
+	_ = godotenv.Load("../../.env")
 
-	stripe.Key = os.Getenv("STRIPE_SECRET_KEY")
-	webhookSecret := os.Getenv("STRIPE_WEBHOOK_SECRET")
-
+	stripe.Key = strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
+	webhookSecret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
+	postgresDSN := strings.TrimSpace(os.Getenv("VELARIX_POSTGRES_DSN"))
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("VELARIX_ENV")))
+	if env == "" {
+		env = "prod"
+	}
+	devLike := env == "dev" || env == "test"
 	if stripe.Key == "" || webhookSecret == "" {
-		log.Println("WARNING: Stripe keys not configured. Billing webhook server will fail on requests.")
+		if !devLike {
+			log.Fatal("STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET are required outside dev/test")
+		}
+		log.Println("WARNING: Stripe keys not configured. Billing webhook verification will fail.")
+	}
+	if postgresDSN == "" {
+		if !devLike {
+			log.Fatal("VELARIX_POSTGRES_DSN is required outside dev/test")
+		}
+		log.Println("WARNING: VELARIX_POSTGRES_DSN is not configured. Billing updates will be ignored.")
 	}
 
-	http.HandleFunc("/webhooks/stripe", func(w http.ResponseWriter, req *http.Request) {
-		const MaxBodyBytes = int64(65536)
-		req.Body = http.MaxBytesReader(w, req.Body, MaxBodyBytes)
+	var billingStore store.BillingStore
+	if postgresDSN != "" {
+		pgStore, err := postgres.Open(context.Background(), postgresDSN)
+		if err != nil {
+			log.Fatalf("failed to open postgres billing store: %v", err)
+		}
+		defer pgStore.Close()
+		billingStore = pgStore
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	mux.HandleFunc("/webhooks/stripe", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if billingStore == nil {
+			http.Error(w, "billing store is not configured", http.StatusServiceUnavailable)
+			return
+		}
+
+		req.Body = http.MaxBytesReader(w, req.Body, 65536)
 		payload, err := io.ReadAll(req.Body)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading request body: %v\n", err)
-			w.WriteHeader(http.StatusServiceUnavailable)
+			http.Error(w, "failed to read request body", http.StatusServiceUnavailable)
 			return
 		}
 
 		event, err := webhook.ConstructEvent(payload, req.Header.Get("Stripe-Signature"), webhookSecret)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error verifying webhook signature: %v\n", err)
-			w.WriteHeader(http.StatusBadRequest)
+			http.Error(w, "invalid webhook signature", http.StatusBadRequest)
 			return
 		}
 
 		switch event.Type {
 		case "customer.subscription.created", "customer.subscription.updated":
-			var sub stripe.Subscription
-			err := json.Unmarshal(event.Data.Raw, &sub)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error parsing webhook JSON: %v\n", err)
-				w.WriteHeader(http.StatusBadRequest)
+			if err := handleSubscriptionEvent(billingStore, event, false); err != nil {
+				log.Printf("billing update failed for event %s: %v", event.Type, err)
+				http.Error(w, "billing update failed", http.StatusAccepted)
 				return
 			}
-			log.Printf("Subscription [%s] updated for customer [%s]. Status: %s\n", sub.ID, sub.Customer.ID, sub.Status)
-			
-			// TODO: Update the Postgres `billing_subscriptions` table via shared store
-			// store.UpdateBillingStatusByStripeCustomerID(sub.Customer.ID, string(sub.Status))
-
 		case "customer.subscription.deleted":
-			var sub stripe.Subscription
-			err := json.Unmarshal(event.Data.Raw, &sub)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error parsing webhook JSON: %v\n", err)
-				w.WriteHeader(http.StatusBadRequest)
+			if err := handleSubscriptionEvent(billingStore, event, true); err != nil {
+				log.Printf("billing cancellation failed: %v", err)
+				http.Error(w, "billing cancellation failed", http.StatusAccepted)
 				return
 			}
-			log.Printf("Subscription [%s] canceled for customer [%s]. Downgrading to Free.\n", sub.ID, sub.Customer.ID)
-			
-			// TODO: Downgrade in Postgres
-			// store.UpdateBillingStatusByStripeCustomerID(sub.Customer.ID, "canceled")
-
 		default:
-			fmt.Fprintf(os.Stderr, "Unhandled event type: %s\n", event.Type)
+			log.Printf("Unhandled Stripe event type: %s", event.Type)
 		}
 
 		w.WriteHeader(http.StatusOK)
 	})
 
-	port := os.Getenv("BILLING_PORT")
+	port := strings.TrimSpace(os.Getenv("BILLING_PORT"))
 	if port == "" {
 		port = "8081"
 	}
-	
-	log.Printf("Control Plane: Billing Webhook Server listening on port %s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+
+	log.Printf("Control Plane billing webhook server listening on port %s", port)
+	httpServer := &http.Server{
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	log.Fatal(httpServer.ListenAndServe())
+}
+
+func handleSubscriptionEvent(billingStore store.BillingStore, event stripe.Event, deleted bool) error {
+	var subscription stripe.Subscription
+	if err := json.Unmarshal(event.Data.Raw, &subscription); err != nil {
+		return fmt.Errorf("parse subscription payload: %w", err)
+	}
+
+	orgID := firstNonEmpty(
+		subscription.Metadata["velarix_org_id"],
+		subscription.Metadata["org_id"],
+	)
+	if orgID == "" {
+		return fmt.Errorf("missing org metadata on subscription %s", subscription.ID)
+	}
+
+	current, _ := billingStore.GetBilling(orgID)
+	if current == nil {
+		current = &store.BillingSubscription{
+			Plan:         "free",
+			Status:       "active",
+			BillingEmail: subscription.Metadata["billing_email"],
+		}
+	}
+
+	current.Plan = resolvePlan(&subscription, deleted)
+	current.Status = strings.ToLower(strings.TrimSpace(string(subscription.Status)))
+	if deleted {
+		current.Status = "canceled"
+	}
+	current.StripeSubscriptionID = subscription.ID
+	current.StripeCustomerID = subscription.Customer.ID
+	current.CurrentPeriodEnd = subscription.CurrentPeriodEnd
+	current.Seats = 1
+	if subscription.Items != nil {
+		for _, item := range subscription.Items.Data {
+			if item == nil {
+				continue
+			}
+			if item.Quantity > 0 {
+				current.Seats = int(item.Quantity)
+				break
+			}
+		}
+	}
+	if current.BillingEmail == "" {
+		current.BillingEmail = subscription.Metadata["billing_email"]
+	}
+	current.Features = featuresForPlan(current.Plan)
+	current.Metadata = map[string]string{
+		"org_id":          orgID,
+		"stripe_event_id": event.ID,
+		"updated_from":    string(event.Type),
+	}
+	current.UpdatedAt = time.Now().UnixMilli()
+
+	return billingStore.SaveBilling(orgID, current)
+}
+
+func resolvePlan(subscription *stripe.Subscription, deleted bool) string {
+	if deleted {
+		return "free"
+	}
+	if subscription == nil {
+		return "free"
+	}
+	for _, key := range []string{"velarix_plan", "plan"} {
+		if plan := strings.ToLower(strings.TrimSpace(subscription.Metadata[key])); plan != "" {
+			return plan
+		}
+	}
+	return "pro"
+}
+
+func featuresForPlan(plan string) map[string]bool {
+	switch strings.ToLower(strings.TrimSpace(plan)) {
+	case "enterprise":
+		return map[string]bool{
+			"compliance_export": true,
+			"human_review":      true,
+			"priority_support":  true,
+		}
+	case "pro":
+		return map[string]bool{
+			"compliance_export": true,
+			"human_review":      true,
+		}
+	default:
+		return map[string]bool{}
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

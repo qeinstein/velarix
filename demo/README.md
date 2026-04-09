@@ -35,4 +35,7 @@ python demo/approval_integrity.py
 - `approval_integrity.py` is the maintained demo path
 - other integration examples in this directory are exploratory
 - the repo should not be pitched around those exploratory examples
+# Demo Scripts
 
+- `langgraph_integration.py`: uses `VelarixLangGraphMemory` as a LangGraph checkpointer backed by Velarix session history.
+- `crewai_integration.py`: injects a query-aware Velarix belief slice into a CrewAI task and persists the result back as a fact.

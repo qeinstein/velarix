@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { apiFetch } from "../../lib/api";
 
 export default function Login() {
   const router = useRouter();
@@ -16,7 +17,7 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_VELARIX_API_URL || "http://localhost:8080"}/v1/auth/login`, {
+      const res = await apiFetch("/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -26,8 +27,7 @@ export default function Login() {
         throw new Error("Invalid credentials");
       }
 
-      const data = await res.json();
-      localStorage.setItem("vlx_token", data.token);
+      localStorage.removeItem("vlx_token");
       router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to sign in");
