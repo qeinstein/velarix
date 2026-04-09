@@ -2,7 +2,7 @@
 
 Velarix uses standard HTTP status codes with JSON payloads.
 
-The approval-guardrail workflow depends most on the following responses.
+These are the primary responses for production workflows.
 
 ## 400 Bad Request
 
@@ -12,15 +12,16 @@ Common causes:
 - schema validation failure
 - unknown parent fact
 - cycle or logical violation
-- malformed decision payload
+- malformed decision or review payload
 
 ## 401 Unauthorized
 
 Common causes:
 
-- missing API key
-- invalid API key
-- expired or invalid JWT
+- missing API key or session
+- invalid or revoked API key
+- expired, stale, or revoked JWT
+- bootstrap admin key disabled in the current environment
 
 ## 403 Forbidden
 
@@ -28,7 +29,8 @@ Common causes:
 
 - cross-org access attempt
 - missing scope for the route
-- admin-only route accessed by non-admin user
+- admin-only route accessed without admin privileges
+- browser origin not allowlisted for the request
 
 ## 404 Not Found
 
@@ -39,29 +41,30 @@ Common causes:
 
 ## 409 Conflict
 
-This is the most important approval-guardrail failure mode.
-
 Common causes:
 
-- `execute` was called on a stale decision
+- duplicate account registration
+- `execute` called on a stale decision
 - one or more required facts are missing or invalid
 
-Expected operator response:
+Operator response:
 
 - inspect `reason_codes`
 - inspect `blocked_by`
-- call `why-blocked` if more detail is needed
+- call `why-blocked` when deeper decision detail is required
 
 ## 429 Too Many Requests
 
 Common causes:
 
-- rate limit exceeded for the current key
+- auth route throttle triggered
+- API key rate limit exceeded
+- JWT rate limit exceeded
 
-Expected response behavior:
+Operator response:
 
 - honor `Retry-After`
-- retry safely with idempotency keys
+- retry safely with idempotency keys where appropriate
 
 ## 503 Service Unavailable
 
@@ -69,12 +72,12 @@ Common causes:
 
 - per-org write backpressure limit reached
 
-Expected response behavior:
+Operator response:
 
 - honor `Retry-After`
 - retry safely with the same idempotency key
 
-## Common Troubleshooting Cases
+## Operational Cases
 
 ### Decision Is No Longer Executable
 
@@ -82,7 +85,7 @@ Likely cause:
 
 - an upstream fact changed after the decision was created
 
-What to do:
+Operator response:
 
 - run `execute-check`
 - review `blocked_by`
@@ -92,13 +95,15 @@ What to do:
 
 Likely cause:
 
-- the fact resolved below the confidence threshold
-- one of its required parents was invalidated
+- the fact resolved below the threshold for the selected slice
+- a required dependency was invalidated
+- the current query ranked other facts higher
 
-What to do:
+Operator response:
 
 - fetch the fact directly
-- inspect explanation endpoints
+- inspect explanations
+- refine the slice query
 
 ### Session Access Feels Slow
 
@@ -107,8 +112,8 @@ Likely cause:
 - engine rebuild from persisted state
 - large history or snapshot load
 
-What to do:
+Operator response:
 
-- verify storage path health
-- use the shared-store path for production validation
-
+- verify storage-path health
+- use the shared-store production path for validation
+- reduce unnecessary session churn in long-running workloads

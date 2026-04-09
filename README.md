@@ -1,46 +1,95 @@
-# Velarix: The Epistemic Layer for AI Agents
+# Velarix: Decision Integrity for AI Agents
 
 ![Velarix](https://img.shields.io/badge/Status-Alpha-orange) ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 
-The current AI agent landscape is plagued by "Agent Drift" and "Context Hallucination." Frameworks like LangChain and CrewAI focus on *orchestration* (how to move), but they lack *epistemology* (what to believe).
+Velarix is the decision-integrity layer for AI-assisted operations.
 
-**Velarix** is a standalone "Belief Server" and Truth Maintenance System (TMS) for your AI agents. It ensures that your agents never act on stale, hallucinated, or retracted information. 
+It keeps recommendations, approvals, and execution paths tied to the facts that justify them. When a premise changes, Velarix retracts unsupported conclusions and blocks stale execution.
 
-## Quickstart (The "Import Swap")
+## What Velarix Includes
 
-Velarix requires zero prompt-engineering or manual schema definitions. Just swap your OpenAI import:
+- Go HTTP API for facts, invalidation, explanations, slices, governance, decisions, and execution checks
+- symbolic truth-maintenance engine with OR-of-AND justifications and negated dependencies
+- query-aware belief slicing with semantic ranking and dependency expansion
+- review-gated governance controls for protected facts and mutations
+- Python SDK plus OpenAI, LangGraph, LlamaIndex, and CrewAI integration surfaces
+- reproducible long-horizon contradiction benchmark harness
+- `vlx` CLI for health, slice, review, mutation, compliance export, and benchmark workflows
+
+## Quickstart
+
+Start the API locally:
+
+```bash
+export VELARIX_ENV=dev
+export VELARIX_API_KEY=dev-admin-key
+export VELARIX_BADGER_PATH="$(mktemp -d)"
+go run main.go
+```
+
+Write facts with the Python SDK:
 
 ```python
-from velarix.adapters.openai import OpenAI
+from velarix import VelarixClient
 
-# Your agent now has a memory!
-client = OpenAI(velarix_session_id="research-session-1")
+client = VelarixClient(base_url="http://localhost:8080", api_key="dev-admin-key")
+session = client.session("approval-demo")
 
-response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Analyze the market data..."}]
+session.observe("vendor_verified", {"summary": "Vendor 17 passed KYB"})
+session.observe("invoice_approved", {"summary": "Invoice inv-1042 is approved"})
+
+session.derive(
+    "decision.release_payment",
+    [["vendor_verified", "invoice_approved"]],
+    {"summary": "Release payment for invoice inv-1042"},
 )
 ```
 
-## Why Velarix?
+## Operating Pattern
 
-* **Infinite Logic Pruning**: Instead of doing expensive RAG checks on every step, Velarix uses a **Dominator Tree** algorithm. If a foundational "Root Fact" is retracted, Velarix invalidates every downstream conclusion in $O(1)$ time.
-* **Causal Traceability**: Every decision the agent makes is backed by an `explain_reasoning` trace. You can ask: *"What would the agent have done if Fact X was never discovered?"*
-* **Epistemic Integrity**: LLMs are overconfident. Velarix automatically caps the confidence of root assertions and requires multi-source verification to reach "certainty."
+Velarix belongs at the execution boundary:
 
-## Running the Belief Server
+1. record the approval facts
+2. derive the recommendation
+3. create a first-class decision
+4. call `execute-check` immediately before the side effect
+5. execute only if the decision remains valid
 
-Velarix runs a high-performance Go backend.
+## Integration Surfaces
 
-```bash
-docker-compose up -d
-```
-
-Or run it natively in Lite Mode:
-```bash
-go run main.go --lite
-```
+- Python SDK: session, fact, slice, and decision APIs
+- OpenAI adapter: model-facing observation and slice injection
+- LangGraph: checkpoint-backed graph state in Velarix
+- CrewAI: query-aware belief injection into task descriptions
+- LlamaIndex: lightweight retrieval of current valid beliefs
 
 ## Documentation
-- [How it Works (The Theory)](docs/theory.md)
-- [Python SDK Docs](sdks/python/README.md)
+
+- [Repository Overview](docs/README.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Integration Guide](docs/INTEGRATION_GUIDE.md)
+- [Operations](docs/OPERATIONS.md)
+- [Security Notes](docs/SECURITY.md)
+- [Threat Model](docs/THREAT_MODEL.md)
+- [Errors](docs/ERRORS.md)
+- [Benchmarking And Deployment](BENCHMARKING_AND_DEPLOYMENT.md)
+- [Python SDK](sdks/python/README.md)
+
+## Canonical Examples
+
+- [`demo/approval_integrity.py`](demo/approval_integrity.py)
+- [`demo/langgraph_integration.py`](demo/langgraph_integration.py)
+- [`demo/crewai_integration.py`](demo/crewai_integration.py)
+- [`tests/reproducibility/hallucination_benchmark.py`](tests/reproducibility/hallucination_benchmark.py)
+
+## Production Notes
+
+- production requires `VELARIX_JWT_SECRET`
+- browser access in production requires `VELARIX_ALLOWED_ORIGINS`
+- production runs on Postgres-backed runtime state
+- Badger outside development requires explicit opt-in
+- Redis coordination is recommended for multi-instance rate limiting and idempotency
+
+## Design Rule
+
+If a workflow can move money, change access, or create audit exposure, require a fresh `execute-check` before the final action.

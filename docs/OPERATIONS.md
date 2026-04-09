@@ -1,45 +1,53 @@
 # Operations
 
-This guide covers the current operational reality of Velarix as an approval-guardrail service.
+Velarix is operated as a decision-integrity service.
 
-## Current Deployment Modes
+## Deployment Modes
 
 ### Local Development
 
 Use Badger for:
 
-- local work
+- local development
 - tests
-- demo runs
+- demos
 
-### Production Direction
+### Production
 
-Use Postgres plus Redis for:
+Use Postgres for:
 
 - shared state
-- multi-instance safety
-- distributed idempotency
-- distributed rate limiting
+- durable runtime records
+- multi-instance operation
+
+Use Redis for:
+
+- shared rate limiting
+- shared idempotency
+- coordination across instances
+
+Badger in production is an explicit opt-in path, not the default operating mode.
 
 ## Health Endpoints
 
-- `GET /health`: basic connectivity and uptime
-- `GET /health/full`: detailed health information for admins
+- `GET /health`: connectivity, version, and uptime
+- `GET /health/full`: detailed status for admin operators
 
 ## Key Metrics
 
-Watch these first:
+Track these first:
 
 - API request counts and status codes
 - active sessions in memory
 - fact assertion latency
 - invalidation latency
 - write backpressure events
-- execute-check and blocked execute volume
+- execute-check volume
+- blocked execute volume
 
 ## Backpressure
 
-Velarix uses per-org write backpressure to protect latency under bursty write load.
+Velarix applies per-org write backpressure to protect latency under bursty write load.
 
 When saturated, write routes return:
 
@@ -49,53 +57,45 @@ When saturated, write routes return:
 
 Use idempotency keys for safe retries.
 
-## Rate Limiting
+## Rate Limiting And Idempotency
 
-Current behavior:
+Velarix supports:
 
-- local and shared-store code paths exist
-- the long-term production path should be Redis-backed
+- route-level auth throttling
+- API key and JWT rate limiting
+- request replay protection with idempotency keys
 
-Do not treat local-store rate limiting as the final production design.
+For multi-instance deployments, Redis is the coordination layer.
 
-## Backups And Restore
+## Server Defaults
 
-Badger local backup and restore exist for the local adapter path.
-
-That is not the final production recovery story.
-
-For the shared-store product direction, the recovery story should center on:
-
-- Postgres backups
-- Redis operational recovery
-- artifact storage strategy for snapshots and exports
-
-## Retention
-
-Retention settings should be treated as operational policy, not only read filtering.
-
-The product should enforce:
-
-- activity retention
-- access-log retention
-- notification retention
-
-## Environment Guidance
-
-For production-like work, set:
+Outside development, Velarix expects:
 
 - `VELARIX_ENV=prod`
 - `VELARIX_JWT_SECRET`
 - `VELARIX_ALLOWED_ORIGINS`
 - `VELARIX_STORE_BACKEND=postgres`
 - `VELARIX_POSTGRES_DSN`
-- `VELARIX_REDIS_URL`
 
-If using Badger outside development, also set:
+Add `VELARIX_REDIS_URL` for shared coordination.
+
+If Badger is used outside development, also set:
 
 - `VELARIX_ENCRYPTION_KEY`
+- `VELARIX_ALLOW_BADGER_PROD=true`
 
-## Operational Rule
+## Recovery
 
-Do not market this repo as a finished enterprise control plane until the shared-store path is the default production reality.
+The local adapter supports Badger backup and restore.
 
+The production recovery model centers on:
+
+- Postgres backup and restore
+- Redis operational recovery
+- export and artifact retention outside the reasoning process
+
+## Operating Rule
+
+Keep bootstrap admin access disabled in production unless it is actively required for recovery.
+
+Require `execute-check` immediately before every material side effect.

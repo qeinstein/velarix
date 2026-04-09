@@ -1,15 +1,23 @@
-# Velarix Control Plane (Command Center)
+# Velarix Control Plane
 
-This repository contains the private, operational logic for Velarix Cloud. This is separated from the core open-source reasoning engine to ensure the open-source code remains a pure developer tool, while this Control Plane handles the "unsexy" business logic required to run a profitable, secure SaaS.
+The control plane contains the hosted-service operational surfaces that sit alongside the reasoning API.
 
-## Architecture
+## Current Components
 
-*   **`billing/`**: Stripe webhooks, subscription logic, invoice generation, and tier enforcement (e.g., Free vs. Enterprise).
-*   **`infrastructure/`**: Terraform/Pulumi scripts for deploying and scaling the high-performance Go reasoning clusters on AWS/GCP.
-*   **`provisioning/`**: Automated tenant provisioning, database migrations for new Orgs, and Redis rate-limit configuration.
+- `billing/`: Stripe webhook handling, subscription updates, and plan-derived feature state
+- `infrastructure/`: deployment templates and infrastructure definitions
+- `provisioning/`: tenant setup and environment bootstrap helpers
 
-## The "Gatekeeper" Strategy
+## Current Shape
 
-The open-source community runs the core Velarix engine locally for free.
+The current scope covers:
 
-When users access our hosted dashboard, it points to `NEXT_PUBLIC_VELARIX_API_URL=https://api.velarix.com`. The Control Plane intercepts these requests, enforces API key validation, checks Stripe subscription status, and then securely routes the authenticated requests to the internal reasoning clusters.
+- billing-state ingestion
+- deployment scaffolding
+- tenant setup workflows
+
+## Product Boundary
+
+The public API remains the product surface for reasoning, decisions, and execution integrity.
+
+The control plane supports provisioning and service operations around that product surface.
