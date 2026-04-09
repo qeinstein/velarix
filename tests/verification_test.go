@@ -41,13 +41,10 @@ func TestComplexClinicalContraindication(t *testing.T) {
 	})
 
 	// 5. Contraindication: If allergy_penicillin, then Amoxicillin is NOT safe (Logic check)
-	// We represent safety as a fact that is only valid if NO allergy exists.
-	// In Velarix, we often use "Safety" nodes that depend on the ABSENCE of a risk.
-	// Since Velarix doesn't have native NOT gates yet (it's monotonic), 
-	// we represent "Safe to Prescribe" as a node that must be INVALIDATED if an allergy is found.
-	
-	// Let's model it differently: The "Prescription Plan" depends on "Candidate" AND "Safety Check".
-	
+	// Velarix now supports native negated dependencies (e.g. "!risk_flag"), but this test
+	// still exercises the explicit safety-gate modeling pattern because it remains useful
+	// for workflows that want a first-class reviewable safety fact.
+
 	engine.AssertFact(&core.Fact{
 		ID:           "safety_check_passed",
 		IsRoot:       true,
@@ -66,15 +63,15 @@ func TestComplexClinicalContraindication(t *testing.T) {
 	}
 
 	// 6. Impact Analysis: What happens if we invalidate the safety check?
-	// In Velarix, GetImpact uses the Dominator Tree. 
-	// If a fact has MULTIPLE justification sets (OR logic), 
+	// In Velarix, GetImpact uses the Dominator Tree.
+	// If a fact has MULTIPLE justification sets (OR logic),
 	// invalidating one might not invalidate the fact if another set is still valid.
-	
+
 	// In this test: prescribe_amoxicillin depends on (amoxicillin_candidate AND safety_check_passed).
 	// It only has ONE justification set. So it SHOULD be impacted.
-	
+
 	report := engine.GetImpact("safety_check_passed")
-	
+
 	found := false
 	for _, id := range report.ImpactedIDs {
 		if id == "prescribe_amoxicillin" {
@@ -96,9 +93,9 @@ func TestComplexClinicalContraindication(t *testing.T) {
 	}
 
 	// 8. Test "Epistemic Recovery": If the allergy was a false positive and we re-validate safety
-	// Note: We can't "re-validate" a root once invalidated in the same session without re-asserting 
+	// Note: We can't "re-validate" a root once invalidated in the same session without re-asserting
 	// (or replaying history). Let's test idempotency and re-assertion.
-	
+
 	// In Velarix, once a root is invalidated, it stays invalidated in that engine instance.
 	// To "undo", we'd usually start a new session or use the 'revalidate' logic.
 }
@@ -108,33 +105,33 @@ func TestCycleDetection(t *testing.T) {
 
 	engine.AssertFact(&core.Fact{ID: "A", IsRoot: true, ManualStatus: core.Valid})
 	engine.AssertFact(&core.Fact{ID: "B", JustificationSets: [][]string{{"A"}}})
-	
+
 	// Try to create a cycle: C depends on B, and A (root) is changed to depend on C?
 	// Actually, AssertFact prevents re-asserting a fact with different content.
 	// Let's try to assert C depending on B, then D depending on C and B.
-	
+
 	engine.AssertFact(&core.Fact{ID: "C", JustificationSets: [][]string{{"B"}}})
-	
+
 	// This should fail: D depends on D (self-cycle)
 	err := engine.AssertFact(&core.Fact{
-		ID: "D",
+		ID:                "D",
 		JustificationSets: [][]string{{"D"}},
 	})
 	if err == nil {
 		t.Fatal("expected error when asserting self-cycle")
 	}
 
-	// This should fail: D depends on C, and C depends on B, and B depends on A... 
+	// This should fail: D depends on C, and C depends on B, and B depends on A...
 	// Wait, to make a real cycle we need a non-root to point back.
-	
+
 	// Let's try: A -> B -> C -> A (where A is now derived)
 	engine2 := core.NewEngine()
 	engine2.AssertFact(&core.Fact{ID: "X", IsRoot: true, ManualStatus: core.Valid})
 	engine2.AssertFact(&core.Fact{ID: "A", JustificationSets: [][]string{{"X"}}}) // A is now derived
 	engine2.AssertFact(&core.Fact{ID: "B", JustificationSets: [][]string{{"A"}}})
-	
+
 	err = engine2.AssertFact(&core.Fact{
-		ID: "C",
+		ID:                "C",
 		JustificationSets: [][]string{{"B", "A"}}, // This is fine, DAG
 	})
 	if err != nil {
@@ -142,14 +139,14 @@ func TestCycleDetection(t *testing.T) {
 	}
 
 	err = engine2.AssertFact(&core.Fact{
-		ID: "B_cycle",
+		ID:                "B_cycle",
 		JustificationSets: [][]string{{"B"}},
 	})
 	// The current cycle detection in engine.go calls detectCycle(f) BEFORE adding to engine.Facts.
 	// So it checks if any of f's parents eventually lead back to f.
-	
+
 	err = engine2.AssertFact(&core.Fact{
-		ID: "Cycle",
+		ID:                "Cycle",
 		JustificationSets: [][]string{{"Cycle"}},
 	})
 	if err == nil {

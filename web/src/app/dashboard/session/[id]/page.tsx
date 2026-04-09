@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
+import { apiFetch, apiUrl } from "../../../../lib/api";
 
 const DAGExplorer = dynamic(() => import("../../../../components/DAGExplorer"), { ssr: false });
 
@@ -46,7 +47,6 @@ type Explanation = {
 export default function SessionView({ params }: { params: { id: string } }) {
   const router = useRouter();
   const sessionID = params.id;
-  const apiBase = process.env.NEXT_PUBLIC_VELARIX_API_URL || "http://localhost:8080";
 
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] });
   const [history, setHistory] = useState<HistoryEvent[]>([]);
@@ -60,16 +60,12 @@ export default function SessionView({ params }: { params: { id: string } }) {
   const [searchQuery, setSearchQuery] = useState("");
 
   const fetchSessionData = async () => {
-    const token = localStorage.getItem("vlx_token");
-    if (!token) {
-      router.push("/login");
-      return;
-    }
-
-    const headers = { Authorization: `Bearer ${token}` };
-
     try {
-      const graphRes = await fetch(`${apiBase}/v1/s/${sessionID}/graph`, { headers });
+      const graphRes = await apiFetch(`/v1/s/${sessionID}/graph`);
+      if (graphRes.status === 401) {
+        router.push("/login");
+        return;
+      }
       if (graphRes.ok) {
         const data = await graphRes.json();
         setGraphData({
@@ -81,7 +77,7 @@ export default function SessionView({ params }: { params: { id: string } }) {
         });
       }
 
-      const historyRes = await fetch(`${apiBase}/v1/s/${sessionID}/history`, { headers });
+      const historyRes = await apiFetch(`/v1/s/${sessionID}/history`);
       if (historyRes.ok) {
         const historyData = await historyRes.json();
         setHistory((historyData || []).reverse());
@@ -104,21 +100,17 @@ export default function SessionView({ params }: { params: { id: string } }) {
     setSimulating(true);
     setExplaining(true);
 
-    const token = localStorage.getItem("vlx_token");
-    if (!token) {
-      router.push("/login");
-      return;
-    }
-
-    const headers = { Authorization: `Bearer ${token}` };
-
     try {
       const [impactRes, explanationRes] = await Promise.all([
-        fetch(`${apiBase}/v1/s/${sessionID}/facts/${node.id}/impact`, { headers }),
-        fetch(`${apiBase}/v1/s/${sessionID}/explain?fact_id=${encodeURIComponent(node.id)}`, {
-          headers,
+        apiFetch(`/v1/s/${sessionID}/facts/${node.id}/impact`),
+        fetch(apiUrl(`/v1/s/${sessionID}/explain?fact_id=${encodeURIComponent(node.id)}`), {
+          credentials: "include",
         }),
       ]);
+      if (impactRes.status === 401 || explanationRes.status === 401) {
+        router.push("/login");
+        return;
+      }
 
       if (impactRes.ok) {
         const impact = await impactRes.json();

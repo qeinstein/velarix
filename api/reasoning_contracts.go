@@ -43,6 +43,7 @@ type perceptionRequest struct {
 
 type retractFactRequest struct {
 	Reason string `json:"reason"`
+	Force  bool   `json:"force,omitempty"`
 }
 
 type consistencyCheckRequest struct {
@@ -134,6 +135,7 @@ func (s *Server) handleRecordPerception(w http.ResponseWriter, r *http.Request) 
 	if body.Model != "" {
 		fact.Metadata["model"] = body.Model
 	}
+	applyFactGovernance(&fact, s.loadPolicyControls(orgID))
 	if config.Schema != "" {
 		schemaLoader := gojsonschema.NewStringLoader(config.Schema)
 		documentLoader := gojsonschema.NewGoLoader(fact.Payload)
@@ -164,11 +166,7 @@ func (s *Server) handleRecordPerception(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = s.Store.AppendOrgActivity(orgID, entry)
 
-	s.mu.Lock()
-	if s.SliceCache != nil {
-		delete(s.SliceCache, sessionID)
-	}
-	s.mu.Unlock()
+	s.invalidateSliceCache(sessionID)
 
 	writeJSON(w, http.StatusCreated, fact)
 	s.checkSnapshotTrigger(sessionID, engine)
@@ -195,13 +193,18 @@ func (s *Server) handleRetractFact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	fact, _ := engine.GetFact(factID)
+	if err := mutationRequiresOverride(fact, getUserRole(r), body.Force); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 
 	entry := store.JournalEntry{
 		Type:      store.EventRetract,
 		SessionID: sessionID,
 		FactID:    factID,
 		ActorID:   getActorID(r),
-		Payload:   map[string]interface{}{"reason": body.Reason},
+		Payload:   map[string]interface{}{"reason": body.Reason, "force": body.Force},
 	}
 	if err := s.Store.Append(entry); err != nil {
 		http.Error(w, "failed to persist journal", http.StatusInternalServerError)
@@ -214,11 +217,7 @@ func (s *Server) handleRetractFact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	if s.SliceCache != nil {
-		delete(s.SliceCache, sessionID)
-	}
-	s.mu.Unlock()
+	s.invalidateSliceCache(sessionID)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "retracted",
@@ -435,11 +434,7 @@ func (s *Server) handleVerifyReasoningChain(w http.ResponseWriter, r *http.Reque
 			}
 		}
 		sort.Strings(report.AutoRetractedFactIDs)
-		s.mu.Lock()
-		if s.SliceCache != nil {
-			delete(s.SliceCache, sessionID)
-		}
-		s.mu.Unlock()
+		s.invalidateSliceCache(sessionID)
 		s.syncSessionSearchDocuments(orgID, sessionID, engine, config)
 	}
 

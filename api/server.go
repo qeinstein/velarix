@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -90,6 +91,20 @@ type Server struct {
 	writeLimiters sync.Map // org_id -> chan struct{}
 }
 
+func (s *Server) invalidateSliceCache(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SliceCache == nil {
+		return
+	}
+	delete(s.SliceCache, sessionID)
+	for key := range s.SliceCache {
+		if strings.HasPrefix(key, sessionID+"|") {
+			delete(s.SliceCache, key)
+		}
+	}
+}
+
 func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store.SessionConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -165,6 +180,22 @@ func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store
 					}
 				}
 				engine.RetractFact(entry.FactID, reason)
+			case store.EventReview:
+				status := ""
+				reason := ""
+				reviewedAt := entry.Timestamp
+				if entry.Payload != nil {
+					if v, ok := entry.Payload["status"].(string); ok {
+						status = v
+					}
+					if v, ok := entry.Payload["reason"].(string); ok {
+						reason = v
+					}
+					if v, ok := entry.Payload["reviewed_at"].(float64); ok {
+						reviewedAt = int64(v)
+					}
+				}
+				engine.SetFactReview(entry.FactID, status, reason, reviewedAt)
 			}
 		}
 	}
@@ -240,27 +271,43 @@ func (s *Server) writeLimitMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		allowed := strings.TrimSpace(os.Getenv("VELARIX_ALLOWED_ORIGINS"))
-		if allowed == "" {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-		} else if origin != "" {
-			ok := false
-			for _, part := range strings.Split(allowed, ",") {
-				if strings.TrimSpace(part) == origin {
-					ok = true
-					break
-				}
-			}
-			if ok {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Vary", "Origin")
-			}
+		switch {
+		case origin == "":
+		case allowed == "" && isDevLikeEnv():
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			addVaryHeader(w.Header(), "Origin")
+		case allowed != "" && originAllowed(origin, allowed):
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			addVaryHeader(w.Header(), "Origin")
+		case r.Method == http.MethodOptions:
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Idempotency-Key, X-Trace-Id")
-		if r.Method == "OPTIONS" {
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+		if !isDevLikeEnv() {
+			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -376,6 +423,7 @@ func (s *Server) handleAssertFact(w http.ResponseWriter, r *http.Request) {
 			fact.Metadata["_provenance"] = p
 		}
 	}
+	applyFactGovernance(&fact, s.loadPolicyControls(orgID))
 
 	if config.Schema != "" {
 		schemaLoader := gojsonschema.NewStringLoader(config.Schema)
@@ -406,11 +454,7 @@ func (s *Server) handleAssertFact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	if s.SliceCache != nil {
-		delete(s.SliceCache, sessionID)
-	}
-	s.mu.Unlock()
+	s.invalidateSliceCache(sessionID)
 
 	actorID := getActorID(r)
 	entry := store.JournalEntry{Type: store.EventAssert, SessionID: sessionID, Fact: &fact, ActorID: actorID}
@@ -449,8 +493,24 @@ func (s *Server) handleInvalidateRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	actorID := getActorID(r)
+	var body factMutationRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	fact, _ := engine.GetFact(id)
+	if err := mutationRequiresOverride(fact, getUserRole(r), body.Force); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 
-	entry := store.JournalEntry{Type: store.EventInvalidate, SessionID: sessionID, FactID: id, ActorID: actorID}
+	entry := store.JournalEntry{
+		Type:      store.EventInvalidate,
+		SessionID: sessionID,
+		FactID:    id,
+		ActorID:   actorID,
+		Payload:   map[string]interface{}{"reason": body.Reason, "force": body.Force},
+	}
 	if err := s.Store.Append(entry); err != nil {
 		slog.Error("Failed to persist journal", "error", err)
 		http.Error(w, "failed to persist journal", http.StatusInternalServerError)
@@ -469,11 +529,7 @@ func (s *Server) handleInvalidateRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	if s.SliceCache != nil {
-		delete(s.SliceCache, sessionID)
-	}
-	s.mu.Unlock()
+	s.invalidateSliceCache(sessionID)
 
 	slog.Info("Fact invalidated", "session_id", sessionID, "fact_id", id, "actor_id", actorID, "trace_id", traceID)
 	s.createNotification(orgID, "invalidate", "Fact invalidated", fmt.Sprintf("Session %s: %s", sessionID, id))
@@ -635,6 +691,22 @@ func (s *Server) handleRevalidate(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			engine.RetractFact(entry.FactID, reason)
+		} else if entry.Type == store.EventReview {
+			status := ""
+			reason := ""
+			reviewedAt := entry.Timestamp
+			if entry.Payload != nil {
+				if v, ok := entry.Payload["status"].(string); ok {
+					status = v
+				}
+				if v, ok := entry.Payload["reason"].(string); ok {
+					reason = v
+				}
+				if v, ok := entry.Payload["reviewed_at"].(float64); ok {
+					reviewedAt = int64(v)
+				}
+			}
+			engine.SetFactReview(entry.FactID, status, reason, reviewedAt)
 		}
 	}
 
@@ -652,10 +724,11 @@ func (s *Server) handleGetSlice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	format := r.URL.Query().Get("format")
+	opts := parseSliceSelectionOptions(r.URL.Query())
+	cacheKey := opts.cacheKey(sessionID)
 
 	s.mu.RLock()
-	cache, ok := s.SliceCache[sessionID]
+	cache, ok := s.SliceCache[cacheKey]
 	s.mu.RUnlock()
 
 	var validFacts []*core.Fact
@@ -664,38 +737,21 @@ func (s *Server) handleGetSlice(w http.ResponseWriter, r *http.Request) {
 		validFacts = cache.Facts
 	} else {
 		CacheRatio.WithLabelValues("miss").Inc()
-		facts := engine.ListFacts()
-		maxFacts := 0
-		if mf := r.URL.Query().Get("max_facts"); mf != "" {
-			if v, err := strconv.Atoi(mf); err == nil && v > 0 {
-				maxFacts = v
-			}
-		}
-		for _, f := range facts {
-			if engine.GetStatus(f.ID) >= core.ConfidenceThreshold {
-				validFacts = append(validFacts, f)
-			}
-		}
-		if maxFacts > 0 && len(validFacts) > maxFacts {
-			validFacts = validFacts[:maxFacts]
-		}
+		validFacts = selectBeliefSlice(engine, opts)
 		s.mu.Lock()
 		if s.SliceCache == nil {
 			s.SliceCache = make(map[string]*SliceCacheEntry)
 		}
-		s.SliceCache[sessionID] = &SliceCacheEntry{
+		s.SliceCache[cacheKey] = &SliceCacheEntry{
 			Facts:     validFacts,
 			Timestamp: time.Now(),
 		}
 		s.mu.Unlock()
 	}
 
-	if format == "markdown" {
+	if opts.Format == "markdown" {
 		w.Header().Set("Content-Type", "text/markdown")
-		for _, f := range validFacts {
-			payloadJSON, _ := json.MarshalIndent(f.Payload, "", "  ")
-			fmt.Fprintf(w, "## Fact: %s\n```json\n%s\n```\n\n", f.ID, string(payloadJSON))
-		}
+		_, _ = w.Write([]byte(renderBeliefSliceMarkdown(validFacts)))
 		return
 	}
 
@@ -869,19 +925,25 @@ func (s *Server) handleGetUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, usage)
 }
 
-func (s *Server) checkRateLimit(apiKey string) (bool, time.Duration) {
+func (s *Server) checkRateLimit(apiKey string, limit int, window time.Duration) (bool, time.Duration) {
+	if limit <= 0 {
+		limit = 60
+	}
+	if window <= 0 {
+		window = time.Minute
+	}
 	now := time.Now()
-	minuteAgo := now.Add(-1 * time.Minute)
+	windowStart := now.Add(-window)
 
 	limits, err := s.Store.GetRateLimit(apiKey)
 	if err != nil && err.Error() != "Key not found" {
-		return false, time.Minute // Fail closed on DB error
+		return false, window // Fail closed on DB error
 	}
 
 	var valid []time.Time
 	var earliest time.Time
 	for _, t := range limits {
-		if t.After(minuteAgo) {
+		if t.After(windowStart) {
 			valid = append(valid, t)
 			if earliest.IsZero() || t.Before(earliest) {
 				earliest = t
@@ -889,10 +951,10 @@ func (s *Server) checkRateLimit(apiKey string) (bool, time.Duration) {
 		}
 	}
 
-	if len(valid) >= 60 {
+	if len(valid) >= limit {
 		retryAfter := time.Second
 		if !earliest.IsZero() {
-			retryAfter = time.Until(earliest.Add(time.Minute))
+			retryAfter = time.Until(earliest.Add(window))
 			if retryAfter < time.Second {
 				retryAfter = time.Second
 			}
@@ -918,19 +980,35 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
+		token := authTokenFromRequest(r)
+		if token == "" {
 			http.Error(w, "Invalid or expired API key", http.StatusUnauthorized)
 			return
 		}
-		token := strings.TrimPrefix(authHeader, "Bearer ")
+		tokenSum := sha256.Sum256([]byte(token))
+		tokenHash := hex.EncodeToString(tokenSum[:])
 
-		adminKey := os.Getenv("VELARIX_API_KEY")
-		if adminKey != "" && token == adminKey {
+		adminKey := strings.TrimSpace(os.Getenv("VELARIX_API_KEY"))
+		if adminKey != "" && token == adminKey && bootstrapAdminEnabled() {
+			bootstrapLimit := 300
+			if isDevLikeEnv() {
+				bootstrapLimit = 5000
+			}
+			if allowed, retryAfter := s.checkRateLimit("bootstrap:"+tokenHash, bootstrapLimit, time.Minute); !allowed {
+				setRateLimitResponseHeaders(w, bootstrapLimit, time.Minute, retryAfter)
+				http.Error(w, fmt.Sprintf("rate limit exceeded (%d requests/60s)", bootstrapLimit), http.StatusTooManyRequests)
+				return
+			}
 			ctx := context.WithValue(r.Context(), orgIDKey, "admin")
 			ctx = context.WithValue(ctx, actorIDKey, "system")
 			ctx = context.WithValue(ctx, userRoleKey, "admin")
 			ctx = context.WithValue(ctx, scopesKey, []string{"read", "write", "export", "admin"})
+			traceID := r.Header.Get("X-Trace-Id")
+			if traceID == "" {
+				traceID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+			}
+			ctx = context.WithValue(ctx, contextKey("trace_id"), traceID)
+			w.Header().Set("X-Trace-Id", traceID)
 			if !authorizeRequest(r, requiredScopeForRequest(r), []string{"read", "write", "export", "admin"}, "admin") {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
@@ -939,30 +1017,52 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		claims := &Claims{}
-		tkn, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) { return jwtSigningKey(), nil })
-		if err == nil && tkn.Valid {
-			user, err := s.Store.GetUser(claims.Email)
-			if err != nil {
-				http.Error(w, "User not found", http.StatusUnauthorized)
+		if signingKey, err := jwtSigningKey(); err == nil {
+			claims := &Claims{}
+			tkn, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) { return signingKey, nil })
+			if err == nil && tkn.Valid {
+				user, err := s.Store.GetUser(normalizeEmail(claims.Email))
+				if err != nil {
+					http.Error(w, "User not found", http.StatusUnauthorized)
+					return
+				}
+				if claims.TokenVersion != currentUserTokenVersion(user) {
+					http.Error(w, "Invalid or expired API key", http.StatusUnauthorized)
+					return
+				}
+				org, err := s.Store.GetOrganization(user.OrgID)
+				if err != nil || org.IsSuspended {
+					http.Error(w, "Invalid or expired API key", http.StatusUnauthorized)
+					return
+				}
+				subscription, _ := s.Store.GetBilling(user.OrgID)
+				limitRPM, limitWindow := effectiveRateLimitConfig(org, subscription)
+				jwtRateKey := fmt.Sprintf("jwt:%s:%d", user.Email, claims.TokenVersion)
+				if allowed, retryAfter := s.checkRateLimit(jwtRateKey, limitRPM, limitWindow); !allowed {
+					setRateLimitResponseHeaders(w, limitRPM, limitWindow, retryAfter)
+					http.Error(w, fmt.Sprintf("rate limit exceeded (%d requests/%ds)", limitRPM, int(limitWindow.Seconds())), http.StatusTooManyRequests)
+					return
+				}
+				scopes := scopesForRole(user.Role)
+				if !authorizeRequest(r, requiredScopeForRequest(r), scopes, user.Role) {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+				ctx := context.WithValue(r.Context(), orgIDKey, user.OrgID)
+				ctx = context.WithValue(ctx, actorIDKey, user.Email)
+				ctx = context.WithValue(ctx, userRoleKey, user.Role)
+				ctx = context.WithValue(ctx, userEmailKey, user.Email)
+				ctx = context.WithValue(ctx, scopesKey, scopes)
+				traceID := r.Header.Get("X-Trace-Id")
+				if traceID == "" {
+					traceID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+				}
+				ctx = context.WithValue(ctx, contextKey("trace_id"), traceID)
+				w.Header().Set("X-Trace-Id", traceID)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			scopes := scopesForRole(user.Role)
-			if !authorizeRequest(r, requiredScopeForRequest(r), scopes, user.Role) {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-			ctx := context.WithValue(r.Context(), orgIDKey, user.OrgID)
-			ctx = context.WithValue(ctx, actorIDKey, user.Email)
-			ctx = context.WithValue(ctx, userRoleKey, user.Role)
-			ctx = context.WithValue(ctx, userEmailKey, user.Email)
-			ctx = context.WithValue(ctx, scopesKey, scopes)
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
 		}
-
-		sum := sha256.Sum256([]byte(token))
-		tokenHash := hex.EncodeToString(sum[:])
 
 		emailBytes, err := s.Store.GetAPIKeyOwnerByHash(tokenHash)
 		if err != nil {
@@ -1036,15 +1136,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Invalid or expired API key", http.StatusUnauthorized)
 			return
 		}
-		if allowed, retryAfter := s.checkRateLimit(tokenHash); !allowed {
+		subscription, _ := s.Store.GetBilling(user.OrgID)
+		limitRPM, limitWindow := effectiveRateLimitConfig(org, subscription)
+		if allowed, retryAfter := s.checkRateLimit(tokenHash, limitRPM, limitWindow); !allowed {
 			seconds := int(math.Ceil(retryAfter.Seconds()))
 			if seconds < 1 {
 				seconds = 1
 			}
 			w.Header().Set("Retry-After", strconv.Itoa(seconds))
-			w.Header().Set("X-Velarix-RateLimit-Limit", "60")
-			w.Header().Set("X-Velarix-RateLimit-Window", "60")
-			http.Error(w, "rate limit exceeded (60 rpm)", http.StatusTooManyRequests)
+			w.Header().Set("X-Velarix-RateLimit-Limit", strconv.Itoa(limitRPM))
+			w.Header().Set("X-Velarix-RateLimit-Window", strconv.Itoa(int(limitWindow.Seconds())))
+			http.Error(w, fmt.Sprintf("rate limit exceeded (%d requests/%ds)", limitRPM, int(limitWindow.Seconds())), http.StatusTooManyRequests)
 			return
 		}
 		if !authorizeRequest(r, requiredScopeForRequest(r), scopesForRoleCap(user.Role, scopes), user.Role) {
@@ -1139,6 +1241,9 @@ func requiredScopeForRequest(r *http.Request) string {
 	}
 	if strings.HasPrefix(path, "/v1/org/access-logs") {
 		// Access logs contain sensitive metadata; restrict to auditor/admin via `export` scope.
+		return "export"
+	}
+	if strings.HasPrefix(path, "/v1/org/compliance-export") {
 		return "export"
 	}
 	if path == "/v1/org" && method != "GET" {
@@ -1395,13 +1500,7 @@ func (s *Server) accessLogMiddleware(next http.Handler) http.Handler {
 		role := getUserRole(r)
 		traceID, _ := r.Context().Value(contextKey("trace_id")).(string)
 
-		ip := r.Header.Get("X-Forwarded-For")
-		if ip == "" {
-			ip = r.Header.Get("X-Real-Ip")
-		}
-		if ip == "" {
-			ip = r.RemoteAddr
-		}
+		ip := clientIP(r)
 		ua := r.UserAgent()
 
 		endpoint := r.Pattern
@@ -1474,8 +1573,9 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 
 		sum := sha256.Sum256([]byte(r.Method + "|" + r.URL.Path + "|" + key))
 		keyHash := hex.EncodeToString(sum[:])
+		maxAge := idempotencyReplayWindow()
 
-		if rec, err := s.Store.GetIdempotency(orgID, keyHash, 24*time.Hour); err == nil && rec != nil {
+		if rec, err := s.Store.GetIdempotency(orgID, keyHash, maxAge); err == nil && rec != nil {
 			if rec.ContentType != "" {
 				w.Header().Set("Content-Type", rec.ContentType)
 			}
@@ -1497,12 +1597,12 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r)
 
 		ct := rec.Header().Get("Content-Type")
-		if rec.status >= 200 && rec.status < 300 && strings.Contains(ct, "application/json") && rec.body.Len() > 0 {
+		if persistIdempotencyResponse(rec.status, ct, rec.body.Len()) {
 			_ = s.Store.SaveIdempotency(orgID, keyHash, &store.IdempotencyRecord{
 				Status:      rec.status,
 				ContentType: ct,
 				Body:        rec.body.Bytes(),
-				Headers:     map[string]string{},
+				Headers:     capturedIdempotencyHeaders(rec.Header()),
 				CreatedAt:   time.Now().UnixMilli(),
 			})
 		}
@@ -1555,6 +1655,22 @@ func (s *Server) handleExplainReasoning(w http.ResponseWriter, r *http.Request) 
 					}
 				}
 				engine.RetractFact(entry.FactID, reason)
+			case store.EventReview:
+				status := ""
+				reason := ""
+				reviewedAt := entry.Timestamp
+				if entry.Payload != nil {
+					if v, ok := entry.Payload["status"].(string); ok {
+						status = v
+					}
+					if v, ok := entry.Payload["reason"].(string); ok {
+						reason = v
+					}
+					if v, ok := entry.Payload["reviewed_at"].(float64); ok {
+						reviewedAt = int64(v)
+					}
+				}
+				engine.SetFactReview(entry.FactID, status, reason, reviewedAt)
 			}
 		}
 	} else {
@@ -1655,6 +1771,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/org/search", s.handleOrgSearch)
 	mux.HandleFunc("GET /v1/org/decisions", s.handleListOrgDecisions)
 	mux.HandleFunc("GET /v1/org/decisions/blocked", s.handleListBlockedOrgDecisions)
+	mux.HandleFunc("GET /v1/org/compliance-export", s.handleComplianceExport)
 	mux.HandleFunc("GET /v1/org/notifications", s.handleListNotifications)
 	mux.HandleFunc("POST /v1/org/notifications/{id}/read", s.handleMarkNotificationRead)
 	mux.HandleFunc("GET /v1/org/integrations", s.handleListIntegrations)
@@ -1685,6 +1802,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /auth/register", s.handleRegister)
 	mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
+	mux.HandleFunc("POST /v1/auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 	mux.HandleFunc("POST /v1/auth/reset-request", s.handleResetRequest)
 	mux.HandleFunc("POST /auth/reset-request", s.handleResetRequest)
 	mux.HandleFunc("POST /v1/auth/reset-confirm", s.handleResetConfirm)
@@ -1701,6 +1820,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/s/{session_id}/percepts", s.handleRecordPerception)
 	mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/invalidate", s.handleInvalidateRoot)
 	mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/retract", s.handleRetractFact)
+	mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/review", s.handleReviewFact)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}", s.handleGetFact)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/why", s.handleExplain)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/impact", s.handleGetImpact)
@@ -1749,6 +1869,7 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc("POST /v1/s/{session_id}/percepts", s.handleRecordPerception)
 		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/invalidate", s.handleInvalidateRoot)
 		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/retract", s.handleRetractFact)
+		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/review", s.handleReviewFact)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}", s.handleGetFact)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/why", s.handleExplain)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/impact", s.handleGetImpact)
@@ -1790,6 +1911,7 @@ func (s *Server) Routes() http.Handler {
 	h = s.writeLimitMiddleware(h)
 	h = s.idempotencyMiddleware(h)
 	h = s.authMiddleware(h)
+	h = s.securityHeadersMiddleware(h)
 	h = s.enableCORS(h)
 	h = s.metricsAndLoggingMiddleware(h)
 	return h

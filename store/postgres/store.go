@@ -439,7 +439,82 @@ func (s *Store) Restore(r io.Reader) error {
 }
 
 func (s *Store) ReplayAll(engines map[string]*core.Engine, configs map[string][]byte) error {
-	return nil
+	ctx := context.Background()
+	rows, err := s.pool.Query(ctx, `SELECT session_id FROM sessions ORDER BY session_id ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			return err
+		}
+
+		var rawConfig []byte
+		if err := s.pool.QueryRow(ctx, `SELECT config FROM session_configs WHERE session_id = $1`, sessionID).Scan(&rawConfig); err == nil {
+			b := make([]byte, len(rawConfig))
+			copy(b, rawConfig)
+			configs[sessionID] = b
+		} else if err != pgx.ErrNoRows {
+			return err
+		}
+
+		engine := core.NewEngine()
+		snapshotTimestamp := int64(0)
+		if snap, err := s.GetLatestSnapshot(sessionID); err == nil && snap != nil {
+			if err := engine.FromSnapshot(snap); err == nil {
+				snapshotTimestamp = snap.Timestamp
+			}
+		}
+
+		history, err := s.GetSessionHistory(sessionID)
+		if err != nil {
+			return err
+		}
+		for _, entry := range history {
+			if snapshotTimestamp > 0 && entry.Timestamp <= snapshotTimestamp {
+				continue
+			}
+			switch entry.Type {
+			case store.EventAssert:
+				_ = engine.AssertFact(entry.Fact)
+			case store.EventInvalidate:
+				_ = engine.InvalidateRoot(entry.FactID)
+			case store.EventRetract:
+				reason := ""
+				if entry.Payload != nil {
+					if v, ok := entry.Payload["reason"].(string); ok {
+						reason = v
+					}
+				}
+				_ = engine.RetractFact(entry.FactID, reason)
+			case store.EventReview:
+				status := ""
+				reason := ""
+				reviewedAt := entry.Timestamp
+				if entry.Payload != nil {
+					if v, ok := entry.Payload["status"].(string); ok {
+						status = v
+					}
+					if v, ok := entry.Payload["reason"].(string); ok {
+						reason = v
+					}
+					if v, ok := entry.Payload["reviewed_at"].(float64); ok {
+						reviewedAt = int64(v)
+					}
+				}
+				_ = engine.SetFactReview(entry.FactID, status, reason, reviewedAt)
+			}
+		}
+
+		if len(engine.Facts) > 0 || snapshotTimestamp > 0 || len(rawConfig) > 0 {
+			engines[sessionID] = engine
+		}
+	}
+
+	return rows.Err()
 }
 
 func (s *Store) StartGC() {}
