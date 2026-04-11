@@ -6,7 +6,7 @@ venv/
 .pytest_cache/
 .mypy_cache/
 
-# CausalDB Data and Logs
+# CausalDB Data and Logs for tests and dev environment
 velarix.data/
 *.vlog
 *.mem
@@ -24,3 +24,6 @@ __pycache__/
 *.pyc
 node_modules/
 sdks/typescript/node_modules/
+
+# Fluxx(Files i dont want to push but don't want to delete)
+todo.txt
