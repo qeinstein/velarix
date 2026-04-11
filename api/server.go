@@ -1766,6 +1766,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/org/usage/breakdown", s.handleGetUsageBreakdown)
 	mux.HandleFunc("GET /v1/org/sessions", s.handleListOrgSessions)
 	mux.HandleFunc("POST /v1/org/sessions", s.handleCreateSession)
+	mux.HandleFunc("PATCH /v1/org/sessions/{id}", s.handlePatchSession)
+	mux.HandleFunc("DELETE /v1/org/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("GET /v1/org/activity", s.handleOrgActivity)
 	mux.HandleFunc("GET /v1/org/access-logs", s.handleListAccessLogs)
 	mux.HandleFunc("GET /v1/org/search", s.handleOrgSearch)

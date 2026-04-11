@@ -625,6 +625,11 @@ func (s *Server) handleListAccessLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"items": filtered, "next_cursor": next})
 }
 
+type createSessionRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 // Add an optional way to create a session record without asserting a fact.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
@@ -632,16 +637,103 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	_, _ = rand.Read(b)
 	id := "s_" + hex.EncodeToString(b)
 
+	var body createSessionRequest
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	body.Name = strings.TrimSpace(body.Name)
+	body.Description = strings.TrimSpace(body.Description)
+
 	if err := s.Store.SetSessionOrganization(id, orgID); err != nil {
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
 		return
 	}
-	_ = s.Store.UpsertOrgSessionIndex(orgID, id, time.Now().UnixMilli())
+	now := time.Now().UnixMilli()
+	_ = s.Store.UpsertOrgSessionIndex(orgID, id, now)
+	if body.Name != "" || body.Description != "" {
+		_ = s.Store.PatchOrgSessionMeta(orgID, id, body.Name, body.Description)
+	}
 	go s.Store.IncrementOrgMetric(orgID, "sessions_created", 1)
 
 	config := &store.SessionConfig{EnforcementMode: "strict"}
-	_ = s.Store.UpsertSearchDocuments([]store.SearchDocument{sessionSearchDocument(orgID, id, config, time.Now().UnixMilli())})
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+	_ = s.Store.UpsertSearchDocuments([]store.SearchDocument{sessionSearchDocument(orgID, id, config, now)})
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": id, "name": body.Name, "description": body.Description})
+}
+
+type patchSessionRequest struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+}
+
+func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+	storedOrg, err := s.Store.GetSessionOrganization(sessionID)
+	if err != nil || storedOrg != orgID {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	var body patchSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	sessions, _, _ := s.Store.ListOrgSessions(orgID, "", 200)
+	var current store.OrgSessionMeta
+	for _, sess := range sessions {
+		if sess.ID == sessionID {
+			current = sess
+			break
+		}
+	}
+	name := current.Name
+	description := current.Description
+	if body.Name != nil {
+		name = strings.TrimSpace(*body.Name)
+	}
+	if body.Description != nil {
+		description = strings.TrimSpace(*body.Description)
+	}
+	if err := s.Store.PatchOrgSessionMeta(orgID, sessionID, name, description); err != nil {
+		http.Error(w, "failed to update session", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": sessionID, "name": name, "description": description})
+}
+
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+	storedOrg, err := s.Store.GetSessionOrganization(sessionID)
+	if err != nil || storedOrg != orgID {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err := s.Store.DeleteOrgSession(orgID, sessionID); err != nil {
+		http.Error(w, "failed to archive session", http.StatusInternalServerError)
+		return
+	}
+	s.mu.Lock()
+	delete(s.Engines, sessionID)
+	delete(s.Configs, sessionID)
+	delete(s.Versions, sessionID)
+	delete(s.LastAccess, sessionID)
+	delete(s.SliceCache, sessionID)
+	s.mu.Unlock()
+	_ = s.Store.AppendOrgActivity(orgID, store.JournalEntry{
+		Type:      store.EventAdminAction,
+		SessionID: sessionID,
+		ActorID:   getActorID(r),
+		Payload:   map[string]interface{}{"action": "session_archived", "session_id": sessionID},
+		Timestamp: time.Now().UnixMilli(),
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "archived", "id": sessionID})
 }
 
 // Minimal endpoint to support backend-driven "health map" style stats per session.
