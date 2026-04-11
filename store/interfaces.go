@@ -48,6 +48,8 @@ type OrgMetadataStore interface {
 // SearchStore owns indexed org/session read paths used by list/search style APIs.
 type SearchStore interface {
 	ListOrgSessions(orgID string, cursor string, limit int) ([]OrgSessionMeta, string, error)
+	PatchOrgSessionMeta(orgID, sessionID, name, description string) error
+	DeleteOrgSession(orgID, sessionID string) error
 	ListOrgActivityPage(orgID string, cursor string, limit int) ([]JournalEntry, string, error)
 	ListAccessLogsPage(orgID string, cursor string, limit int) ([]AccessLogEntry, string, error)
 	UpsertSearchDocuments(docs []SearchDocument) error

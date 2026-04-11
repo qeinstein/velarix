@@ -9,9 +9,8 @@ export default function DocsLayout({
   const docs = getDocsList();
 
   return (
-    <div className="flex flex-col md:flex-row gap-8 pt-8 pb-24">
-      {/* Sidebar Navigation */}
-      <aside className="w-full md:w-64 flex-shrink-0">
+    <div className="flex flex-col gap-8 pb-24 pt-8 md:flex-row">
+      <aside className="w-full flex-shrink-0 md:w-64">
         <div className="sticky top-24 space-y-6">
           <div>
             <p className="eyebrow mb-4">Documentation</p>
@@ -29,11 +28,7 @@ export default function DocsLayout({
           </div>
         </div>
       </aside>
-
-      {/* Main Content Area */}
-      <main className="flex-1 min-w-0">
-        {children}
-      </main>
+      <main className="min-w-0 flex-1">{children}</main>
     </div>
   );
 }

@@ -884,9 +884,12 @@ func (u *User) GetTokenVersion() int64 {
 
 type OrgSessionMeta struct {
 	ID             string `json:"id"`
+	Name           string `json:"name,omitempty"`
+	Description    string `json:"description,omitempty"`
 	CreatedAt      int64  `json:"created_at"`
 	LastActivityAt int64  `json:"last_activity_at"`
 	FactCount      int    `json:"fact_count"`
+	Archived       bool   `json:"archived,omitempty"`
 }
 
 type Notification struct {
@@ -1037,7 +1040,7 @@ func (s *BadgerStore) ListOrgSessions(orgID string, cursor string, limit int) ([
 			if err := item.Value(func(v []byte) error { return json.Unmarshal(v, &meta) }); err != nil {
 				continue
 			}
-			if meta.ID != "" {
+			if meta.ID != "" && !meta.Archived {
 				all = append(all, meta)
 			}
 		}
@@ -1075,6 +1078,43 @@ func (s *BadgerStore) ListOrgSessions(orgID string, cursor string, limit int) ([
 		nextCursor = fmt.Sprintf("%d:%s", last.LastActivityAt, last.ID)
 	}
 	return page, nextCursor, nil
+}
+
+func (s *BadgerStore) PatchOrgSessionMeta(orgID, sessionID, name, description string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		key := s.sessionIndexKey(orgID, sessionID)
+		var meta OrgSessionMeta
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+		_ = item.Value(func(v []byte) error { return json.Unmarshal(v, &meta) })
+		meta.Name = name
+		meta.Description = description
+		val, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		return txn.Set(key, val)
+	})
+}
+
+func (s *BadgerStore) DeleteOrgSession(orgID, sessionID string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		key := s.sessionIndexKey(orgID, sessionID)
+		var meta OrgSessionMeta
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+		_ = item.Value(func(v []byte) error { return json.Unmarshal(v, &meta) })
+		meta.Archived = true
+		val, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		return txn.Set(key, val)
+	})
 }
 
 func (s *BadgerStore) SaveNotification(orgID string, n *Notification) error {

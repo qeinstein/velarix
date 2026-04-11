@@ -1,20 +1,23 @@
-import CodeSwapPanel from "../components/CodeSwapPanel";
+import CodeSwapPanel from "../../components/CodeSwapPanel";
 
 const quickNotes = [
   {
     label: "Integration",
     title: "One import swap",
-    description: "Keep your existing OpenAI workflow and add a session id when memory needs to persist.",
+    description:
+      "Keep your existing OpenAI workflow and add a session id when memory needs to persist.",
   },
   {
     label: "Correction",
     title: "Prune stale chains",
-    description: "A changed premise can invalidate the reasoning built on top of it instead of silently lingering.",
+    description:
+      "A changed premise invalidates the reasoning built on top of it instead of silently lingering.",
   },
   {
     label: "Deployment",
     title: "Self-host or cloud",
-    description: "Run it locally for free or move to managed sessions when you need shared state and billing.",
+    description:
+      "Run it locally for free or move to managed sessions when you need shared state and billing.",
   },
 ];
 
@@ -22,17 +25,32 @@ const capabilities = [
   {
     title: "Correct stale reasoning",
     description:
-      "Velarix tracks causal dependencies, so one updated fact can invalidate the conclusions that depended on it.",
+      "Velarix tracks causal dependencies, so one updated fact invalidates every conclusion that depended on it — automatically.",
   },
   {
     title: "Show the why-trace",
     description:
-      "Every decision can be traced back through the beliefs that produced it, which makes debugging much less theatrical.",
+      "Every decision can be traced back through the beliefs that produced it. Debugging stops being theatrical.",
+  },
+  {
+    title: "Gate before execution",
+    description:
+      "The execute-check API blocks stale decisions before they run. If a dependency changed, the action does not proceed.",
   },
   {
     title: "Stay close to the runtime",
     description:
-      "The interface is intentionally small. You do not have to adopt a new orchestration layer just to keep memory honest.",
+      "The surface is intentionally small. No new orchestration layer — just a session id and a changed import.",
+  },
+  {
+    title: "Full audit trail",
+    description:
+      "Every fact assertion, invalidation, and decision is journalled. Compliance export ships out of the box.",
+  },
+  {
+    title: "Pluggable storage",
+    description:
+      "BadgerDB for local development. PostgreSQL + Redis for production. Switch with a single environment variable.",
   },
 ];
 
@@ -42,31 +60,53 @@ const plans = [
     price: "$0",
     cadence: "forever",
     detail: "Open core",
-    items: ["Run with Docker", "Local storage", "Own the full stack"],
+    items: ["Run with Docker", "Local BadgerDB storage", "Own the full stack", "No usage limits"],
     href: "https://github.com/qeinstein/velarix",
     label: "View source",
     external: true,
+    featured: false,
   },
   {
     name: "Cloud",
     price: "$29",
     cadence: "per month",
     detail: "Managed",
-    items: ["Persistent sessions", "Hosted billing", "Shared org controls"],
+    items: [
+      "Persistent sessions",
+      "PostgreSQL + Redis backend",
+      "Org controls and invitations",
+      "Compliance export",
+    ],
     href: "/signup",
-    label: "Get API key",
+    label: "Get started",
     external: false,
+    featured: true,
   },
   {
     name: "Enterprise",
     price: "Custom",
     cadence: "flexible",
     detail: "Dedicated",
-    items: ["Custom SLAs", "On-premise deployment", "Priority support"],
+    items: [
+      "Custom SLAs",
+      "On-premise deployment",
+      "Dedicated support",
+      "Custom retention and policy",
+    ],
     href: "mailto:hello@velarix.com",
     label: "Contact sales",
     external: true,
+    featured: false,
   },
+];
+
+const integrations = [
+  "LangGraph",
+  "CrewAI",
+  "LlamaIndex",
+  "LangChain",
+  "OpenAI",
+  "Any HTTP client",
 ];
 
 export default function Home() {
@@ -74,6 +114,7 @@ export default function Home() {
 
   return (
     <main className="pb-24 pt-10 md:pt-16">
+      {/* Hero */}
       <section className="grid gap-14 lg:grid-cols-[minmax(0,1.45fr)_minmax(18rem,0.7fr)] lg:gap-16">
         <div className="space-y-8">
           <p className="eyebrow">Causal memory for AI agents</p>
@@ -92,7 +133,7 @@ export default function Home() {
           </div>
           <div className="flex flex-wrap gap-3 pt-2">
             <a href="/signup" className="button-solid">
-              Get API key
+              Get started
             </a>
             <a href="/docs" className="button-ghost">
               Read docs
@@ -122,6 +163,7 @@ export default function Home() {
         </aside>
       </section>
 
+      {/* Import swap demo */}
       <section className="section-rule mt-20 grid gap-6 lg:mt-24 lg:grid-cols-[11rem_1fr]">
         <p className="eyebrow">Import swap</p>
         <div className="space-y-5">
@@ -133,29 +175,55 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Integrations */}
+      <section className="section-rule mt-20 lg:mt-24">
+        <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
+          <p className="eyebrow">Works with</p>
+          <div className="flex flex-wrap gap-3">
+            {integrations.map((name) => (
+              <span key={name} className="status-pill">
+                {name}
+              </span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Capabilities */}
       <section className="section-rule mt-20 grid gap-6 lg:mt-24 lg:grid-cols-[11rem_1fr]">
         <p className="eyebrow">What changes</p>
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {capabilities.map((capability) => (
-            <article key={capability.title} className="surface flex flex-col gap-4 p-6 md:p-8">
+            <article
+              key={capability.title}
+              className="surface flex flex-col gap-4 p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--foreground)] md:p-8"
+            >
               <h2 className="text-2xl leading-tight tracking-[-0.05em]">{capability.title}</h2>
-              <p className="copy-tone font-copy text-lg leading-8">
-                {capability.description}
-              </p>
+              <p className="copy-tone font-copy text-lg leading-8">{capability.description}</p>
             </article>
           ))}
         </div>
       </section>
 
+      {/* Plans */}
       <section className="section-rule mt-20 grid gap-6 lg:mt-24 lg:grid-cols-[11rem_1fr]">
         <p className="eyebrow">Plans</p>
         <div className="grid gap-6 md:grid-cols-3">
           {plans.map((plan) => (
-            <article 
-              key={plan.name} 
-              className="surface flex flex-col p-6 transition-all duration-300 hover:-translate-y-1 hover:border-foreground md:p-8"
+            <article
+              key={plan.name}
+              className={`surface flex flex-col p-6 transition-all duration-300 hover:-translate-y-1 md:p-8 ${
+                plan.featured ? "border-[var(--foreground)]" : "hover:border-foreground"
+              }`}
             >
-              <p className="eyebrow">{plan.detail}</p>
+              <div className="flex items-center justify-between">
+                <p className="eyebrow">{plan.detail}</p>
+                {plan.featured && (
+                  <span className="status-pill" style={{ borderColor: "var(--foreground)", color: "var(--foreground)" }}>
+                    Popular
+                  </span>
+                )}
+              </div>
               <div className="mt-4 flex items-end gap-3">
                 <h2 className="text-4xl tracking-[-0.07em]">{plan.price}</h2>
                 <p className="mb-1 text-sm uppercase tracking-[0.16em] text-[var(--muted)]">
@@ -171,7 +239,7 @@ export default function Home() {
                   </li>
                 ))}
               </ul>
-              <div className="mt-8 pt-4 border-t border-[var(--line)]">
+              <div className="mt-8 border-t border-[var(--line)] pt-4">
                 <a
                   href={plan.href}
                   className="text-link"
@@ -185,6 +253,7 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Footer */}
       <footer className="section-rule mt-20 flex flex-col gap-6 md:mt-24 md:flex-row md:items-end md:justify-between">
         <div className="max-w-xl space-y-3">
           <p className="eyebrow">Velarix</p>
@@ -198,9 +267,14 @@ export default function Home() {
             Docs
           </a>
           <a href="/signup" className="text-link">
-            API key
+            Get started
           </a>
-          <a href="https://github.com/qeinstein/velarix" target="_blank" rel="noreferrer" className="text-link">
+          <a
+            href="https://github.com/qeinstein/velarix"
+            target="_blank"
+            rel="noreferrer"
+            className="text-link"
+          >
             GitHub
           </a>
           <span className="eyebrow">© {year}</span>
