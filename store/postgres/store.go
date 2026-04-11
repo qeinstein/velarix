@@ -333,9 +333,9 @@ func (s *Store) ListOrgSessions(orgID string, cursor string, limit int) ([]store
 	}
 	offset := parseOffsetCursor(cursor)
 	rows, err := s.pool.Query(context.Background(), `
-		SELECT session_id, created_at, last_activity_at, fact_count
+		SELECT session_id, COALESCE(name,''), COALESCE(description,''), created_at, last_activity_at, fact_count
 		FROM sessions
-		WHERE org_id = $1
+		WHERE org_id = $1 AND (archived IS NULL OR archived = FALSE)
 		ORDER BY last_activity_at DESC, session_id DESC
 		LIMIT $2 OFFSET $3
 	`, orgID, limit+1, offset)
@@ -347,7 +347,7 @@ func (s *Store) ListOrgSessions(orgID string, cursor string, limit int) ([]store
 	items := []store.OrgSessionMeta{}
 	for rows.Next() {
 		var item store.OrgSessionMeta
-		if err := rows.Scan(&item.ID, &item.CreatedAt, &item.LastActivityAt, &item.FactCount); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &item.CreatedAt, &item.LastActivityAt, &item.FactCount); err != nil {
 			return nil, "", err
 		}
 		items = append(items, item)
@@ -362,6 +362,22 @@ func (s *Store) ListOrgSessions(orgID string, cursor string, limit int) ([]store
 		next = fmt.Sprintf("o:%d", offset+limit)
 	}
 	return items, next, nil
+}
+
+func (s *Store) PatchOrgSessionMeta(orgID, sessionID, name, description string) error {
+	_, err := s.pool.Exec(context.Background(), `
+		UPDATE sessions SET name = $1, description = $2, updated_at = $3
+		WHERE session_id = $4 AND org_id = $5
+	`, name, description, s.nowMillis(), sessionID, orgID)
+	return err
+}
+
+func (s *Store) DeleteOrgSession(orgID, sessionID string) error {
+	_, err := s.pool.Exec(context.Background(), `
+		UPDATE sessions SET archived = TRUE, updated_at = $1
+		WHERE session_id = $2 AND org_id = $3
+	`, s.nowMillis(), sessionID, orgID)
+	return err
 }
 
 func (s *Store) Backup(w io.Writer) (uint64, error) {

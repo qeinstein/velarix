@@ -152,3 +152,6 @@ The web console uses cookie-based auth against that API origin.
 Run Postgres as the source of truth.
 
 Treat Redis as required whenever more than one API instance is handling live traffic.
+
+
+## THis is a scalfold for now, not verified benchmarks
