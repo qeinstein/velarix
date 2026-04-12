@@ -47,7 +47,7 @@ def test_openai_interceptor_parallel_calls():
         mock_create.return_value = mock_response
 
         # 2. Execute Intercepted Call
-        client = OpenAI(api_key="sk-test", velarix_session_id="test-session")
+        client = OpenAI(api_key="sk-test", velarix_api_key="vx-test", velarix_session_id="test-session")
         client.velarix_client = mock_client
         
         client.chat.completions.create(
@@ -106,7 +106,7 @@ def test_openai_overconfidence_downgrade():
         mock_create.return_value = mock_response
 
         # 2. Execute
-        client = OpenAI(api_key="sk-test", velarix_session_id="test-session")
+        client = OpenAI(api_key="sk-test", velarix_api_key="vx-test", velarix_session_id="test-session")
         client.velarix_client = mock_client
         
         client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "Test"}])
@@ -156,7 +156,7 @@ def test_openai_provenance_injection():
         mock_create.return_value = mock_response
 
         # 2. Execute
-        client = OpenAI(api_key="sk-test", velarix_session_id="test-session")
+        client = OpenAI(api_key="sk-test", velarix_api_key="vx-test", velarix_session_id="test-session")
         client.velarix_client = mock_client
         client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "Test"}])
 
@@ -205,7 +205,7 @@ def test_openai_verify_revise_loop():
 
         mock_create.side_effect = [first_response, second_response]
 
-        client = OpenAI(api_key="sk-test", velarix_session_id="test-session", velarix_verify_rounds=1)
+        client = OpenAI(api_key="sk-test", velarix_api_key="vx-test", velarix_session_id="test-session", velarix_verify_rounds=1)
         client.velarix_client = mock_client
         result = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "Test"}])
 

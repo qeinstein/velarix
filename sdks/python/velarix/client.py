@@ -280,6 +280,27 @@ class VelarixSession:
         resp.raise_for_status()
         return resp.json()
 
+    def extract_and_assert(
+        self,
+        llm_output: str,
+        session_context: str = "",
+        auto_retract_contradictions: bool = False,
+    ) -> Dict[str, Any]:
+        body = {
+            "llm_output": llm_output,
+            "session_context": session_context,
+            "auto_retract_contradictions": auto_retract_contradictions,
+        }
+        resp = self.client._request(
+            "POST",
+            f"{self.base_url}/extract-and-assert",
+            json=body,
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        self._clear_cache()
+        return resp.json()
+
     def record_perception(
         self,
         fact_id: str,
@@ -555,6 +576,16 @@ class VelarixSession:
             raise ValueError("kind is required")
         return self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
+    def delete(self) -> Dict[str, Any]:
+        resp = self.client._request(
+            "DELETE",
+            f"{self.client.base_url}/v1/org/sessions/{self.session_id}",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        self._clear_cache()
+        return resp.json()
+
 class VelarixClient:
     def __init__(
         self, 
@@ -629,6 +660,12 @@ class VelarixClient:
 
     def session(self, session_id: str) -> VelarixSession:
         return VelarixSession(self, session_id)
+
+    def create_session(self, session_id: Optional[str] = None) -> VelarixSession:
+        resolved_session_id = session_id or str(uuid.uuid4())
+        session = self.session(resolved_session_id)
+        session.set_config()
+        return session
 
     def get_sessions(self) -> List[Dict[str, Any]]:
         resp = self._request("GET", f"{self.base_url}/v1/sessions", headers=self.headers)
@@ -809,6 +846,27 @@ class AsyncVelarixSession:
         self._clear_cache()
         resp = await self.client._request("POST", f"{self.base_url}/revalidate", headers=self._idem_headers(idempotency_key))
         resp.raise_for_status()
+        return resp.json()
+
+    async def extract_and_assert(
+        self,
+        llm_output: str,
+        session_context: str = "",
+        auto_retract_contradictions: bool = False,
+    ) -> Dict[str, Any]:
+        body = {
+            "llm_output": llm_output,
+            "session_context": session_context,
+            "auto_retract_contradictions": auto_retract_contradictions,
+        }
+        resp = await self.client._request(
+            "POST",
+            f"{self.base_url}/extract-and-assert",
+            json=body,
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        self._clear_cache()
         return resp.json()
 
     async def record_perception(
@@ -1086,6 +1144,16 @@ class AsyncVelarixSession:
             raise ValueError("kind is required")
         return await self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
+    async def delete(self) -> Dict[str, Any]:
+        resp = await self.client._request(
+            "DELETE",
+            f"{self.client.base_url}/v1/org/sessions/{self.session_id}",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        self._clear_cache()
+        return resp.json()
+
 class AsyncVelarixClient:
     """An asynchronous client for interacting with Velarix."""
     def __init__(
@@ -1155,6 +1223,12 @@ class AsyncVelarixClient:
 
     def session(self, session_id: str) -> AsyncVelarixSession:
         return AsyncVelarixSession(self, session_id)
+
+    async def create_session(self, session_id: Optional[str] = None) -> AsyncVelarixSession:
+        resolved_session_id = session_id or str(uuid.uuid4())
+        session = self.session(resolved_session_id)
+        await session.set_config()
+        return session
 
     async def get_sessions(self) -> List[Dict[str, Any]]:
         resp = await self._request("GET", f"{self.base_url}/v1/sessions", headers=self.headers)
