@@ -27,11 +27,9 @@ func jwtSigningKey() ([]byte, error) {
 	if v := os.Getenv("VELARIX_JWT_SECRET"); v != "" {
 		return []byte(v), nil
 	}
-	if isDevLikeEnv() {
-		return []byte("velarix_dev_insecure_jwt_secret_change_me"), nil
-	}
-	return nil, fmt.Errorf("VELARIX_JWT_SECRET is required outside dev/test")
+	return nil, fmt.Errorf("VELARIX_JWT_SECRET is required and not set")
 }
+
 
 type Claims struct {
 	Email        string `json:"email"`
@@ -293,13 +291,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validatePassword(body.Password); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	hashed, err := hashPassword(body.Password)
 	if err != nil {
 		http.Error(w, "hashing failure", http.StatusInternalServerError)
 		return
 	}
 
-	role := "admin"
+	// Standard self-registrations always receive the member role.
+	// Admin role is only granted via: (a) explicit VELARIX_ADMIN_EMAIL bootstrap match,
+	// or (b) existing admin promoting a member via invitation.
+	role := "member"
 	adminEmail := os.Getenv("VELARIX_ADMIN_EMAIL")
 	if adminEmail != "" && body.Email == adminEmail {
 		role = "admin"
@@ -493,6 +499,11 @@ func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 
 	if user.ResetToken == "" || user.ResetToken != keyHashHex(body.Token) || time.Now().UnixMilli() > user.ResetExpiry {
 		http.Error(w, "invalid token or expired", http.StatusUnauthorized)
+		return
+	}
+
+	if err := validatePassword(body.NewPassword); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
