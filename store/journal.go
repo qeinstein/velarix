@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -141,6 +142,7 @@ func Replay(path string, engines map[string]*core.Engine) error {
 			if err := engine.InvalidateRoot(entry.FactID); err != nil {
 				return fmt.Errorf("line %d [Session: %s]: failed to replay invalidate: %w", lineNum, entry.SessionID, err)
 			}
+
 		case EventRetract:
 			reason := ""
 			if entry.Payload != nil {
@@ -151,6 +153,7 @@ func Replay(path string, engines map[string]*core.Engine) error {
 			if err := engine.RetractFact(entry.FactID, reason); err != nil {
 				return fmt.Errorf("line %d [Session: %s]: failed to replay retract: %w", lineNum, entry.SessionID, err)
 			}
+
 		case EventReview:
 			status := ""
 			reason := ""
@@ -169,6 +172,66 @@ func Replay(path string, engines map[string]*core.Engine) error {
 			if err := engine.SetFactReview(entry.FactID, status, reason, reviewedAt); err != nil {
 				return fmt.Errorf("line %d [Session: %s]: failed to replay review: %w", lineNum, entry.SessionID, err)
 			}
+
+		case EventCycleViolation:
+			// Cycle violations are validation failures, not state mutations.
+			// No engine action is needed; log for audit visibility.
+			slog.Debug("Replaying journal: skipping cycle_violation event (no state mutation)",
+				"line", lineNum, "session_id", entry.SessionID, "fact_id", entry.FactID)
+
+		case EventSnapshotCorruption:
+			// Snapshot corruption is a critical storage integrity event.
+			// Log at Error level with full payload so operators can investigate.
+			// The session should be flagged for manual review.
+			slog.Error("Replaying journal: snapshot_corruption event detected — session requires manual review",
+				"line", lineNum, "session_id", entry.SessionID, "payload", entry.Payload, "timestamp", entry.Timestamp)
+
+		case EventConfidenceAdjusted:
+			// Re-apply a confidence adjustment to a root fact's ManualStatus.
+			var newConfidence float64
+			if entry.Payload != nil {
+				if v, ok := entry.Payload["confidence"].(float64); ok {
+					newConfidence = v
+				}
+			}
+			factID := entry.FactID
+			if factID == "" && entry.Fact != nil {
+				factID = entry.Fact.ID
+			}
+			if factID != "" && newConfidence > 0 {
+				if err := engine.SetRootConfidence(factID, core.Status(newConfidence)); err != nil {
+					slog.Warn("Replaying journal: confidence_adjusted apply failed",
+						"line", lineNum, "session_id", entry.SessionID, "fact_id", factID, "error", err)
+				}
+			} else {
+				slog.Debug("Replaying journal: skipping confidence_adjusted event — missing fact_id or confidence",
+					"line", lineNum, "session_id", entry.SessionID)
+			}
+
+		case EventRevalidationComplete:
+			// Informational event — marks that a full session revalidation ran.
+			// No state to mutate; the revalidation itself is the state change.
+			slog.Debug("Replaying journal: skipping revalidation_complete event (informational only)",
+				"line", lineNum, "session_id", entry.SessionID)
+
+		case EventAdminAction:
+			// Admin actions are auditable but not replayable state mutations.
+			actorID := entry.ActorID
+			if actorID == "" {
+				actorID = "unknown"
+			}
+			slog.Info("Replaying journal: admin_action event (audit only, no state mutation)",
+				"line", lineNum, "session_id", entry.SessionID, "actor_id", actorID, "payload", entry.Payload)
+
+		case EventDecisionRecord:
+			// Decision records are audit trail only — not engine state.
+			slog.Debug("Replaying journal: skipping decision_record event (audit trail only)",
+				"line", lineNum, "session_id", entry.SessionID, "fact_id", entry.FactID)
+
+		default:
+			// Future event types must never be silently lost.
+			slog.Warn("Replaying journal: unknown event type encountered — skipping",
+				"line", lineNum, "session_id", entry.SessionID, "type", entry.Type)
 		}
 	}
 

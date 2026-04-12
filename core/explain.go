@@ -60,9 +60,10 @@ func confidenceTier(confidence float64) string {
 	return "uncertain"
 }
 
-// ExplainReasoning generates a structured, confidence-weighted causal explanation for a fact.
-// If counterfactualFactID is non-empty, it computes what would change if that fact were removed.
-func (e *Engine) ExplainReasoning(factID string, counterfactualFactID string) (*ExplanationOutput, error) {
+// ExplainReasoning generates a structured, confidence-weighted causal explanation
+// for a fact by walking the justification graph. This is the canonical explain
+// method; the legacy Explain() tree method has been removed.
+func (e *Engine) ExplainReasoning(factID string) (*ExplanationOutput, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -75,17 +76,9 @@ func (e *Engine) ExplainReasoning(factID string, counterfactualFactID string) (*
 		FactID: factID,
 	}
 
-	// Build causal chain by walking the justification graph
+	// Build causal chain by walking the justification graph.
 	visited := make(map[string]struct{})
 	output.CausalChain = e.buildCausalChain(fact, visited)
-
-	// Counterfactual analysis
-	if counterfactualFactID != "" {
-		if _, cfExists := e.Facts[counterfactualFactID]; !cfExists {
-			return nil, errors.New("counterfactual fact not found: " + counterfactualFactID)
-		}
-		output.Counterfactual = e.computeCounterfactual(factID, counterfactualFactID)
-	}
 
 	output.enrichForDecisionContext(fact, float64(e.effectiveStatusUnsafe(fact)))
 
@@ -254,72 +247,3 @@ func (e *Engine) isDominatorAncestorUnsafe(uID, vID string) bool {
 	return u.PreOrder <= v.PreOrder && u.PostOrder >= v.PostOrder
 }
 
-// Legacy support: Explain returns a tree showing why a fact is currently Valid (backward compat).
-type ExplanationNode struct {
-	FactID   string
-	Children []*ExplanationNode
-}
-
-func (e *Engine) Explain(factID string) ([]*ExplanationNode, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	fact, exists := e.Facts[factID]
-	if !exists {
-		return nil, errors.New("fact not found")
-	}
-
-	if e.effectiveStatusUnsafe(fact) != Valid {
-		return []*ExplanationNode{}, nil
-	}
-
-	return e.explainFact(factID, make(map[string]struct{})), nil
-}
-
-func (e *Engine) explainFact(factID string, visited map[string]struct{}) []*ExplanationNode {
-	if _, seen := visited[factID]; seen {
-		return nil
-	}
-	visited[factID] = struct{}{}
-
-	fact := e.Facts[factID]
-
-	if fact.IsRoot {
-		return []*ExplanationNode{
-			{
-				FactID:   factID,
-				Children: nil,
-			},
-		}
-	}
-
-	var explanations []*ExplanationNode
-
-	for _, set := range fact.JustificationSets {
-		setValid := true
-		for _, parentID := range set {
-			parent := e.Facts[parentID]
-			if e.effectiveStatusUnsafe(parent) != Valid {
-				setValid = false
-				break
-			}
-		}
-		if !setValid {
-			continue
-		}
-
-		node := &ExplanationNode{
-			FactID:   factID,
-			Children: []*ExplanationNode{},
-		}
-		for _, parentID := range set {
-			childExplanations := e.explainFact(parentID, visited)
-			if len(childExplanations) > 0 {
-				node.Children = append(node.Children, childExplanations[0])
-			}
-		}
-		explanations = append(explanations, node)
-	}
-
-	return explanations
-}

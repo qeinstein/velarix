@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -283,7 +284,55 @@ func (s *Server) handleConsistencyCheck(w http.ResponseWriter, r *http.Request) 
 	}
 
 	report := engine.CheckConsistency(factIDs, body.IncludeInvalid)
-	appendVerifierIssues(engine, report)
+	appendVerifierIssues(engine, report, sessionID)
+
+	// Session-level auto-retract: if the session config enables it, retract the
+	// lower-entrenchment fact from each contradicting pair automatically.
+	config, _ := s.Store.GetConfig(sessionID)
+	if config != nil && config.AutoRetractContradictions && report.IssueCount > 0 {
+		for _, issue := range report.Issues {
+			if len(issue.FactIDs) != 2 {
+				continue
+			}
+			factA, okA := engine.GetFact(issue.FactIDs[0])
+			factB, okB := engine.GetFact(issue.FactIDs[1])
+			if !okA || !okB {
+				continue
+			}
+			var toRetract *core.Fact
+			var conflictingID string
+			if factA.EffectiveEntrenchment() <= factB.EffectiveEntrenchment() {
+				toRetract = factA
+				conflictingID = factB.ID
+			} else {
+				toRetract = factB
+				conflictingID = factA.ID
+			}
+			retractEntry := store.JournalEntry{
+				Type:      store.EventRetract,
+				SessionID: sessionID,
+				FactID:    toRetract.ID,
+				ActorID:   getActorID(r),
+				Payload:   map[string]interface{}{"reason": "auto_retract_contradiction"},
+			}
+			if err := s.Store.Append(retractEntry); err != nil {
+				slog.Error("Failed to persist auto-retract journal entry", "session_id", sessionID, "fact_id", toRetract.ID, "error", err)
+			}
+			_ = s.Store.AppendOrgActivity(orgID, retractEntry)
+			if err := engine.RetractFact(toRetract.ID, "auto_retract_contradiction"); err == nil {
+				slog.Info("Auto-retracted fact (session config)",
+					"session_id", sessionID,
+					"fact_id", toRetract.ID,
+					"reason", "auto_retract_contradiction",
+					"conflicting_fact_id", conflictingID,
+					"timestamp", time.Now().UnixMilli(),
+				)
+				AutoRetractionsTotal.Inc()
+			}
+		}
+		s.invalidateSliceCache(sessionID)
+	}
+
 	_ = saveReasoningEnvelope(s, sessionID, reasoningEnvelope{
 		Kind:              "consistency_report",
 		ConsistencyReport: report,
@@ -393,7 +442,7 @@ func (s *Server) handleVerifyReasoningChain(w http.ResponseWriter, r *http.Reque
 	}
 	if len(chainFactIDs) > 1 {
 		consistencyReport := engine.CheckConsistency(chainFactIDs, false)
-		appendVerifierIssues(engine, consistencyReport)
+		appendVerifierIssues(engine, consistencyReport, sessionID)
 		if consistencyReport.IssueCount > 0 {
 			report.Valid = false
 			report.Issues = append(report.Issues, consistencyReport.Issues...)
