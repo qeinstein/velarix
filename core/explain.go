@@ -174,12 +174,20 @@ func (e *Engine) buildCausalChain(fact *Fact, visited map[string]struct{}) []Bel
 
 	var chain []BeliefExplanation
 
-	// For non-root facts, walk parents
+	// For non-root facts, walk parents.
+	// JustificationSets stores raw dependency tokens which may be prefixed with
+	// "!" for negated dependencies.  We keep the raw token in belief.Parents for
+	// display purposes but normalise it before the map lookup so that negated
+	// dependencies are correctly included in the causal chain.
 	if !fact.IsRoot {
 		for _, set := range fact.JustificationSets {
-			for _, parentID := range set {
-				belief.Parents = append(belief.Parents, parentID)
-				if parentFact, ok := e.Facts[parentID]; ok {
+			for _, token := range set {
+				belief.Parents = append(belief.Parents, token)
+				normalizedID, err := normalizeDependencyToken(token)
+				if err != nil {
+					continue
+				}
+				if parentFact, ok := e.Facts[normalizedID]; ok {
 					chain = append(chain, e.buildCausalChain(parentFact, visited)...)
 				}
 			}
