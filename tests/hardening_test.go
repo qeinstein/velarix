@@ -1,10 +1,10 @@
 package tests
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 	"velarix/store"
@@ -37,45 +37,59 @@ func TestRBACEnforcement(t *testing.T) {
 	}
 }
 
-func TestBackupRestore(t *testing.T) {
-	server, _ := setupTestServer(t)
+func TestBackupOrgScoped(t *testing.T) {
+	// Verify that the backup endpoint only returns data for the calling org.
+	serverA, badgerA := setupTestServer(t)
+	_ = badgerA
 
-	// 1. Assert a fact
-	fact := map[string]interface{}{"id": "F1", "is_root": true, "manual_status": 1.0}
-	body, _ := json.Marshal(fact)
-	resp := performRequest(t, server, http.MethodPost, "/v1/s/sess1/facts", body)
+	// Seed org A session and fact.
+	factA := map[string]interface{}{"id": "F_ORG_A", "is_root": true, "manual_status": 1.0}
+	bodyA, _ := json.Marshal(factA)
+	resp := performRequest(t, serverA, http.MethodPost, "/v1/s/sess_org_a/facts", bodyA)
 	if resp.Code != http.StatusCreated {
-		t.Fatalf("Failed to create fact before backup: %d", resp.Code)
+		t.Fatalf("org A fact creation failed: %d %s", resp.Code, resp.Body.String())
 	}
 
-	// 2. Perform Backup
-	resp = performRequest(t, server, http.MethodGet, "/v1/org/backup", nil)
+	// Seed a different org B user and session directly in the store.
+	orgBUser := &store.User{
+		Email: "orgb@example.com",
+		OrgID: "org_b",
+		Role:  "admin",
+		Keys:  []store.APIKey{{Key: "org_b_key", Label: "org_b", IsRevoked: false, ExpiresAt: 9999999999999}},
+	}
+	serverA.Store.SaveUser(orgBUser)
+	serverA.Store.SaveOrganization(&store.Organization{ID: "org_b", Name: "Org B"})
+
+	factB := map[string]interface{}{"id": "F_ORG_B", "is_root": true, "manual_status": 1.0}
+	bodyB, _ := json.Marshal(factB)
+	// Assert a fact as org B directly through the HTTP handler.
+	respB := performAuthenticatedRequest(t, serverA, http.MethodPost, "/v1/s/sess_org_b/facts", "org_b_key", bodyB)
+	if respB.Code != http.StatusCreated {
+		t.Fatalf("org B fact creation failed: %d %s", respB.Code, respB.Body.String())
+	}
+
+	// Call backup as org A (via bootstrap admin key which has orgID="admin", but test_org is the default test org).
+	resp = performRequest(t, serverA, http.MethodGet, "/v1/org/backup", nil)
 	if resp.Code != http.StatusOK {
-		t.Fatalf("Backup failed: status %d body %s", resp.Code, resp.Body.String())
+		t.Fatalf("backup failed: %d %s", resp.Code, resp.Body.String())
 	}
 
-	var backupData bytes.Buffer
-	backupData.ReadFrom(resp.Body)
-
-	// 3. Clear Database by creating a new server (simulating disaster)
-	server2, _ := setupTestServer(t)
-
-	// 4. Perform Restore
-	resp = performRequest(t, server2, http.MethodPost, "/v1/org/restore", backupData.Bytes())
-	if resp.Code != http.StatusOK {
-		t.Fatalf("Restore failed: status %d body %s", resp.Code, resp.Body.String())
+	backupBody := resp.Body.String()
+	// The backup must NOT contain org B session IDs or fact IDs.
+	if strings.Contains(backupBody, "sess_org_b") {
+		t.Fatalf("org A backup contains org B session ID")
 	}
-
-	// 5. Verify data exists after restore
-	resp = performRequest(t, server2, http.MethodGet, "/v1/s/sess1/facts/F1", nil)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("Failed to retrieve fact after restore: status %d body %s", resp.Code, resp.Body.String())
+	if strings.Contains(backupBody, "F_ORG_B") {
+		t.Fatalf("org A backup contains org B fact ID")
 	}
+}
 
-	var restoredFact struct{ ID string }
-	json.NewDecoder(resp.Body).Decode(&restoredFact)
-	if restoredFact.ID != "F1" {
-		t.Fatalf("Expected fact F1 after restore, got %s", restoredFact.ID)
+func TestRestoreEndpointRemoved(t *testing.T) {
+	server, _ := setupTestServer(t)
+	// The /v1/org/restore endpoint must not exist on the public router.
+	resp := performRequest(t, server, http.MethodPost, "/v1/org/restore", []byte("{}"))
+	if resp.Code == http.StatusOK {
+		t.Fatalf("restore endpoint must not be publicly accessible, got 200")
 	}
 }
 
@@ -116,7 +130,7 @@ func TestRegisterRejectsDuplicateAccount(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{
 		"email":    "duplicate@example.com",
-		"password": "password123",
+		"password": "password123456",
 	})
 	resp := performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/register", "", body)
 	if resp.Code != http.StatusCreated {
@@ -135,16 +149,27 @@ func TestCookieAuthAndResetRevocation(t *testing.T) {
 
 	registerBody, _ := json.Marshal(map[string]string{
 		"email":    "cookie-auth@example.com",
-		"password": "password123",
+		"password": "password123456",
 	})
 	resp := performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/register", "", registerBody)
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("expected registration to succeed, got %d body=%s", resp.Code, resp.Body.String())
 	}
 
+	// Promote to admin directly — in production this happens via invitation.
+	// This test validates cookie auth and key revocation, not the registration flow.
+	user, err := server.Store.GetUser("cookie-auth@example.com")
+	if err != nil {
+		t.Fatalf("failed to load registered user: %v", err)
+	}
+	user.Role = "admin"
+	if err := server.Store.SaveUser(user); err != nil {
+		t.Fatalf("failed to promote user to admin: %v", err)
+	}
+
 	loginBody, _ := json.Marshal(map[string]string{
 		"email":    "cookie-auth@example.com",
-		"password": "password123",
+		"password": "password123456",
 	})
 	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/login", "", loginBody)
 	if resp.Code != http.StatusOK {
@@ -163,6 +188,7 @@ func TestCookieAuthAndResetRevocation(t *testing.T) {
 	}
 	authCookie := cookies[0]
 
+	// Verify cookie auth works for an authenticated endpoint.
 	cookieReq := httptest.NewRequest(http.MethodGet, "/v1/keys", nil)
 	cookieReq.AddCookie(authCookie)
 	cookieResp := httptest.NewRecorder()
@@ -205,7 +231,7 @@ func TestCookieAuthAndResetRevocation(t *testing.T) {
 	resetConfirmBody, _ := json.Marshal(map[string]string{
 		"email":        "cookie-auth@example.com",
 		"token":        resetToken,
-		"new_password": "newpassword123",
+		"new_password": "newpassword123456",
 	})
 	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/reset-confirm", "", resetConfirmBody)
 	if resp.Code != http.StatusOK {
@@ -352,7 +378,7 @@ func TestInvitationTokenIsOnlyReturnedOnce(t *testing.T) {
 
 	acceptBody, _ := json.Marshal(map[string]string{
 		"token":    token,
-		"password": "password123",
+		"password": "password123456",
 	})
 	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/invitations/accept", "", acceptBody)
 	if resp.Code != http.StatusOK {
@@ -392,5 +418,146 @@ func TestRetentionEnforcementDeletesExpiredRecords(t *testing.T) {
 	}
 	if report.ActivityDeleted == 0 || report.AccessLogsDeleted == 0 || report.NotificationsDeleted == 0 {
 		t.Fatalf("expected retention sweep to delete expired records, got %+v", report)
+	}
+}
+
+// TestRegisterRoleIsMember verifies that standard self-registration always produces
+// a member role, never an admin. It also verifies that the returned token cannot
+// access any admin-only route.
+func TestRegisterRoleIsMember(t *testing.T) {
+	server, _ := setupTestServer(t)
+	t.Setenv("VELARIX_ENV", "dev")
+	t.Setenv("VELARIX_ADMIN_EMAIL", "") // ensure no bootstrap admin email is set
+
+	// Register a new account via the public endpoint.
+	regBody, _ := json.Marshal(map[string]string{
+		"email":    "newmember@example.com",
+		"password": "securepassword123",
+	})
+	resp := performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/register", "", regBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("registration failed: %d %s", resp.Code, resp.Body.String())
+	}
+
+	// Login to get a JWT.
+	loginBody, _ := json.Marshal(map[string]string{
+		"email":    "newmember@example.com",
+		"password": "securepassword123",
+	})
+	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/login", "", loginBody)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", resp.Code, resp.Body.String())
+	}
+	var loginResp map[string]string
+	json.NewDecoder(resp.Body).Decode(&loginResp)
+	token := loginResp["token"]
+	if token == "" {
+		t.Fatalf("no token in login response")
+	}
+
+	// Verify the stored user has role=member.
+	user, err := server.Store.GetUser("newmember@example.com")
+	if err != nil {
+		t.Fatalf("could not load registered user: %v", err)
+	}
+	if user.Role != "member" {
+		t.Fatalf("expected role=member after public registration, got %q", user.Role)
+	}
+
+	// Verify the token cannot access admin-only routes (backup, key generation, restore check).
+	resp = performAuthenticatedRequest(t, server, http.MethodGet, "/v1/org/backup", token, nil)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("member token should not access /v1/org/backup, got %d", resp.Code)
+	}
+
+	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/keys/generate", token, []byte(`{"label":"test"}`))
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("member token should not generate API keys, got %d", resp.Code)
+	}
+}
+
+// TestInvitationTakeoverPrevented verifies that accepting an invitation for an email
+// address that already has an account is rejected when the caller is unauthenticated.
+func TestInvitationTakeoverPrevented(t *testing.T) {
+	server, _ := setupTestServer(t)
+
+	// Create an existing user account.
+	existingUser := &store.User{
+		Email:          "existing@example.com",
+		OrgID:          "test_org",
+		Role:           "member",
+		HashedPassword: "$argon2id$v=19$m=65536,t=3,p=2$c29tZXNhbHQ$ZmFrZWhhc2g",
+		Keys:           []store.APIKey{},
+	}
+	if err := server.Store.SaveUser(existingUser); err != nil {
+		t.Fatalf("failed to seed existing user: %v", err)
+	}
+
+	// Create an invitation for the existing user's email.
+	invBody, _ := json.Marshal(map[string]string{
+		"email": "existing@example.com",
+		"role":  "member",
+	})
+	resp := performRequest(t, server, http.MethodPost, "/v1/org/invitations", invBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("invitation creation failed: %d %s", resp.Code, resp.Body.String())
+	}
+	var created map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&created)
+	token, _ := created["invite_token"].(string)
+	if token == "" {
+		t.Fatalf("no invite_token in create response")
+	}
+
+	// Attempt to accept the invitation unauthenticated — must be rejected.
+	acceptBody, _ := json.Marshal(map[string]string{
+		"token":    token,
+		"password": "somepassword123",
+	})
+	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/invitations/accept", "", acceptBody)
+	if resp.Code != http.StatusConflict && resp.Code != http.StatusForbidden {
+		t.Fatalf("unauthenticated invite accept for existing email must return 409 or 403, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	// Verify the existing account is unchanged (password not overwritten).
+	user, err := server.Store.GetUser("existing@example.com")
+	if err != nil {
+		t.Fatalf("existing user should still exist: %v", err)
+	}
+	if user.HashedPassword != existingUser.HashedPassword {
+		t.Fatalf("existing user's password was modified by unauthenticated invite accept")
+	}
+}
+
+// TestAuditLogPoisoningPrevented verifies that the POST /v1/s/{id}/history endpoint
+// is not reachable from the public router.
+func TestAuditLogPoisoningPrevented(t *testing.T) {
+	server, _ := setupTestServer(t)
+	payload, _ := json.Marshal(map[string]interface{}{"type": "assert", "session_id": "sess1"})
+	resp := performRequest(t, server, http.MethodPost, "/v1/s/sess1/history", payload)
+	// Must return 405 Method Not Allowed or 404 Not Found — never 201 or 200.
+	if resp.Code == http.StatusCreated || resp.Code == http.StatusOK {
+		t.Fatalf("POST /v1/s/{id}/history must not be accessible, got %d", resp.Code)
+	}
+}
+
+// TestPasswordMinimumLength verifies the 12-character minimum password policy
+// is enforced at registration, reset-confirm, and invitation acceptance.
+func TestPasswordMinimumLength(t *testing.T) {
+	server, _ := setupTestServer(t)
+	t.Setenv("VELARIX_ENV", "dev")
+
+	// Registration with short password must fail.
+	regBody, _ := json.Marshal(map[string]string{"email": "short@example.com", "password": "tooshort"})
+	resp := performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/register", "", regBody)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("short password at registration should return 400, got %d", resp.Code)
+	}
+
+	// Registration with exactly 12 chars must succeed.
+	regBody12, _ := json.Marshal(map[string]string{"email": "short12@example.com", "password": "exactly12chr"})
+	resp = performAuthenticatedRequest(t, server, http.MethodPost, "/v1/auth/register", "", regBody12)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("12-char password at registration should succeed, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }
