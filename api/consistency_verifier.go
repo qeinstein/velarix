@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sort"
@@ -39,6 +41,17 @@ type verifierFinding struct {
 	Label      string  `json:"label"`
 	Confidence float64 `json:"confidence"`
 	Reason     string  `json:"reason"`
+}
+
+// verifierCallError carries a machine-readable reason so callers can
+// increment the right Prometheus label without string-matching.
+type verifierCallError struct {
+	Reason string // "timeout" | "api_error" | "parse_error"
+	Msg    string
+}
+
+func (e *verifierCallError) Error() string {
+	return fmt.Sprintf("verifier %s: %s", e.Reason, e.Msg)
 }
 
 func contradictionVerifierFromEnv() *openAIContradictionVerifier {
@@ -177,30 +190,41 @@ func (v *openAIContradictionVerifier) verifyPair(pair contradictionPair) (*verif
 
 	resp, err := v.client.Do(req)
 	if err != nil {
-		return nil, err
+		reason := "http"
+		if req.Context().Err() != nil {
+			reason = "timeout"
+		}
+		return nil, &verifierCallError{Reason: reason, Msg: err.Error()}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("verifier returned status %d", resp.StatusCode)
+		return nil, &verifierCallError{
+			Reason: "api_error",
+			Msg:    fmt.Sprintf("verifier returned HTTP %d", resp.StatusCode),
+		}
 	}
 
 	var parsed chatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, err
+		return nil, &verifierCallError{Reason: "parse_error", Msg: err.Error()}
 	}
 	if len(parsed.Choices) == 0 {
-		return nil, fmt.Errorf("verifier returned no choices")
+		return nil, &verifierCallError{Reason: "parse_error", Msg: "verifier returned no choices"}
 	}
 	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
 	var finding verifierFinding
 	if err := json.Unmarshal([]byte(content), &finding); err != nil {
-		return nil, err
+		return nil, &verifierCallError{Reason: "parse_error", Msg: "failed to unmarshal finding: " + err.Error()}
 	}
 	finding.Label = strings.ToLower(strings.TrimSpace(finding.Label))
 	return &finding, nil
 }
 
-func appendVerifierIssues(engine *core.Engine, report *core.ConsistencyReport) {
+// appendVerifierIssues enriches report with LLM-verified contradictions.
+// sessionID is used in structured log messages so failures can be traced to a
+// specific session. Verifier failures are logged at slog.Warn — never silently
+// dropped — and incremented in the velarix_verifier_failures_total counter.
+func appendVerifierIssues(engine *core.Engine, report *core.ConsistencyReport, sessionID string) {
 	verifier := contradictionVerifierFromEnv()
 	if verifier == nil || report == nil {
 		return
@@ -229,10 +253,25 @@ func appendVerifierIssues(engine *core.Engine, report *core.ConsistencyReport) {
 			continue
 		}
 		finding, err := verifier.verifyPair(pair)
-		if err != nil || finding == nil {
+		if err != nil {
+			// Classify the failure reason for the Prometheus counter.
+			reason := "api_error"
+			var vcErr *verifierCallError
+			if errors.As(err, &vcErr) {
+				reason = vcErr.Reason
+			}
+			slog.Warn("Consistency verifier call failed",
+				"session_id", sessionID,
+				"fact_id_a", pair.Left.ID,
+				"fact_id_b", pair.Right.ID,
+				"reason", reason,
+				"error", err,
+				"timestamp", time.Now().UnixMilli(),
+			)
+			VerifierFailures.WithLabelValues(reason).Inc()
 			continue
 		}
-		if finding.Label != "contradiction" {
+		if finding == nil || finding.Label != "contradiction" {
 			continue
 		}
 		report.Issues = append(report.Issues, core.ConsistencyIssue{

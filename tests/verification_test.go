@@ -70,7 +70,10 @@ func TestComplexClinicalContraindication(t *testing.T) {
 	// In this test: prescribe_amoxicillin depends on (amoxicillin_candidate AND safety_check_passed).
 	// It only has ONE justification set. So it SHOULD be impacted.
 
-	report := engine.GetImpact("safety_check_passed")
+	report, err := engine.GetImpact("safety_check_passed")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	found := false
 	for _, id := range report.ImpactedIDs {

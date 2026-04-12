@@ -18,7 +18,12 @@ func (e *CycleError) Error() string {
 // detectCycle checks if adding newFact would create a circular dependency.
 // Callers MUST hold e.mu.Lock() or e.mu.RLock().
 func (e *Engine) detectCycle(newFact *Fact) error {
+	if newFact == nil {
+		return &NilArgumentError{Argument: "fact"}
+	}
+
 	newID := newFact.ID
+	_, existingFact := e.Facts[newID]
 
 	for _, set := range newFact.JustificationSets {
 		for _, token := range set {
@@ -27,6 +32,13 @@ func (e *Engine) detectCycle(newFact *Fact) error {
 				return err
 			}
 			visited := make(map[string]struct{})
+			if existingFact {
+				if path := e.reachable(newID, parentID, visited); path != nil {
+					fullPath := append(path, newID)
+					return &CycleError{Path: fullPath}
+				}
+				continue
+			}
 			if path := e.reachable(parentID, newID, visited); path != nil {
 				// The path goes from parentID to newID.
 				// The cycle is newID -> parentID -> ... -> newID

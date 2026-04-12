@@ -14,13 +14,21 @@ import (
 
 const ConfidenceThreshold Status = 0.6
 
+type NilArgumentError struct {
+	Argument string
+}
+
+func (e *NilArgumentError) Error() string {
+	return fmt.Sprintf("%s cannot be nil", e.Argument)
+}
+
 type ChangeEvent struct {
 	FactID    string `json:"fact_id"`
 	Status    Status `json:"status"`
 	Timestamp int64  `json:"timestamp"`
 }
 
-const MaxFactsPerSession = 80000
+const MaxFactsPerSession = 80000 // Absolute cap on number of facts to prevent OOM. In practice, performance degradation starts around 50k facts with complex justifications, so this is a safety limit. Users should archive and start a new session if they hit this limit.
 
 // Engine is the authoritative runtime for Velarix.
 type Engine struct {
@@ -234,6 +242,10 @@ func (e *Engine) propagate(queue []string) {
 // AssertFact inserts a new fact and initializes its justification sets.
 // This operation is idempotent: if the fact already exists with identical content, it returns nil.
 func (e *Engine) AssertFact(f *Fact) error {
+	if f == nil {
+		return &NilArgumentError{Argument: "fact"}
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -387,6 +399,34 @@ func (e *Engine) InvalidateRoot(factID string) error {
 	return nil
 }
 
+// SetRootConfidence updates the ManualStatus of a root fact and propagates the
+// change through the dependency graph. Used during journal replay for
+// confidence_adjusted events.
+func (e *Engine) SetRootConfidence(factID string, confidence Status) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	fact, ok := e.Facts[factID]
+	if !ok {
+		return errors.New("fact not found")
+	}
+	if !fact.IsRoot {
+		return errors.New("SetRootConfidence: only root facts support manual confidence adjustment")
+	}
+	if fact.ManualStatus == confidence {
+		return nil
+	}
+	fact.ManualStatus = confidence
+	if confidence < ConfidenceThreshold {
+		e.CollapsedRoots[factID] = struct{}{}
+	} else {
+		delete(e.CollapsedRoots, factID)
+	}
+	e.MutationCount++
+	e.propagate([]string{factID})
+	return nil
+}
+
 // RetractFact explicitly marks a fact as no longer usable for downstream reasoning.
 func (e *Engine) RetractFact(factID string, reason string) error {
 	e.mu.Lock()
@@ -449,9 +489,13 @@ type ImpactReport struct {
 }
 
 // GetImpact returns a list of fact IDs that would be invalidated if factID was invalidated.
-func (e *Engine) GetImpact(factID string) *ImpactReport {
+func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+
+	if _, ok := e.Facts[factID]; !ok {
+		return nil, errors.New("fact not found")
+	}
 
 	// 1. Setup simulation state
 	// factID -> simulated DerivedStatus
@@ -544,18 +588,130 @@ func (e *Engine) GetImpact(factID string) *ImpactReport {
 	}
 	for id := range impacted {
 		report.ImpactedIDs = append(report.ImpactedIDs, id)
-		report.Loss += float64(e.Facts[id].DerivedStatus)
+		fact, ok := e.Facts[id]
+		if !ok {
+			continue
+		}
+		report.Loss += float64(fact.DerivedStatus)
 
 		// Direct child check (simplified for simulation)
-		if f, ok := e.Facts[id]; ok && f.IDom == factID {
+		if fact.IDom == factID {
 			report.DirectCount++
 		}
-		if f, ok := e.Facts[id]; ok && f.Payload != nil && f.Payload["type"] == "action" {
+		if fact.Payload != nil && fact.Payload["type"] == "action" {
 			report.ActionCount++
 		}
 	}
 
-	return report
+	return report, nil
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneFloat64Slice(values []float64) []float64 {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]float64, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneStringMatrix(values [][]string) [][]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([][]string, len(values))
+	for i := range values {
+		cloned[i] = cloneStringSlice(values[i])
+	}
+	return cloned
+}
+
+func cloneDynamicValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return cloneStringInterfaceMap(typed)
+	case []interface{}:
+		cloned := make([]interface{}, len(typed))
+		for i := range typed {
+			cloned[i] = cloneDynamicValue(typed[i])
+		}
+		return cloned
+	case []string:
+		return cloneStringSlice(typed)
+	case []float64:
+		return cloneFloat64Slice(typed)
+	default:
+		return typed
+	}
+}
+
+func cloneStringInterfaceMap(values map[string]interface{}) map[string]interface{} {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]interface{}, len(values))
+	for key, value := range values {
+		cloned[key] = cloneDynamicValue(value)
+	}
+	return cloned
+}
+
+func cloneFact(f *Fact) *Fact {
+	if f == nil {
+		return nil
+	}
+	cloned := *f
+	cloned.Payload = cloneStringInterfaceMap(f.Payload)
+	cloned.Metadata = cloneStringInterfaceMap(f.Metadata)
+	cloned.Embedding = cloneFloat64Slice(f.Embedding)
+	cloned.JustificationSets = cloneStringMatrix(f.JustificationSets)
+	cloned.ValidationErrors = cloneStringSlice(f.ValidationErrors)
+	return &cloned
+}
+
+func buildValidationEngine(facts map[string]*Fact) (*Engine, error) {
+	validation := NewEngine()
+	validation.Facts = facts
+
+	for id, fact := range facts {
+		if fact == nil {
+			return nil, fmt.Errorf("snapshot contains nil fact: %s", id)
+		}
+		for i, set := range fact.JustificationSets {
+			positiveParents, negativeParents, allParents, err := splitDependencySet(set)
+			if err != nil {
+				return nil, err
+			}
+			for _, parentID := range allParents {
+				if _, ok := facts[parentID]; !ok {
+					return nil, errors.New("unknown parent fact: " + parentID)
+				}
+				if _, ok := validation.ChildrenIndex[parentID]; !ok {
+					validation.ChildrenIndex[parentID] = make(map[string]struct{})
+				}
+				jSetID := fmt.Sprintf("%s_jset_%d", fact.ID, i)
+				validation.ChildrenIndex[parentID][jSetID] = struct{}{}
+				validation.JustificationSets[jSetID] = &JustificationSet{
+					ID:                    jSetID,
+					ChildFactID:           fact.ID,
+					ParentFactIDs:         allParents,
+					PositiveParentFactIDs: positiveParents,
+					NegativeParentFactIDs: negativeParents,
+				}
+			}
+		}
+	}
+
+	return validation, nil
 }
 
 // GetFact returns a copy of a fact, locking for safety.
@@ -564,7 +720,10 @@ func (e *Engine) GetFact(factID string) (*Fact, bool) {
 	defer e.mu.RUnlock()
 
 	f, ok := e.Facts[factID]
-	return f, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneFact(f), true
 }
 
 // ToSnapshot serializes the engine into a Snapshot struct with CRC32 integrity.
@@ -608,6 +767,10 @@ func (e *Engine) ToSnapshot() (*Snapshot, error) {
 
 // FromSnapshot restores the engine state from a binary Snapshot and verifies integrity.
 func (e *Engine) FromSnapshot(snap *Snapshot) error {
+	if snap == nil {
+		return &NilArgumentError{Argument: "snapshot"}
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -634,11 +797,36 @@ func (e *Engine) FromSnapshot(snap *Snapshot) error {
 		return fmt.Errorf("failed to decode snapshot data: %v", err)
 	}
 
+	if payload.Facts == nil {
+		payload.Facts = make(map[string]*Fact)
+	}
+	if len(payload.Facts) > MaxFactsPerSession {
+		return fmt.Errorf("snapshot contains %d facts, exceeds session memory cap (%d)", len(payload.Facts), MaxFactsPerSession)
+	}
+	validation, err := buildValidationEngine(payload.Facts)
+	if err != nil {
+		return err
+	}
+	for _, fact := range validation.Facts {
+		if err := validation.detectCycle(fact); err != nil {
+			return err
+		}
+	}
+
 	// 3. Update Engine State
 	e.Facts = payload.Facts
 	e.JustificationSets = payload.JustificationSets
 	e.ChildrenIndex = payload.ChildrenIndex
 	e.CollapsedRoots = payload.CollapsedRoots
+	if e.JustificationSets == nil {
+		e.JustificationSets = make(map[string]*JustificationSet)
+	}
+	if e.ChildrenIndex == nil {
+		e.ChildrenIndex = make(map[string]map[string]struct{})
+	}
+	if e.CollapsedRoots == nil {
+		e.CollapsedRoots = make(map[string]struct{})
+	}
 	if payload.RetractedFacts == nil {
 		payload.RetractedFacts = make(map[string]string)
 	}
@@ -656,7 +844,7 @@ func (e *Engine) ListFacts() []*Fact {
 
 	var results []*Fact
 	for _, f := range e.Facts {
-		results = append(results, f)
+		results = append(results, cloneFact(f))
 	}
 	return results
 }
