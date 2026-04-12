@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -275,17 +276,18 @@ func (s *Server) enableCORS(next http.Handler) http.Handler {
 		allowed := strings.TrimSpace(os.Getenv("VELARIX_ALLOWED_ORIGINS"))
 		switch {
 		case origin == "":
-		case allowed == "" && isDevLikeEnv():
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			addVaryHeader(w.Header(), "Origin")
+			// No Origin header — non-browser or same-origin request; pass through.
 		case allowed != "" && originAllowed(origin, allowed):
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			addVaryHeader(w.Header(), "Origin")
-		case r.Method == http.MethodOptions:
-			http.Error(w, "origin not allowed", http.StatusForbidden)
-			return
+		default:
+			// No allowed origins configured or origin not in the list.
+			// Always reject cross-origin requests rather than reflecting the caller's origin.
+			if r.Method == http.MethodOptions {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Idempotency-Key, X-Trace-Id")
@@ -1051,6 +1053,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 					http.Error(w, fmt.Sprintf("rate limit exceeded (%d requests/%ds)", limitRPM, int(limitWindow.Seconds())), http.StatusTooManyRequests)
 					return
 				}
+				// Org-level rate limit: all tokens belonging to the same org share a single quota.
+				// This prevents bypass via multiple API keys.
+				orgRateKey := fmt.Sprintf("org:%s", user.OrgID)
+				if allowed, retryAfter := s.checkRateLimit(orgRateKey, limitRPM, limitWindow); !allowed {
+					setRateLimitResponseHeaders(w, limitRPM, limitWindow, retryAfter)
+					http.Error(w, fmt.Sprintf("org rate limit exceeded (%d requests/%ds)", limitRPM, int(limitWindow.Seconds())), http.StatusTooManyRequests)
+					return
+				}
 				scopes := scopesForRole(user.Role)
 				if !authorizeRequest(r, requiredScopeForRequest(r), scopes, user.Role) {
 					http.Error(w, "forbidden", http.StatusForbidden)
@@ -1155,6 +1165,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("X-Velarix-RateLimit-Limit", strconv.Itoa(limitRPM))
 			w.Header().Set("X-Velarix-RateLimit-Window", strconv.Itoa(int(limitWindow.Seconds())))
 			http.Error(w, fmt.Sprintf("rate limit exceeded (%d requests/%ds)", limitRPM, int(limitWindow.Seconds())), http.StatusTooManyRequests)
+			return
+		}
+		// Org-level rate limit: shared quota across all tokens for this org.
+		orgRateKey := fmt.Sprintf("org:%s", user.OrgID)
+		if allowed, retryAfter := s.checkRateLimit(orgRateKey, limitRPM, limitWindow); !allowed {
+			setRateLimitResponseHeaders(w, limitRPM, limitWindow, retryAfter)
+			http.Error(w, fmt.Sprintf("org rate limit exceeded (%d requests/%ds)", limitRPM, int(limitWindow.Seconds())), http.StatusTooManyRequests)
 			return
 		}
 		if !authorizeRequest(r, requiredScopeForRequest(r), scopesForRoleCap(user.Role, scopes), user.Role) {
@@ -1395,20 +1412,55 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	buf := &bytes.Buffer{}
-	if _, err := s.Store.Backup(buf); err != nil {
-		slog.Error("Backup failed", "error", err)
+	orgID := getOrgID(r)
+
+	// Build an org-scoped export: only sessions, history, facts, and metadata belonging
+	// to the calling org. No other tenant's data may appear in the response.
+	export := map[string]interface{}{
+		"org_id":       orgID,
+		"generated_at": time.Now().UnixMilli(),
+		"version":      "v1-org-scoped",
+	}
+
+	// Org metadata
+	if org, err := s.Store.GetOrganization(orgID); err == nil {
+		export["organization"] = org
+	}
+
+	// Sessions for this org
+	sessions, _, _ := s.Store.ListOrgSessions(orgID, "", 10000)
+	export["sessions"] = sessions
+
+	// Per-session history and latest snapshot
+	type sessionExport struct {
+		SessionID string             `json:"session_id"`
+		History   []store.JournalEntry `json:"history"`
+	}
+	var sessionExports []sessionExport
+	for _, sm := range sessions {
+		history, _ := s.Store.GetSessionHistory(sm.ID)
+		sessionExports = append(sessionExports, sessionExport{
+			SessionID: sm.ID,
+			History:   history,
+		})
+	}
+	export["session_data"] = sessionExports
+
+	payload, err := json.Marshal(export)
+	if err != nil {
+		slog.Error("Backup marshal failed", "error", err, "org_id", orgID)
 		http.Error(w, "backup failed", http.StatusInternalServerError)
 		return
 	}
-	hash := sha256.Sum256(buf.Bytes())
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", "attachment; filename=velarix_backup.bak")
-	if _, err := w.Write(buf.Bytes()); err != nil {
+
+	hash := sha256.Sum256(payload)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=velarix_org_%s_backup.json", orgID))
+	if _, err := w.Write(payload); err != nil {
 		slog.Error("Backup write failed", "error", err)
 		return
 	}
-	s.auditAdmin("admin", getActorID(r), "backup", map[string]interface{}{"hash": fmt.Sprintf("%x", hash[:])})
+	s.auditAdmin("admin", getActorID(r), "backup", map[string]interface{}{"org_id": orgID, "hash": fmt.Sprintf("%x", hash[:])})
 }
 
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
@@ -1471,7 +1523,14 @@ func (s *Server) metricsAndLoggingMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		APIRequests.WithLabelValues(r.URL.Path, fmt.Sprintf("%d", rec.status)).Inc()
+		// Use the matched route pattern (e.g. /v1/s/{session_id}/facts) rather than
+		// the concrete URL path, so that session IDs and other dynamic segments never
+		// appear as Prometheus label values.
+		routePattern := r.Pattern
+		if routePattern == "" {
+			routePattern = "unknown"
+		}
+		APIRequests.WithLabelValues(routePattern, fmt.Sprintf("%d", rec.status)).Inc()
 	})
 }
 
@@ -1491,6 +1550,48 @@ func (s *Server) orgMetricsMiddleware(next http.Handler) http.Handler {
 		}
 		_ = s.Store.IncrementOrgMetric(orgID, "api_requests", 1)
 		_ = s.Store.IncOrgRequestBreakdown(orgID, endpoint, rec.status, 1)
+	})
+}
+
+// metricsAccessMiddleware restricts /metrics to localhost or a configurable
+// CIDR range set via VELARIX_METRICS_ALLOWED_CIDR. All other callers receive 403.
+func (s *Server) metricsAccessMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		remoteIP := clientIP(r)
+		allowedCIDR := strings.TrimSpace(os.Getenv("VELARIX_METRICS_ALLOWED_CIDR"))
+		if allowedCIDR == "" {
+			allowedCIDR = "127.0.0.1/32,::1/128"
+		}
+		ip := net.ParseIP(remoteIP)
+		allowed := false
+		for _, cidr := range strings.Split(allowedCIDR, ",") {
+			cidr = strings.TrimSpace(cidr)
+			if cidr == "" {
+				continue
+			}
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				// bare IP address fallback
+				if net.ParseIP(cidr) != nil && net.ParseIP(cidr).Equal(ip) {
+					allowed = true
+					break
+				}
+				continue
+			}
+			if ip != nil && network.Contains(ip) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -1756,7 +1857,8 @@ func (s *Server) Routes() http.Handler {
 
 	// Admin Management Routes
 	mux.HandleFunc("GET /v1/org/backup", s.handleBackup)
-	mux.HandleFunc("POST /v1/org/restore", s.handleRestore)
+	// NOTE: /v1/org/restore is intentionally absent from the public router.
+	// Restore operations must be performed at the infrastructure level only.
 
 	// V1 API Routes
 	mux.HandleFunc("GET /v1/me", s.handleMe)
@@ -1844,7 +1946,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/s/{session_id}/export-jobs/{id}", s.handleGetExportJob)
 	mux.HandleFunc("GET /v1/s/{session_id}/export-jobs/{id}/download", s.handleDownloadExportJob)
 	mux.HandleFunc("GET /v1/s/{session_id}/history", s.handleGetHistory)
-	mux.HandleFunc("POST /v1/s/{session_id}/history", s.handleAppendHistory)
+	// NOTE: POST /v1/s/{session_id}/history is intentionally absent.
+	// History entries are written only as side effects of real state transitions (assert, retract, etc.).
 	mux.HandleFunc("GET /v1/s/{session_id}/slice", s.handleGetSlice)
 	mux.HandleFunc("GET /v1/s/{session_id}/events", s.handleEvents)
 	mux.HandleFunc("GET /v1/s/{session_id}/graph", s.handleGetGraph)
@@ -1894,7 +1997,6 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc("GET /v1/s/{session_id}/export-jobs/{id}", s.handleGetExportJob)
 		mux.HandleFunc("GET /v1/s/{session_id}/export-jobs/{id}/download", s.handleDownloadExportJob)
 		mux.HandleFunc("GET /v1/s/{session_id}/history", s.handleGetHistory)
-		mux.HandleFunc("POST /v1/s/{session_id}/history", s.handleAppendHistory)
 		mux.HandleFunc("GET /v1/s/{session_id}/slice", s.handleGetSlice)
 		mux.HandleFunc("GET /v1/s/{session_id}/events", s.handleEvents)
 		mux.HandleFunc("GET /v1/s/{session_id}/graph", s.handleGetGraph)
@@ -1922,6 +2024,7 @@ func (s *Server) Routes() http.Handler {
 	h = s.writeLimitMiddleware(h)
 	h = s.idempotencyMiddleware(h)
 	h = s.authMiddleware(h)
+	h = s.metricsAccessMiddleware(h)
 	h = s.securityHeadersMiddleware(h)
 	h = s.enableCORS(h)
 	h = s.metricsAndLoggingMiddleware(h)

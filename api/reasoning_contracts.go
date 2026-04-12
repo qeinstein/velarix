@@ -259,9 +259,25 @@ func (s *Server) handleSemanticSearch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConsistencyCheck(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
 	orgID := getOrgID(r)
+
+	// Rate limit: 5 requests per minute per org for expensive reasoning operations.
+	consistencyRateKey := fmt.Sprintf("consistency:%s", orgID)
+	if allowed, retryAfter := s.checkRateLimit(consistencyRateKey, 5, time.Minute); !allowed {
+		setRateLimitResponseHeaders(w, 5, time.Minute, retryAfter)
+		http.Error(w, "consistency check rate limit exceeded (5 per minute per org)", http.StatusTooManyRequests)
+		return
+	}
+
 	engine, _, err := s.getEngine(sessionID, orgID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	// Hard cap: sessions with more than 10,000 facts must use async jobs.
+	const maxSyncFacts = 10_000
+	if len(engine.ListFacts()) > maxSyncFacts {
+		http.Error(w, "session has too many facts for synchronous consistency check; use an async export job instead", http.StatusUnprocessableEntity)
 		return
 	}
 
@@ -410,6 +426,15 @@ func (s *Server) handleListReasoningChains(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleVerifyReasoningChain(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
 	orgID := getOrgID(r)
+
+	// Rate limit: shared with consistency-check, 5 requests per minute per org.
+	verifyRateKey := fmt.Sprintf("consistency:%s", orgID)
+	if allowed, retryAfter := s.checkRateLimit(verifyRateKey, 5, time.Minute); !allowed {
+		setRateLimitResponseHeaders(w, 5, time.Minute, retryAfter)
+		http.Error(w, "reasoning verification rate limit exceeded (5 per minute per org)", http.StatusTooManyRequests)
+		return
+	}
+
 	engine, config, err := s.getEngine(sessionID, orgID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
