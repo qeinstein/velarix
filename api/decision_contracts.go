@@ -295,7 +295,7 @@ func (s *Server) computeDecisionCheck(engine *core.Engine, decision *store.Decis
 
 	check.ReasonCodes = uniqueStrings(check.ReasonCodes)
 	if decision.FactID != "" {
-		if explanation, err := engine.ExplainReasoning(decision.FactID, ""); err == nil {
+		if explanation, err := engine.ExplainReasoning(decision.FactID); err == nil {
 			check.ExplanationSummary = explanation.Summary
 		}
 	}
@@ -715,7 +715,7 @@ func (s *Server) handleDecisionWhyBlocked(w http.ResponseWriter, r *http.Request
 	}
 	var explanation interface{}
 	if decision.FactID != "" {
-		if out, err := engine.ExplainReasoning(decision.FactID, ""); err == nil {
+		if out, err := engine.ExplainReasoning(decision.FactID); err == nil {
 			explanation = out
 		}
 	}

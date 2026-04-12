@@ -8,6 +8,8 @@ import (
 	"unicode"
 )
 
+// defaultEmbeddingDimensions defines the fallback number of dimensions (128)
+// used for vector embeddings when no explicit dimension size is provided.
 const defaultEmbeddingDimensions = 128
 
 type SemanticMatch struct {
@@ -18,6 +20,12 @@ type SemanticMatch struct {
 	Payload        map[string]interface{} `json:"payload,omitempty"`
 }
 
+// tokenizeText normalizes input text into lowercase word tokens.
+//
+// It keeps only letters and numbers, converts all other runes (including
+// punctuation and symbols) to spaces, and then splits the result on
+// whitespace. The returned slice contains non-empty tokens in their
+// original order.
 func tokenizeText(text string) []string {
 	cleaned := strings.Map(func(r rune) rune {
 		switch {
@@ -32,6 +40,10 @@ func tokenizeText(text string) []string {
 	return strings.Fields(cleaned)
 }
 
+// This function converts a text string into a fixed-size numerical vector (an embedding)
+// using a hashing trick. It's a lightweight alternative to ML-based embeddings.
+// that's what this whole file is about: lightweight, efficient vector representations for facts without needing heavy ML models.
+// Ml models also have latency overhead and can be costly.
 func LexicalEmbedding(text string, dims int) []float64 {
 	if dims <= 0 {
 		dims = defaultEmbeddingDimensions

@@ -110,6 +110,9 @@ func (e *Engine) SetFactReview(factID string, status string, reason string, revi
 	if status == "" {
 		return errors.New("invalid review status")
 	}
+	if NormalizeReviewStatus(fact.ReviewStatus) == status {
+		return nil
+	}
 	if reviewedAt == 0 {
 		reviewedAt = time.Now().UnixMilli()
 	}
@@ -125,5 +128,6 @@ func (e *Engine) SetFactReview(factID string, status string, reason string, revi
 	if status == ReviewApproved || status == ReviewWaived {
 		fact.Metadata["requires_human_review"] = false
 	}
+	e.MutationCount++
 	return nil
 }
