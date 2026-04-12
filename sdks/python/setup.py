@@ -6,7 +6,6 @@ setup(
     packages=find_packages(),
     install_requires=[
         "requests>=2.25.1",
-        "sseclient-py>=1.7.2",
         "httpx>=0.24.0",
         "openai>=1.0.0"
     ],
