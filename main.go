@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,6 +18,13 @@ import (
 	storepostgres "velarix/store/postgres"
 	storeredis "velarix/store/redis"
 )
+
+// redactDSN replaces credentials in a DSN or URL string with [redacted].
+var dsnCredPattern = regexp.MustCompile(`://[^:@/]+:[^@]*@`)
+
+func redactDSN(s string) string {
+	return dsnCredPattern.ReplaceAllString(s, "://[redacted]@")
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -55,9 +63,20 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	if !isLite && !devLike && strings.TrimSpace(os.Getenv("VELARIX_JWT_SECRET")) == "" {
-		slog.Error("CRITICAL: VELARIX_JWT_SECRET is REQUIRED in production.")
-		os.Exit(1)
+	if !isLite {
+		jwtSecret := strings.TrimSpace(os.Getenv("VELARIX_JWT_SECRET"))
+		if jwtSecret == "" {
+			slog.Error("VELARIX_JWT_SECRET is required and not set — server will not start")
+			os.Exit(1)
+		}
+		if len(jwtSecret) < 32 {
+			slog.Error("VELARIX_JWT_SECRET is too short — must be at least 32 bytes", "length", len(jwtSecret))
+			os.Exit(1)
+		}
+		if decisionSecret := strings.TrimSpace(os.Getenv("VELARIX_DECISION_TOKEN_SECRET")); decisionSecret != "" && len(decisionSecret) < 32 {
+			slog.Error("VELARIX_DECISION_TOKEN_SECRET is too short — must be at least 32 bytes", "length", len(decisionSecret))
+			os.Exit(1)
+		}
 	}
 
 	backend := "badger"
@@ -100,6 +119,12 @@ func main() {
 		if dbPath == "" {
 			dbPath = "velarix.data"
 		}
+		// Check BadgerDB directory permissions; warn if more permissive than 0700.
+		if info, err := os.Stat(dbPath); err == nil {
+			if perm := info.Mode().Perm(); perm&0077 != 0 {
+				slog.Warn("BadgerDB directory permissions are too permissive", "path", dbPath, "permissions", fmt.Sprintf("%04o", perm))
+			}
+		}
 		localStore, err := store.OpenBadger(dbPath, encryptionKey)
 		if err != nil {
 			slog.Error("Failed to open BadgerDB", "error", err)
@@ -119,11 +144,11 @@ func main() {
 				// Redis ping failed inside Open(). Fallback to primary store for
 				// idempotency and rate-limiting rather than hard-exiting.
 				slog.Error("Failed to connect to Redis coordination store — falling back to primary store",
-					"redis_url", redisURL, "error", err)
+					"redis_url", redactDSN(redisURL), "error", err)
 				slog.Info("Redis fallback active: idempotency and rate-limiting served by primary store")
 				// runtimeStore will be assigned below from primaryStore.
 			} else {
-				slog.Info("Redis coordination store connected", "redis_url", redisURL)
+				slog.Info("Redis coordination store connected", "redis_url", redactDSN(redisURL))
 				compositeClosers = append(compositeClosers, redisStore)
 				runtimeStore = store.NewCompositeRuntimeStore(primaryStore, redisStore, redisStore, compositeClosers...)
 			}
@@ -167,19 +192,44 @@ func main() {
 		port = ":" + port
 	}
 
-	slog.Info(fmt.Sprintf("Server ready at http://localhost%s", port))
+	tlsCert := strings.TrimSpace(os.Getenv("VELARIX_TLS_CERT"))
+	tlsKey := strings.TrimSpace(os.Getenv("VELARIX_TLS_KEY"))
+	useTLS := tlsCert != "" && tlsKey != ""
+	if !useTLS {
+		slog.Warn("TLS is not configured — running in plaintext HTTP mode. Do not use in production.")
+	}
+
+	// Wrap the route handler with a global 4 MB body size limit.
+	baseHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 4*1024*1024)
+		server.Routes().ServeHTTP(w, r)
+	})
+
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+	}
+	slog.Info(fmt.Sprintf("Server ready at %s://localhost%s", scheme, port))
 
 	httpServer := &http.Server{
 		Addr:              port,
-		Handler:           server.Routes(),
+		Handler:           baseHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
-	if err := httpServer.ListenAndServe(); err != nil {
-		slog.Error("Server failed", "error", err)
-		os.Exit(1)
+
+	if useTLS {
+		if err := httpServer.ListenAndServeTLS(tlsCert, tlsKey); err != nil {
+			slog.Error("TLS server failed", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		if err := httpServer.ListenAndServe(); err != nil {
+			slog.Error("Server failed", "error", err)
+			os.Exit(1)
+		}
 	}
 }
