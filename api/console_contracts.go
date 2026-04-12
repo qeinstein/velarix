@@ -1088,8 +1088,12 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if body.Token == "" || len(body.Password) < 8 {
-		http.Error(w, "token and password required", http.StatusBadRequest)
+	if body.Token == "" {
+		http.Error(w, "token is required", http.StatusBadRequest)
+		return
+	}
+	if err := validatePassword(body.Password); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	orgID, inv, err := s.Store.GetInvitationByToken(body.Token)
@@ -1113,6 +1117,43 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invite expired or revoked", http.StatusUnauthorized)
 		return
 	}
+
+	// Critical: never create or overwrite an existing account through the invitation flow.
+	// If the invited email already has an account, the invite is for joining an org — the
+	// caller must be authenticated as that existing user. Unauthenticated acceptance would
+	// allow takeover of an existing account.
+	if _, existsErr := s.Store.GetUser(inv.Email); existsErr == nil {
+		// Account already exists for this email.
+		authenticatedEmail := getUserEmail(r)
+		if authenticatedEmail != inv.Email {
+			http.Error(w, "an account already exists for this email address; authenticate as that user to accept the invitation", http.StatusConflict)
+			return
+		}
+		// Authenticated as the existing user: update their org membership without overwriting password/keys.
+		existingUser, _ := s.Store.GetUser(inv.Email)
+		existingUser.OrgID = orgID
+		existingUser.Role = inv.Role
+		if err := s.Store.SaveUser(existingUser); err != nil {
+			http.Error(w, "an internal error occurred", http.StatusInternalServerError)
+			return
+		}
+		inv.AcceptedAt = now
+		_ = s.Store.UpdateInvitation(orgID, inv)
+		_ = s.Store.AppendOrgActivity(orgID, store.JournalEntry{
+			Type:    store.EventAdminAction,
+			ActorID: inv.Email,
+			Payload: map[string]interface{}{
+				"action":        "invitation_accepted",
+				"invitation_id": inv.ID,
+				"email":         inv.Email,
+				"role":          inv.Role,
+			},
+			Timestamp: now,
+		})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+		return
+	}
+
 	hashed, err := hashPassword(body.Password)
 	if err != nil {
 		http.Error(w, "hashing failure", http.StatusInternalServerError)
@@ -1126,7 +1167,7 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		Keys:           []store.APIKey{},
 	}
 	if err := s.Store.SaveUser(user); err != nil {
-		http.Error(w, "failed to create user", http.StatusInternalServerError)
+		http.Error(w, "an internal error occurred", http.StatusInternalServerError)
 		return
 	}
 	inv.AcceptedAt = now

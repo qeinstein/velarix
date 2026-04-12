@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const defaultBaseURL = "http://localhost:8080"
+const defaultBaseURL = "https://localhost:8080"
 
 type cli struct {
 	baseURL    string
