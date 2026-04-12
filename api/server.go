@@ -348,6 +348,8 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if newConfig.EnforcementMode != "" {
 		config.EnforcementMode = newConfig.EnforcementMode
 	}
+	// AutoRetractContradictions is set explicitly; zero value (false) is valid.
+	config.AutoRetractContradictions = newConfig.AutoRetractContradictions
 	s.mu.Unlock()
 
 	if err := s.Store.SaveConfig(sessionID, config); err != nil {
@@ -570,12 +572,13 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	explanations, err := engine.Explain(id)
+	explanation, err := engine.ExplainReasoning(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, http.StatusOK, explanations)
+	explanation.SessionID = sessionID
+	writeJSON(w, http.StatusOK, explanation)
 }
 
 func (s *Server) handleGetImpact(w http.ResponseWriter, r *http.Request) {
@@ -587,7 +590,12 @@ func (s *Server) handleGetImpact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	writeJSON(w, http.StatusOK, engine.GetImpact(id))
+	report, err := engine.GetImpact(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 func (s *Server) handleListFacts(w http.ResponseWriter, r *http.Request) {
@@ -1615,7 +1623,6 @@ func (s *Server) handleExplainReasoning(w http.ResponseWriter, r *http.Request) 
 
 	factID := r.URL.Query().Get("fact_id")
 	timestampStr := r.URL.Query().Get("timestamp")
-	counterfactualFactID := r.URL.Query().Get("counterfactual_fact_id")
 
 	var engine *core.Engine
 	var err error
@@ -1693,7 +1700,7 @@ func (s *Server) handleExplainReasoning(w http.ResponseWriter, r *http.Request) 
 		factID = facts[len(facts)-1].ID
 	}
 
-	explanation, err := engine.ExplainReasoning(factID, counterfactualFactID)
+	explanation, err := engine.ExplainReasoning(factID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1856,6 +1863,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/s/{session_id}/decisions/{decision_id}/execute", s.handleExecuteDecision)
 	mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}/lineage", s.handleDecisionLineage)
 	mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}/why-blocked", s.handleDecisionWhyBlocked)
+	mux.HandleFunc("POST /v1/s/{session_id}/extract-and-assert", s.handleExtractAndAssert)
 
 	var h http.Handler = mux
 
@@ -1905,6 +1913,7 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc("POST /v1/s/{session_id}/decisions/{decision_id}/execute", s.handleExecuteDecision)
 		mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}/lineage", s.handleDecisionLineage)
 		mux.HandleFunc("GET /v1/s/{session_id}/decisions/{decision_id}/why-blocked", s.handleDecisionWhyBlocked)
+		mux.HandleFunc("POST /v1/s/{session_id}/extract-and-assert", s.handleExtractAndAssert)
 		h = mux
 	}
 

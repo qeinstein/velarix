@@ -111,14 +111,24 @@ func main() {
 
 	if !isLite {
 		redisURL := strings.TrimSpace(os.Getenv("VELARIX_REDIS_URL"))
-		if redisURL != "" {
+		disableRedis := strings.EqualFold(strings.TrimSpace(os.Getenv("VELARIX_DISABLE_REDIS")), "true")
+
+		if redisURL != "" && !disableRedis {
 			redisStore, err := storeredis.Open(redisURL)
 			if err != nil {
-				slog.Error("Failed to open Redis coordination store", "error", err)
-				os.Exit(1)
+				// Redis ping failed inside Open(). Fallback to primary store for
+				// idempotency and rate-limiting rather than hard-exiting.
+				slog.Error("Failed to connect to Redis coordination store — falling back to primary store",
+					"redis_url", redisURL, "error", err)
+				slog.Info("Redis fallback active: idempotency and rate-limiting served by primary store")
+				// runtimeStore will be assigned below from primaryStore.
+			} else {
+				slog.Info("Redis coordination store connected", "redis_url", redisURL)
+				compositeClosers = append(compositeClosers, redisStore)
+				runtimeStore = store.NewCompositeRuntimeStore(primaryStore, redisStore, redisStore, compositeClosers...)
 			}
-			compositeClosers = append(compositeClosers, redisStore)
-			runtimeStore = store.NewCompositeRuntimeStore(primaryStore, redisStore, redisStore, compositeClosers...)
+		} else if disableRedis {
+			slog.Info("Redis coordination store disabled (VELARIX_DISABLE_REDIS=true)")
 		}
 	}
 	if runtimeStore == nil {

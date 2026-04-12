@@ -15,6 +15,22 @@ var (
 		Help: "Current number of sessions loaded in RAM. Recommended alert: > 5000 per instance.",
 	})
 
+	ExtractionLatency = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "velarix_extraction_latency_ms",
+		Help:    "End-to-end latency of the fact extraction call in milliseconds (success and failure). Recommended alert: P99 > 8000ms.",
+		Buckets: []float64{10, 50, 100, 500, 1000, 3000, 8000, 15000},
+	})
+
+	VerifierFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "velarix_verifier_failures_total",
+		Help: "Total OpenAI consistency-verifier call failures by reason. Reasons: timeout, api_error, parse_error.",
+	}, []string{"reason"})
+
+	AutoRetractionsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "velarix_auto_retractions_total",
+		Help: "Total facts automatically retracted due to detected contradictions.",
+	})
+
 	BadgerDiskUsage = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "velarix_badger_disk_usage_bytes",
 		Help: "Total bytes used by BadgerDB. Recommended alert: > 80% of volume capacity.",
