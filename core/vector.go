@@ -131,7 +131,10 @@ func EmbeddingForFact(f *Fact) []float64 {
 		return nil
 	}
 	if len(f.Embedding) > 0 {
-		return NormalizeVector(f.Embedding)
+		// Stored embeddings are normalised at assertion time (LexicalEmbedding
+		// calls NormalizeVector before returning).  Return the slice directly
+		// to avoid allocating a new 1 KB copy on every call.
+		return f.Embedding
 	}
 	return LexicalEmbedding(factSemanticText(f), defaultEmbeddingDimensions)
 }

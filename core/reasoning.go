@@ -108,7 +108,7 @@ func (e *Engine) AuditReasoningChain(chain *ReasoningChain) *ReasoningAuditRepor
 				stepAudit.InvalidFactIDs = append(stepAudit.InvalidFactIDs, step.OutputFactID)
 			}
 
-			candidateIDs := append([]string{step.OutputFactID}, priorOutputIDs...)
+			candidateIDs := uniqueSortedFactIDs(append([]string{step.OutputFactID}, priorOutputIDs...))
 			issues := e.consistencyIssuesForIDsUnsafe(candidateIDs, false)
 			if len(issues) > 0 {
 				stepAudit.Valid = false
