@@ -826,6 +826,11 @@ func (s *BadgerStore) SaveConfig(sessionID string, config interface{}) error {
 type SessionConfig struct {
 	Schema          string `json:"schema"`
 	EnforcementMode string `json:"enforcement_mode"` // "strict" or "warn"
+
+	// AutoRetractContradictions controls whether every CheckConsistency call in
+	// this session automatically retracts the lower-entrenchment fact from each
+	// contradicting pair. Must be set explicitly in benchmark runs.
+	AutoRetractContradictions bool `json:"auto_retract_contradictions,omitempty"`
 }
 
 type APIKey struct {
