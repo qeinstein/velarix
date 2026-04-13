@@ -1,12 +1,12 @@
 # Velarix: Benchmarking And Deployment
 
-Velarix ships with a deterministic contradiction benchmark and a production deployment path centered on shared infrastructure.
+Velarix ships with two benchmark surfaces and a deployment path centered on shared infrastructure.
 
 ---
 
-## Part 1: Benchmarking Velarix
+## Part 1: Long-Horizon Contradiction Benchmark
 
-The benchmark exercises long-horizon contradiction handling.
+The Python benchmark exercises long-horizon contradiction handling against the public API.
 
 The benchmark compares four strategies:
 
@@ -41,7 +41,7 @@ python3 tests/reproducibility/hallucination_benchmark.py \
   --api-key your_api_key
 ```
 
-### 2. Benchmark Metrics
+### 2. Mission Metrics
 
 The output includes:
 
@@ -78,6 +78,20 @@ The benchmark is designed to show:
 
 It is a workload benchmark for contradiction handling, state correction, and execution safety.
 
+## Part 2: Dataset Harness
+
+The Go `benchmark/` package is a separate research harness that runs TruthfulQA and HaluEval through a baseline LLM path and a Velarix-assisted path.
+
+It is configured through a JSON file consumed by `benchmark.LoadConfig()` and writes a structured report with per-question scores, aggregate stats, latency summaries, and reproducibility metadata.
+
+The checked-in test surface in this repository is the threshold analysis:
+
+```bash
+VELARIX_ENV=dev go test ./benchmark -run TestThresholdAnalysis -v
+```
+
+The harness itself is intended to be called from Go code or a small wrapper, not via `go test`.
+
 ---
 
 ## Part 2: Deploying Velarix
@@ -111,16 +125,18 @@ Only set these if you intentionally need them:
 - `VELARIX_API_KEY=...`
 - `VELARIX_ALLOW_BADGER_PROD=true`
 
-### Google Cloud Platform Reference Shape
+### Reference Shape
 
-For GCP deployments, the recommended stack is:
+The repository includes deployment references, not a verified one-command production stack:
 
-1. Cloud Run for the Go API
-2. Cloud SQL for Postgres
-3. Memorystore for Redis
-4. a separate frontend deployment for the Next.js app
+- `Dockerfile` for the API container
+- `control-plane/billing/main.go` for Stripe webhook ingestion
+- `control-plane/infrastructure/main.tf` as an AWS-oriented Terraform scaffold
+- `control-plane/provisioning/setup_tenant.sh` as a provisioning sketch
 
-### Example Cloud Run Deployment
+Use them as starting points, not as a finished production recipe.
+
+### Example API Deployment
 
 ```bash
 gcloud run deploy velarix-api \
@@ -130,7 +146,7 @@ gcloud run deploy velarix-api \
   --allow-unauthenticated \
   --set-env-vars="VELARIX_ENV=prod" \
   --set-env-vars="VELARIX_STORE_BACKEND=postgres" \
-  --set-env-vars="VELARIX_POSTGRES_DSN=postgres://postgres:YOUR_DB_PASSWORD@YOUR_CLOUD_SQL_IP:5432/velarix?sslmode=disable" \
+  --set-env-vars="VELARIX_POSTGRES_DSN=postgres://postgres:YOUR_DB_PASSWORD@YOUR_DB_HOST:5432/velarix?sslmode=require" \
   --set-env-vars="VELARIX_REDIS_URL=redis://YOUR_MEMORYSTORE_IP:6379" \
   --set-env-vars="VELARIX_JWT_SECRET=YOUR_SECURE_JWT_SECRET" \
   --set-env-vars="VELARIX_ALLOWED_ORIGINS=https://app.yourdomain.com" \
@@ -152,6 +168,3 @@ The web console uses cookie-based auth against that API origin.
 Run Postgres as the source of truth.
 
 Treat Redis as required whenever more than one API instance is handling live traffic.
-
-
-## THis is a scalfold for now, not verified benchmarks
