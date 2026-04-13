@@ -7,12 +7,14 @@ import (
 
 const negatedDependencyPrefix = "!"
 
+// DependencyRef is documented here.
 type DependencyRef struct {
 	FactID   string
 	Negated  bool
 	Original string
 }
 
+// ParseDependencyRef is documented here.
 func ParseDependencyRef(raw string) (DependencyRef, error) {
 	token := strings.TrimSpace(raw)
 	if token == "" {

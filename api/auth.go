@@ -275,6 +275,11 @@ func getUserRole(r *http.Request) string {
 // @Failure 500 {string} string "internal error"
 // @Router /auth/register [post]
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if strings.ToLower(strings.TrimSpace(os.Getenv("VELARIX_ENABLE_PUBLIC_REGISTRATION"))) != "true" {
+		http.Error(w, "public registration is disabled", http.StatusForbidden)
+		return
+	}
+
 	var body RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

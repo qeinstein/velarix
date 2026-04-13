@@ -1,5 +1,6 @@
 package core
 
+// Status is documented here.
 type Status float64
 
 const (
@@ -7,6 +8,7 @@ const (
 	Valid   Status = 1.0 // Valid if it's 1, the closer it is to 1, the higher it's validity
 )
 
+// JustificationSet is documented here.
 type JustificationSet struct {
 	ID                    string
 	ChildFactID           string
@@ -21,6 +23,7 @@ type JustificationSet struct {
 	IDom string // Immediate Dominator (Fact ID)
 }
 
+// Fact is documented here.
 type Fact struct {
 	ID string `json:"id"`
 

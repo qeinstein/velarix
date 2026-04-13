@@ -1,0 +1,78 @@
+name: CI Checks
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  go-checks:
+    name: Go Tests & Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Go Format
+        run: if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then echo "Formatting issues found. Run 'go fmt ./...'"; exit 1; fi
+
+      - name: Go Vet
+        run: go vet ./...
+
+      - name: Run Go tests with coverage
+        run: go test ./... -v -coverprofile=coverage.txt -covermode=atomic
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+      - name: Upload Go coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: coverage.txt
+
+  python-checks:
+    name: Python SDK Tests
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go (for embed tests)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          cd sdks/python
+          python -m pip install --upgrade pip
+          pip install -e .[test]
+          pip install pytest
+
+      - name: Run pytest
+        shell: bash
+        run: |
+          cd sdks/python
+          pytest -v

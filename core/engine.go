@@ -14,6 +14,7 @@ import (
 
 const ConfidenceThreshold Status = 0.6
 
+// NilArgumentError is documented here.
 type NilArgumentError struct {
 	Argument string
 }
@@ -22,6 +23,7 @@ func (e *NilArgumentError) Error() string {
 	return fmt.Sprintf("%s cannot be nil", e.Argument)
 }
 
+// ChangeEvent is documented here.
 type ChangeEvent struct {
 	FactID    string `json:"fact_id"`
 	Status    Status `json:"status"`
@@ -455,10 +457,7 @@ func (e *Engine) GetStatus(factID string) Status {
 	if e.DirtyDominators {
 		e.recomputeDominators()
 	}
-	e.mu.Unlock()
-
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	defer e.mu.Unlock()
 
 	fact, ok := e.Facts[factID]
 	if !ok {
