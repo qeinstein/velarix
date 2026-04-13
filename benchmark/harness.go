@@ -372,12 +372,12 @@ func reconstructGroundedResponse(original string, facts []struct {
 	return strings.Join(out, " ")
 }
 
-// splitSentences splits text on sentence-terminal punctuation.
+// splitSentences splits text on sentence-terminal punctuation, keeping the punctuation.
 func splitSentences(text string) []string {
-	re := regexp.MustCompile(`(?:[.!?]+\s+|\n+)`)
-	parts := re.Split(text, -1)
+	re := regexp.MustCompile(`([^.!?\n]+[.!?]*[\s\n]*)`)
+	matches := re.FindAllString(text, -1)
 	var out []string
-	for _, p := range parts {
+	for _, p := range matches {
 		p = strings.TrimSpace(p)
 		if p != "" {
 			out = append(out, p)

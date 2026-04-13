@@ -977,6 +977,15 @@ func (s *Server) checkRateLimit(apiKey string, limit int, window time.Duration) 
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.LiteMode {
+			ctx := context.WithValue(r.Context(), orgIDKey, "local")
+			ctx = context.WithValue(ctx, actorIDKey, "local_user")
+			ctx = context.WithValue(ctx, userRoleKey, "admin")
+			ctx = context.WithValue(ctx, scopesKey, []string{"read", "write", "export", "admin"})
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
 		if r.URL.Path == "/health" ||
 			strings.HasPrefix(r.URL.Path, "/auth/") ||
 			strings.HasPrefix(r.URL.Path, "/v1/auth/") ||
@@ -1412,13 +1421,8 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
-	val := r.Context().Value(userRoleKey)
-	role := ""
-	if val != nil {
-		role = val.(string)
-	}
-	if role != "admin" {
-		http.Error(w, "forbidden: admin role required", http.StatusForbidden)
+	if getOrgID(r) != "admin" {
+		http.Error(w, "forbidden: platform admin required", http.StatusForbidden)
 		return
 	}
 
