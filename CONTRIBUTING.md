@@ -27,7 +27,8 @@ The server starts at `http://localhost:8080`.
 
 ```bash
 cp .env.example .env
-# Edit .env — set VELARIX_JWT_SECRET (min 32 chars), VELARIX_POSTGRES_DSN, etc.
+# Edit .env — set VELARIX_JWT_SECRET (min 32 chars), VELARIX_ALLOWED_ORIGINS,
+# and either VELARIX_POSTGRES_DSN or VELARIX_ALLOW_BADGER_PROD=true.
 go run main.go
 ```
 
@@ -62,16 +63,22 @@ cd sdks/python
 pytest tests/
 ```
 
-## Running the Benchmark Harness
+## Running the Benchmarks
 
-The benchmark harness exercises contradiction detection, decision integrity, and performance baselines. It requires a running Velarix server.
+Velarix ships two benchmark surfaces:
+
+- `tests/reproducibility/hallucination_benchmark.py` runs the long-horizon contradiction mission benchmark and can spawn its own local server.
+- `benchmark/` contains the Go research harness plus the threshold-analysis test.
 
 ```bash
-# Start the server in dev/lite mode first, then:
-VELARIX_ENV=dev go test ./benchmark/ -run TestBenchmark -v -timeout 10m
+# Long-horizon contradiction benchmark
+python3 tests/reproducibility/hallucination_benchmark.py --spawn-server --steps 120
+
+# Threshold-analysis regression test
+VELARIX_ENV=dev go test ./benchmark -run TestThresholdAnalysis -v
 ```
 
-See `BENCHMARKING_AND_DEPLOYMENT.md` for full benchmark configuration and threshold analysis.
+See `BENCHMARKING_AND_DEPLOYMENT.md` for the benchmark surfaces and deployment notes.
 
 ## Running the vlx CLI
 

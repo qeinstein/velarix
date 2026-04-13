@@ -9,6 +9,8 @@ export interface DocMetadata {
   title: string;
   description: string;
   order: number;
+  section: string;
+  sectionOrder: number;
 }
 
 export interface DocContent extends DocMetadata {
@@ -31,10 +33,16 @@ export function getDocsList(): DocMetadata[] {
         title: matterResult.data.title || slug,
         description: matterResult.data.description || '',
         order: matterResult.data.order || 99,
+        section: matterResult.data.section || 'General',
+        sectionOrder: matterResult.data.sectionOrder || 99,
       };
     });
 
-  return allDocsData.sort((a, b) => a.order - b.order);
+  return allDocsData.sort((a, b) => {
+    if (a.sectionOrder !== b.sectionOrder) return a.sectionOrder - b.sectionOrder;
+    if (a.order !== b.order) return a.order - b.order;
+    return a.title.localeCompare(b.title);
+  });
 }
 
 export function getDocBySlug(slug: string): DocContent | null {
@@ -48,6 +56,8 @@ export function getDocBySlug(slug: string): DocContent | null {
       title: matterResult.data.title || slug,
       description: matterResult.data.description || '',
       order: matterResult.data.order || 99,
+      section: matterResult.data.section || 'General',
+      sectionOrder: matterResult.data.sectionOrder || 99,
       content: matterResult.content,
     };
   } catch (error) {

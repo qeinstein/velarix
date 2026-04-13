@@ -27,6 +27,7 @@ type CounterfactualResult struct {
 	Narrative     string   `json:"narrative"`
 }
 
+// ExplanationSource identifies one source reference included in an explanation.
 type ExplanationSource struct {
 	FactID        string `json:"fact_id"`
 	SourceType    string `json:"source_type,omitempty"`
@@ -254,4 +255,3 @@ func (e *Engine) isDominatorAncestorUnsafe(uID, vID string) bool {
 	}
 	return u.PreOrder <= v.PreOrder && u.PostOrder >= v.PostOrder
 }
-

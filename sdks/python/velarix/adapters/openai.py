@@ -69,6 +69,7 @@ class OpenAI(BaseOpenAI):
 
     @property
     def chat(self):
+        """Return the Velarix-aware chat adapter for this client."""
         return VelarixChat(
             self,
             velarix_api_key=self.velarix_api_key,
@@ -77,6 +78,8 @@ class OpenAI(BaseOpenAI):
 
 
 class VelarixChat:
+    """Expose a Velarix-backed `chat.completions` surface on the sync OpenAI client."""
+
     def __init__(
         self,
         client: OpenAI,
@@ -100,6 +103,7 @@ class VelarixChat:
 
     @property
     def completions(self):
+        """Return the Velarix-aware chat completions adapter."""
         return VelarixCompletions(
             self.client,
             velarix_api_key=self.velarix_api_key,
@@ -108,6 +112,8 @@ class VelarixChat:
 
 
 class VelarixCompletions:
+    """Wrap sync chat completions with Velarix context injection and verification."""
+
     def __init__(
         self,
         client: OpenAI,
@@ -131,6 +137,7 @@ class VelarixCompletions:
             self.velarix_client = VelarixClient(base_url=resolved_base_url, api_key=resolved_api_key)
 
     def create(self, *args, **kwargs):
+        """Call `chat.completions.create` and optionally persist and verify Velarix reasoning."""
         session_id = kwargs.pop("velarix_session_id", self.client.velarix_session_id)
         if not session_id:
             return self._base_completions.create(*args, **kwargs)
@@ -191,6 +198,7 @@ class AsyncOpenAI(BaseAsyncOpenAI):
 
     @property
     def chat(self):
+        """Return the Velarix-aware chat adapter for this async client."""
         return VelarixAsyncChat(
             self,
             velarix_api_key=self.velarix_api_key,
@@ -199,6 +207,8 @@ class AsyncOpenAI(BaseAsyncOpenAI):
 
 
 class VelarixAsyncChat:
+    """Expose a Velarix-backed `chat.completions` surface on the async OpenAI client."""
+
     def __init__(
         self,
         client: AsyncOpenAI,
@@ -222,6 +232,7 @@ class VelarixAsyncChat:
 
     @property
     def completions(self):
+        """Return the async Velarix-aware chat completions adapter."""
         return VelarixAsyncCompletions(
             self.client,
             velarix_api_key=self.velarix_api_key,
@@ -230,6 +241,8 @@ class VelarixAsyncChat:
 
 
 class VelarixAsyncCompletions:
+    """Wrap async chat completions with Velarix context injection and verification."""
+
     def __init__(
         self,
         client: AsyncOpenAI,
@@ -253,6 +266,7 @@ class VelarixAsyncCompletions:
             self.velarix_client = AsyncVelarixClient(base_url=resolved_base_url, api_key=resolved_api_key)
 
     async def create(self, *args, **kwargs):
+        """Call `chat.completions.create` and optionally persist and verify Velarix reasoning."""
         session_id = kwargs.pop("velarix_session_id", self.client.velarix_session_id)
         if not session_id:
             return await self._base_completions.create(*args, **kwargs)

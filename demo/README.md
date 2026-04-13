@@ -1,6 +1,6 @@
 # Demo
 
-Velarix ships with one canonical product demo and two framework integration demos.
+Velarix ships with one canonical product demo, four framework integration demos, and one deprecated compatibility wrapper.
 
 ## Canonical Demo
 
@@ -21,16 +21,14 @@ Start the API from the project root:
 
 ```bash
 export VELARIX_ENV=dev
-export VELARIX_API_KEY=dev-admin-key
 export VELARIX_BADGER_PATH="$(mktemp -d)"
-go run main.go
+go run main.go --lite
 ```
 
 In a second terminal:
 
 ```bash
 pip install -e ./sdks/python
-export VELARIX_API_KEY=dev-admin-key
 python demo/approval_integrity.py
 ```
 
@@ -55,6 +53,18 @@ Install requirements:
 ```bash
 pip install -e './sdks/python[crewai]' crewai
 ```
+
+### LangChain
+
+`langchain_integration.py` demonstrates `VelarixLangChainChatModel`, which wraps a LangChain chat model and injects the Velarix runtime protocol plus tool handling.
+
+### LlamaIndex
+
+`llamaindex_integration.py` demonstrates `VelarixRetriever`, which turns a Velarix belief slice into LlamaIndex retrieval results.
+
+### Deprecated wrapper
+
+`agent_pivot.py` is a compatibility wrapper that simply runs `approval_integrity.py`.
 
 ## Product Position
 
