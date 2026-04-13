@@ -131,10 +131,50 @@ func (e *Engine) effectiveStatusUnsafe(fact *Fact) Status {
 	if _, ok := e.RetractedFacts[fact.ID]; ok {
 		return Invalid
 	}
+	// Temporal decay: treat facts past their ValidUntil as Invalid at read time.
+	// SweepExpiredFacts() converts these to permanent retractions so dependents
+	// are propagated; this guard makes reads always-correct between sweeps.
+	if fact.ValidUntil > 0 && time.Now().UnixMilli() > fact.ValidUntil {
+		return Invalid
+	}
 	if fact.IsRoot {
 		return fact.ManualStatus
 	}
 	return fact.DerivedStatus
+}
+
+// SweepExpiredFacts scans all facts whose ValidUntil has passed and converts
+// them to permanent retractions so that downstream dependents are re-propagated.
+// Returns the IDs of every fact that was newly expired by this sweep.
+// Safe to call from a background ticker; takes a full write lock.
+func (e *Engine) SweepExpiredFacts() []string {
+	now := time.Now().UnixMilli()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	var expired []string
+	for _, fact := range e.Facts {
+		if fact.ValidUntil == 0 {
+			continue
+		}
+		if now <= fact.ValidUntil {
+			continue
+		}
+		if _, already := e.RetractedFacts[fact.ID]; already {
+			continue
+		}
+		e.RetractedFacts[fact.ID] = "expired"
+		expired = append(expired, fact.ID)
+	}
+
+	if len(expired) > 0 {
+		e.MutationCount++
+		for _, id := range expired {
+			e.propagate([]string{id})
+		}
+	}
+	return expired
 }
 
 // propagate processes state changes using a work queue and probabilistic logic.

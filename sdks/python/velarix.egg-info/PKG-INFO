@@ -1,0 +1,8 @@
+Metadata-Version: 2.1
+Name: velarix
+Version: 0.1.0
+Provides-Extra: crewai
+Provides-Extra: langchain
+Provides-Extra: langgraph
+Provides-Extra: llamaindex
+Provides-Extra: local
