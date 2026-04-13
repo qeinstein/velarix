@@ -18,12 +18,14 @@ type extractAndAssertRequest struct {
 	LLMOutput                 string `json:"llm_output"`
 	SessionContext            string `json:"session_context"`
 	AutoRetractContradictions bool   `json:"auto_retract_contradictions"`
+	ExtractionConfig          *extractor.ExtractionConfig `json:"extraction_config,omitempty"`
 }
 
 type extractAndAssertResponse struct {
 	ExtractedCount          int          `json:"extracted_count"`
 	AssertedCount           int          `json:"asserted_count"`
 	SkippedCount            int          `json:"skipped_count"`
+	PreAssertionContradictions []core.ConsistencyIssue `json:"pre_assertion_contradictions,omitempty"`
 	ContradictionsFound     []string     `json:"contradictions_found"`
 	ContradictionsRetracted []string     `json:"contradictions_retracted"`
 	Facts                   []*core.Fact `json:"facts"`
@@ -57,7 +59,7 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 
 	// Record extraction latency — success and failure.
 	extractStart := time.Now()
-	extracted, extractErr := extractor.Extract(r.Context(), body.LLMOutput, body.SessionContext)
+	extractionResult, extractErr := extractor.Extract(r.Context(), body.LLMOutput, body.SessionContext, body.ExtractionConfig)
 	ExtractionLatency.Observe(float64(time.Since(extractStart).Milliseconds()))
 
 	if extractErr != nil {
@@ -71,6 +73,17 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 		APIRequests.WithLabelValues("/v1/s/{session_id}/extract-and-assert", "502").Inc()
 		http.Error(w, "extraction failed: "+extractErr.Error(), http.StatusBadGateway)
 		return
+	}
+
+	extracted := extractionResult.Facts
+	if extractionResult != nil {
+		ExtractionStage1DiscardedTotal.Add(float64(extractionResult.Stats.Stage1Discarded))
+		ExtractionStage2UnresolvedTotal.Add(float64(extractionResult.Stats.Stage2UnresolvedRefs))
+		ExtractionStage3EdgesProposedTotal.Add(float64(extractionResult.Stats.Stage3EdgesProposed))
+		ExtractionStage3EdgesAcceptedTotal.Add(float64(extractionResult.Stats.Stage3EdgesAccepted))
+		ExtractionStage3EdgesRejectedTotal.Add(float64(extractionResult.Stats.Stage3EdgesRejected))
+		ExtractionStage4MissedClaimsTotal.Add(float64(extractionResult.Stats.Stage4MissedClaims))
+		ExtractionStage5ContradictionsTotal.Add(float64(extractionResult.Stats.Stage5Contradictions))
 	}
 
 	// Topological sort: ensure all dependencies are asserted before derived facts.
@@ -103,6 +116,7 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 
 	resp := extractAndAssertResponse{
 		ExtractedCount:          len(extracted),
+		PreAssertionContradictions: extractionResult.PreAssertionContradictions,
 		ContradictionsFound:     []string{},
 		ContradictionsRetracted: []string{},
 		Facts:                   []*core.Fact{},
