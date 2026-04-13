@@ -5,9 +5,10 @@ The Python SDK is the main client surface for Velarix.
 It provides:
 
 - synchronous and asynchronous clients
-- session-scoped fact, slice, explanation, and decision helpers
+- session-scoped fact, slice, explanation, consistency, reasoning-chain, extract-and-assert, and decision helpers
 - runtime helpers for model integration
-- optional LangGraph, CrewAI, LlamaIndex, and LangChain surfaces
+- `VelarixGateway` for tool-call audit capture
+- optional LangChain, LangGraph, CrewAI, and LlamaIndex surfaces
 
 ## Install
 
@@ -60,7 +61,9 @@ The production pattern is:
 ## Integration Modules
 
 - `velarix.runtime`
+- `velarix.gateway`
 - `velarix.adapters.openai`
+- `velarix.integrations.langchain`
 - `velarix.integrations.langgraph`
 - `velarix.integrations.crewai`
 - `velarix.integrations.llamaindex`

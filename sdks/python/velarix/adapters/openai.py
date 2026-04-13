@@ -1,10 +1,10 @@
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from openai import AsyncOpenAI as BaseAsyncOpenAI
 from openai import OpenAI as BaseOpenAI
 
-from velarix.client import AsyncVelarixClient, VelarixClient
+from velarix.client import AsyncVelarixClient, VelarixClient, VelarixRuntimeError
 from velarix.runtime import AsyncVelarixChatRuntime, VelarixChatRuntime
 
 
@@ -26,6 +26,20 @@ def _verification_feedback_text(verification: Dict[str, Any]) -> str:
     )
 
 
+def _resolve_velarix_settings(
+    velarix_base_url: Optional[str] = None,
+    velarix_api_key: Optional[str] = None,
+) -> Tuple[str, str]:
+    base_url = (velarix_base_url or os.getenv("VELARIX_BASE_URL", "http://localhost:8080")).rstrip("/")
+    api_key = velarix_api_key or os.getenv("VELARIX_API_KEY")
+    if not api_key:
+        raise VelarixRuntimeError(
+            "Velarix API key is required for the OpenAI adapter. "
+            "Pass velarix_api_key=... or set VELARIX_API_KEY."
+        )
+    return base_url, api_key
+
+
 class OpenAI(BaseOpenAI):
     """
     Backward-compatible OpenAI client wrapper.
@@ -37,46 +51,100 @@ class OpenAI(BaseOpenAI):
     def __init__(
         self,
         *args,
+        velarix_api_key: Optional[str] = None,
         velarix_base_url: Optional[str] = None,
         velarix_session_id: Optional[str] = None,
         velarix_strict: bool = True,
         velarix_verify_rounds: int = 1,
         **kwargs
     ):
+        resolved_base_url, resolved_api_key = _resolve_velarix_settings(velarix_base_url, velarix_api_key)
         super().__init__(*args, **kwargs)
-        base_url = velarix_base_url or os.getenv("VELARIX_BASE_URL", "http://localhost:8080")
-        self.velarix_client = VelarixClient(base_url=base_url)
+        self.velarix_base_url = resolved_base_url
+        self.velarix_api_key = resolved_api_key
+        self.velarix_client = VelarixClient(base_url=resolved_base_url, api_key=resolved_api_key)
         self.velarix_session_id = velarix_session_id
         self.velarix_strict = velarix_strict
         self.velarix_verify_rounds = max(0, int(velarix_verify_rounds))
 
     @property
     def chat(self):
-        return VelarixChat(self)
+        """Return the Velarix-aware chat adapter for this client."""
+        return VelarixChat(
+            self,
+            velarix_api_key=self.velarix_api_key,
+            velarix_base_url=self.velarix_base_url,
+        )
 
 
 class VelarixChat:
-    def __init__(self, client: OpenAI):
+    """Expose a Velarix-backed `chat.completions` surface on the sync OpenAI client."""
+
+    def __init__(
+        self,
+        client: OpenAI,
+        velarix_api_key: Optional[str] = None,
+        velarix_base_url: Optional[str] = None,
+    ):
         self.client = client
+        resolved_base_url, resolved_api_key = _resolve_velarix_settings(
+            velarix_base_url or getattr(client, "velarix_base_url", None),
+            velarix_api_key or getattr(client, "velarix_api_key", None),
+        )
+        self.velarix_base_url = resolved_base_url
+        self.velarix_api_key = resolved_api_key
+        if (
+            getattr(client, "velarix_base_url", None) == resolved_base_url
+            and getattr(client, "velarix_api_key", None) == resolved_api_key
+        ):
+            self.velarix_client = client.velarix_client
+        else:
+            self.velarix_client = VelarixClient(base_url=resolved_base_url, api_key=resolved_api_key)
 
     @property
     def completions(self):
-        return VelarixCompletions(self.client)
+        """Return the Velarix-aware chat completions adapter."""
+        return VelarixCompletions(
+            self.client,
+            velarix_api_key=self.velarix_api_key,
+            velarix_base_url=self.velarix_base_url,
+        )
 
 
 class VelarixCompletions:
-    def __init__(self, client: OpenAI):
+    """Wrap sync chat completions with Velarix context injection and verification."""
+
+    def __init__(
+        self,
+        client: OpenAI,
+        velarix_api_key: Optional[str] = None,
+        velarix_base_url: Optional[str] = None,
+    ):
         self.client = client
         self._base_completions = super(OpenAI, client).chat.completions
+        resolved_base_url, resolved_api_key = _resolve_velarix_settings(
+            velarix_base_url or getattr(client, "velarix_base_url", None),
+            velarix_api_key or getattr(client, "velarix_api_key", None),
+        )
+        self.velarix_base_url = resolved_base_url
+        self.velarix_api_key = resolved_api_key
+        if (
+            getattr(client, "velarix_base_url", None) == resolved_base_url
+            and getattr(client, "velarix_api_key", None) == resolved_api_key
+        ):
+            self.velarix_client = client.velarix_client
+        else:
+            self.velarix_client = VelarixClient(base_url=resolved_base_url, api_key=resolved_api_key)
 
     def create(self, *args, **kwargs):
+        """Call `chat.completions.create` and optionally persist and verify Velarix reasoning."""
         session_id = kwargs.pop("velarix_session_id", self.client.velarix_session_id)
         if not session_id:
             return self._base_completions.create(*args, **kwargs)
 
         verify_rounds = max(0, int(kwargs.pop("velarix_verify_rounds", self.client.velarix_verify_rounds)))
         auto_verify = bool(kwargs.pop("velarix_auto_verify", True))
-        session = self.client.velarix_client.session(session_id)
+        session = self.velarix_client.session(session_id)
         runtime = VelarixChatRuntime(
             session=session,
             source="openai_adapter",
@@ -112,46 +180,100 @@ class AsyncOpenAI(BaseAsyncOpenAI):
     def __init__(
         self,
         *args,
+        velarix_api_key: Optional[str] = None,
         velarix_base_url: Optional[str] = None,
         velarix_session_id: Optional[str] = None,
         velarix_strict: bool = True,
         velarix_verify_rounds: int = 1,
         **kwargs
     ):
+        resolved_base_url, resolved_api_key = _resolve_velarix_settings(velarix_base_url, velarix_api_key)
         super().__init__(*args, **kwargs)
-        base_url = velarix_base_url or os.getenv("VELARIX_BASE_URL", "http://localhost:8080")
-        self.velarix_client = AsyncVelarixClient(base_url=base_url)
+        self.velarix_base_url = resolved_base_url
+        self.velarix_api_key = resolved_api_key
+        self.velarix_client = AsyncVelarixClient(base_url=resolved_base_url, api_key=resolved_api_key)
         self.velarix_session_id = velarix_session_id
         self.velarix_strict = velarix_strict
         self.velarix_verify_rounds = max(0, int(velarix_verify_rounds))
 
     @property
     def chat(self):
-        return VelarixAsyncChat(self)
+        """Return the Velarix-aware chat adapter for this async client."""
+        return VelarixAsyncChat(
+            self,
+            velarix_api_key=self.velarix_api_key,
+            velarix_base_url=self.velarix_base_url,
+        )
 
 
 class VelarixAsyncChat:
-    def __init__(self, client: AsyncOpenAI):
+    """Expose a Velarix-backed `chat.completions` surface on the async OpenAI client."""
+
+    def __init__(
+        self,
+        client: AsyncOpenAI,
+        velarix_api_key: Optional[str] = None,
+        velarix_base_url: Optional[str] = None,
+    ):
         self.client = client
+        resolved_base_url, resolved_api_key = _resolve_velarix_settings(
+            velarix_base_url or getattr(client, "velarix_base_url", None),
+            velarix_api_key or getattr(client, "velarix_api_key", None),
+        )
+        self.velarix_base_url = resolved_base_url
+        self.velarix_api_key = resolved_api_key
+        if (
+            getattr(client, "velarix_base_url", None) == resolved_base_url
+            and getattr(client, "velarix_api_key", None) == resolved_api_key
+        ):
+            self.velarix_client = client.velarix_client
+        else:
+            self.velarix_client = AsyncVelarixClient(base_url=resolved_base_url, api_key=resolved_api_key)
 
     @property
     def completions(self):
-        return VelarixAsyncCompletions(self.client)
+        """Return the async Velarix-aware chat completions adapter."""
+        return VelarixAsyncCompletions(
+            self.client,
+            velarix_api_key=self.velarix_api_key,
+            velarix_base_url=self.velarix_base_url,
+        )
 
 
 class VelarixAsyncCompletions:
-    def __init__(self, client: AsyncOpenAI):
+    """Wrap async chat completions with Velarix context injection and verification."""
+
+    def __init__(
+        self,
+        client: AsyncOpenAI,
+        velarix_api_key: Optional[str] = None,
+        velarix_base_url: Optional[str] = None,
+    ):
         self.client = client
         self._base_completions = super(AsyncOpenAI, client).chat.completions
+        resolved_base_url, resolved_api_key = _resolve_velarix_settings(
+            velarix_base_url or getattr(client, "velarix_base_url", None),
+            velarix_api_key or getattr(client, "velarix_api_key", None),
+        )
+        self.velarix_base_url = resolved_base_url
+        self.velarix_api_key = resolved_api_key
+        if (
+            getattr(client, "velarix_base_url", None) == resolved_base_url
+            and getattr(client, "velarix_api_key", None) == resolved_api_key
+        ):
+            self.velarix_client = client.velarix_client
+        else:
+            self.velarix_client = AsyncVelarixClient(base_url=resolved_base_url, api_key=resolved_api_key)
 
     async def create(self, *args, **kwargs):
+        """Call `chat.completions.create` and optionally persist and verify Velarix reasoning."""
         session_id = kwargs.pop("velarix_session_id", self.client.velarix_session_id)
         if not session_id:
             return await self._base_completions.create(*args, **kwargs)
 
         verify_rounds = max(0, int(kwargs.pop("velarix_verify_rounds", self.client.velarix_verify_rounds)))
         auto_verify = bool(kwargs.pop("velarix_auto_verify", True))
-        session = self.client.velarix_client.session(session_id)
+        session = self.velarix_client.session(session_id)
         runtime = AsyncVelarixChatRuntime(
             session=session,
             source="openai_adapter_async",
