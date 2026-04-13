@@ -13,6 +13,7 @@ const (
 	ReviewRejected = "rejected"
 )
 
+// NormalizeReviewStatus is documented here.
 func NormalizeReviewStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case ReviewApproved:
@@ -28,6 +29,7 @@ func NormalizeReviewStatus(status string) string {
 	}
 }
 
+// ClampUnitFloat is documented here.
 func ClampUnitFloat(v float64) float64 {
 	if v < 0 {
 		return 0
@@ -38,6 +40,7 @@ func ClampUnitFloat(v float64) float64 {
 	return v
 }
 
+// MetadataBool is documented here.
 func MetadataBool(m map[string]interface{}, key string) bool {
 	if m == nil {
 		return false
@@ -58,6 +61,7 @@ func MetadataBool(m map[string]interface{}, key string) bool {
 	return false
 }
 
+// MetadataString is documented here.
 func MetadataString(m map[string]interface{}, key string) string {
 	if m == nil {
 		return ""

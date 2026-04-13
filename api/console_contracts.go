@@ -1113,6 +1113,11 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invite expired or revoked", http.StatusUnauthorized)
 		return
 	}
+	if existingUser, _ := s.Store.GetUser(inv.Email); existingUser != nil {
+		http.Error(w, "user already exists", http.StatusConflict)
+		return
+	}
+
 	hashed, err := hashPassword(body.Password)
 	if err != nil {
 		http.Error(w, "hashing failure", http.StatusInternalServerError)

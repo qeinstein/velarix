@@ -27,3 +27,6 @@ sdks/typescript/node_modules/
 
 # Fluxx(Files i dont want to push but don't want to delete)
 todo.txt
+
+# web
+web/.next/

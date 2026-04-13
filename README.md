@@ -10,6 +10,7 @@ It keeps recommendations, approvals, and execution paths tied to the facts that 
 
 - Go HTTP API for facts, invalidation, explanations, slices, governance, decisions, and execution checks
 - symbolic truth-maintenance engine with OR-of-AND justifications and negated dependencies
+- The core engine is pure symbolic reasoning with no LLM in the hot path, and it is explicitly not an LLM wrapper.
 - query-aware belief slicing with semantic ranking and dependency expansion
 - review-gated governance controls for protected facts and mutations
 - Python SDK plus OpenAI, LangGraph, LlamaIndex, and CrewAI integration surfaces
