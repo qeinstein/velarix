@@ -23,6 +23,25 @@ type JustificationSet struct {
 	IDom string // Immediate Dominator (Fact ID)
 }
 
+// AssertionKind classifies the epistemic nature of a fact. It affects how
+// confidence tiers are labelled and whether the fact participates in
+// cross-scope contradiction detection.
+//
+//   - ""  / "empirical"    – default; a factual claim about the real world
+//   - "uncertain"          – logically consistent but epistemically hedged
+//                            (e.g. "X is probably the CEO"); confidence is
+//                            capped at "probable" regardless of numeric value
+//   - "hypothetical"       – what-if / scoped reasoning; does not contradict
+//                            empirical facts
+//   - "fictional"          – narrative / creative content; does not contradict
+//                            empirical or hypothetical facts
+const (
+	AssertionKindEmpirical   = "empirical"
+	AssertionKindUncertain   = "uncertain"
+	AssertionKindHypothetical = "hypothetical"
+	AssertionKindFictional   = "fictional"
+)
+
 // Fact is documented here.
 type Fact struct {
 	ID string `json:"id"`
@@ -43,6 +62,14 @@ type Fact struct {
 	ReviewStatus string  `json:"review_status,omitempty"`
 	ReviewReason string  `json:"review_reason,omitempty"`
 	ReviewedAt   int64   `json:"reviewed_at,omitempty"`
+
+	// Temporal decay: Unix millisecond timestamp after which this fact is
+	// automatically treated as Invalid. Zero means the fact never expires.
+	ValidUntil int64 `json:"valid_until,omitempty"`
+
+	// Epistemic classification. See AssertionKind* constants.
+	// Controls confidence-tier labelling and contradiction-scope matching.
+	AssertionKind string `json:"assertion_kind,omitempty"`
 
 	// Computed only by the engine
 	DerivedStatus           Status `json:"derived_status"`
