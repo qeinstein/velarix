@@ -207,6 +207,37 @@ func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store
 				if strings.TrimSpace(factID) != "" {
 					engine.RetractFact(factID, "expired")
 				}
+			case store.EventFactVerification:
+				factID := entry.FactID
+				if factID == "" && entry.Fact != nil {
+					factID = entry.Fact.ID
+				}
+				if strings.TrimSpace(factID) == "" {
+					continue
+				}
+				status := ""
+				method := ""
+				sourceRef := ""
+				reason := ""
+				verifiedAt := entry.Timestamp
+				if entry.Payload != nil {
+					if v, ok := entry.Payload["status"].(string); ok {
+						status = v
+					}
+					if v, ok := entry.Payload["method"].(string); ok {
+						method = v
+					}
+					if v, ok := entry.Payload["source_ref"].(string); ok {
+						sourceRef = v
+					}
+					if v, ok := entry.Payload["reason"].(string); ok {
+						reason = v
+					}
+					if v, ok := entry.Payload["verified_at"].(float64); ok && int64(v) > 0 {
+						verifiedAt = int64(v)
+					}
+				}
+				_ = engine.SetFactVerification(factID, status, method, sourceRef, reason, verifiedAt)
 			}
 		}
 	}
@@ -481,6 +512,7 @@ func (s *Server) handleAssertFact(w http.ResponseWriter, r *http.Request) {
 	if s.GlobalTruth != nil {
 		s.GlobalTruth.IndexFactDependencies(sessionID, &fact)
 	}
+	s.maybeStartVerification(sessionID, orgID, engine, &fact)
 
 	s.invalidateSliceCache(sessionID)
 
@@ -748,6 +780,36 @@ func (s *Server) handleRevalidate(w http.ResponseWriter, r *http.Request) {
 			}
 			if strings.TrimSpace(factID) != "" {
 				engine.RetractFact(factID, "expired")
+			}
+		} else if entry.Type == store.EventFactVerification {
+			factID := entry.FactID
+			if factID == "" && entry.Fact != nil {
+				factID = entry.Fact.ID
+			}
+			if strings.TrimSpace(factID) != "" {
+				status := ""
+				method := ""
+				sourceRef := ""
+				reason := ""
+				verifiedAt := entry.Timestamp
+				if entry.Payload != nil {
+					if v, ok := entry.Payload["status"].(string); ok {
+						status = v
+					}
+					if v, ok := entry.Payload["method"].(string); ok {
+						method = v
+					}
+					if v, ok := entry.Payload["source_ref"].(string); ok {
+						sourceRef = v
+					}
+					if v, ok := entry.Payload["reason"].(string); ok {
+						reason = v
+					}
+					if v, ok := entry.Payload["verified_at"].(float64); ok && int64(v) > 0 {
+						verifiedAt = int64(v)
+					}
+				}
+				_ = engine.SetFactVerification(factID, status, method, sourceRef, reason, verifiedAt)
 			}
 		}
 	}
@@ -1944,6 +2006,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/invalidate", s.handleInvalidateRoot)
 	mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/retract", s.handleRetractFact)
 	mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/review", s.handleReviewFact)
+	mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/verify", s.handleVerifyFact)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}", s.handleGetFact)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/why", s.handleExplain)
 	mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/impact", s.handleGetImpact)
@@ -1999,6 +2062,7 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/invalidate", s.handleInvalidateRoot)
 		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/retract", s.handleRetractFact)
 		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/review", s.handleReviewFact)
+		mux.HandleFunc("POST /v1/s/{session_id}/facts/{id}/verify", s.handleVerifyFact)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}", s.handleGetFact)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/why", s.handleExplain)
 		mux.HandleFunc("GET /v1/s/{session_id}/facts/{id}/impact", s.handleGetImpact)

@@ -61,6 +61,24 @@ Facts may include `valid_until` (unix milliseconds). After expiry, the engine tr
 the fact as invalid; an expiry sweep writes `fact_expired` events so dependents are
 repropagated immediately and reloads reconstruct the same state.
 
+### Verification And Grounding Controls
+
+Velarix can store verification metadata for facts to reduce the operational impact of
+pure model fabrication. Facts may carry:
+
+- `metadata.requires_verification` (bool)
+- `metadata.verification_status` (`unverified|verified|rejected`)
+- `metadata.verified_at` (unix ms)
+
+When `requires_verification=true`, decisions and execution-critical derived facts can
+be configured (via org policies) to require `verification_status=verified` and trusted
+`source_type` before they are eligible to ground execution. Admins can update a fact's
+verification state via `POST /v1/s/{session_id}/facts/{fact_id}/verify`.
+
+Optional webhook automation: if `VELARIX_VERIFICATION_WEBHOOK_URL` is set, Velarix will
+POST verification requests for facts requiring verification and apply the webhook's
+response as a `fact_verification` journal event.
+
 ### Global Facts (Org-Wide)
 
 Global facts are org-wide ground truths shared across all sessions. Use them for

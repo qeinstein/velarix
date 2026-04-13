@@ -64,6 +64,8 @@ Facts may include `valid_until` (unix ms). After expiry, facts are treated as in
 
 Velarix also supports org-wide global facts (`/v1/global/facts`) that fan out into active sessions to provide shared ground truths (e.g. verified entities or org-wide reference facts). See [docs/README.md](docs/README.md) and [docs/openapi.yaml](docs/openapi.yaml).
 
+Velarix can also store verification metadata for facts (verified/unverified/rejected) and use org policy to prevent unverified, untrusted, or stale premises from grounding execution-critical conclusions. Admins can update verification via `POST /v1/s/{session_id}/facts/{fact_id}/verify`, and optional webhook automation can apply verification decisions out-of-band. See [docs/README.md](docs/README.md).
+
 ## Integration Surfaces
 
 - Python SDK: session, fact, slice, and decision APIs

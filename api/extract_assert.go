@@ -135,6 +135,7 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 		if s.GlobalTruth != nil {
 			s.GlobalTruth.IndexFactDependencies(sessionID, fact)
 		}
+		s.maybeStartVerification(sessionID, orgID, engine, fact)
 
 		entry := store.JournalEntry{
 			Type:      store.EventAssert,
@@ -171,6 +172,9 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 
 		consistencyReport := engine.CheckConsistency(assertedIDList, false)
 		appendVerifierIssues(engine, consistencyReport, sessionID)
+		if consistencyReport != nil && consistencyReport.IssueCount > 0 {
+			s.flagFactsForReviewOnIssues(sessionID, orgID, engine, consistencyReport.Issues, "contradiction_detected")
+		}
 
 		seen := map[string]struct{}{}
 		for _, issue := range consistencyReport.Issues {

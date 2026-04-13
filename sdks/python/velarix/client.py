@@ -234,6 +234,47 @@ class VelarixSession:
         resp.raise_for_status()
         return resp.json()
 
+    def verify_fact(
+        self,
+        fact_id: str,
+        status: str,
+        *,
+        method: str = "",
+        source_ref: str = "",
+        reason: str = "",
+        verified_at: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Admin-only: update verification metadata for a fact.
+
+        Args:
+            fact_id: Fact ID in the session namespace.
+            status: One of "unverified", "verified", "rejected".
+            method: Optional verification method label (e.g. "tool", "human", "db").
+            source_ref: Optional external reference (e.g. URL, ticket id, database key).
+            reason: Optional human-readable note.
+            verified_at: Optional unix ms timestamp; defaults to now server-side.
+        """
+        self._clear_cache()
+        body: Dict[str, Any] = {"status": status}
+        if method:
+            body["method"] = method
+        if source_ref:
+            body["source_ref"] = source_ref
+        if reason:
+            body["reason"] = reason
+        if verified_at is not None:
+            body["verified_at"] = int(verified_at)
+        resp = self.client._request(
+            "POST",
+            f"{self.base_url}/facts/{fact_id}/verify",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def get_history(self) -> List[Dict[str, Any]]:
         resp = self.client._request("GET", f"{self.base_url}/history", headers=self._headers())
         resp.raise_for_status()
@@ -814,6 +855,47 @@ class AsyncVelarixSession:
 
     async def get_fact(self, fact_id: str) -> Dict[str, Any]:
         resp = await self.client._request("GET", f"{self.base_url}/facts/{fact_id}", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def verify_fact(
+        self,
+        fact_id: str,
+        status: str,
+        *,
+        method: str = "",
+        source_ref: str = "",
+        reason: str = "",
+        verified_at: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Admin-only: update verification metadata for a fact.
+
+        Args:
+            fact_id: Fact ID in the session namespace.
+            status: One of "unverified", "verified", "rejected".
+            method: Optional verification method label (e.g. "tool", "human", "db").
+            source_ref: Optional external reference (e.g. URL, ticket id, database key).
+            reason: Optional human-readable note.
+            verified_at: Optional unix ms timestamp; defaults to now server-side.
+        """
+        self._clear_cache()
+        body: Dict[str, Any] = {"status": status}
+        if method:
+            body["method"] = method
+        if source_ref:
+            body["source_ref"] = source_ref
+        if reason:
+            body["reason"] = reason
+        if verified_at is not None:
+            body["verified_at"] = int(verified_at)
+        resp = await self.client._request(
+            "POST",
+            f"{self.base_url}/facts/{fact_id}/verify",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
         resp.raise_for_status()
         return resp.json()
 
