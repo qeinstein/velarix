@@ -78,15 +78,16 @@ type SliceCacheEntry struct {
 }
 
 type Server struct {
-	mu         sync.RWMutex
-	Engines    map[string]*core.Engine
-	Configs    map[string]*store.SessionConfig
-	Versions   map[string]int64
-	LastAccess map[string]time.Time
-	SliceCache map[string]*SliceCacheEntry
-	Store      store.ServerStore
-	StartTime  time.Time
-	LiteMode   bool
+	mu          sync.RWMutex
+	Engines     map[string]*core.Engine
+	Configs     map[string]*store.SessionConfig
+	Versions    map[string]int64
+	LastAccess  map[string]time.Time
+	SliceCache  map[string]*SliceCacheEntry
+	Store       store.ServerStore
+	GlobalTruth *core.GlobalTruth
+	StartTime   time.Time
+	LiteMode    bool
 
 	writeLimiters sync.Map // org_id -> chan struct{}
 }
@@ -196,7 +197,29 @@ func (s *Server) getEngine(sessionID string, orgID string) (*core.Engine, *store
 					}
 				}
 				engine.SetFactReview(entry.FactID, status, reason, reviewedAt)
+			case store.EventFactExpired:
+				// Persisted temporal decay: re-apply the retraction so downstream
+				// dependents are reconstructed consistently on reload.
+				factID := entry.FactID
+				if factID == "" && entry.Fact != nil {
+					factID = entry.Fact.ID
+				}
+				if strings.TrimSpace(factID) != "" {
+					engine.RetractFact(factID, "expired")
+				}
 			}
+		}
+	}
+
+	if s.GlobalTruth != nil {
+		// Subscribe the rebuilt engine so it receives global fact mutations.
+		targetVersion := s.GlobalTruth.Version()
+		_ = s.GlobalTruth.Subscribe(sessionID, engine)
+
+		// Defensive: WaitForVersion has a deadline so request paths don't hang
+		// indefinitely if something stalls.
+		if err := s.GlobalTruth.WaitForVersion(targetVersion, time.Now().Add(2*time.Second)); err != nil {
+			return nil, nil, fmt.Errorf("timeout waiting for global truth version: %w", err)
 		}
 	}
 
@@ -454,6 +477,9 @@ func (s *Server) handleAssertFact(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("Fact assertion failed", "session_id", sessionID, "org_id", orgID, "trace_id", traceID, "error", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if s.GlobalTruth != nil {
+		s.GlobalTruth.IndexFactDependencies(sessionID, &fact)
 	}
 
 	s.invalidateSliceCache(sessionID)
@@ -715,7 +741,21 @@ func (s *Server) handleRevalidate(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			engine.SetFactReview(entry.FactID, status, reason, reviewedAt)
+		} else if entry.Type == store.EventFactExpired {
+			factID := entry.FactID
+			if factID == "" && entry.Fact != nil {
+				factID = entry.Fact.ID
+			}
+			if strings.TrimSpace(factID) != "" {
+				engine.RetractFact(factID, "expired")
+			}
 		}
+	}
+
+	if s.GlobalTruth != nil {
+		// Revalidation rebuilds the engine from scratch; re-subscribe so global
+		// facts are present and future mutations fan out correctly.
+		_ = s.GlobalTruth.Subscribe(sessionID, engine)
 	}
 
 	go s.Store.IncrementOrgMetric(orgID, "revalidation_runs", 1)
@@ -1304,6 +1344,9 @@ func (s *Server) PerformEvictionSweep() {
 	now := time.Now()
 	for id, last := range s.LastAccess {
 		if now.Sub(last) > 30*time.Minute {
+			if s.GlobalTruth != nil {
+				s.GlobalTruth.Unsubscribe(id)
+			}
 			delete(s.Engines, id)
 			delete(s.Configs, id)
 			delete(s.Versions, id)
@@ -1330,6 +1373,9 @@ func (s *Server) PerformEvictionSweep() {
 		toEvict := len(ages) / 5
 		for i := 0; i < toEvict; i++ {
 			id := ages[i].id
+			if s.GlobalTruth != nil {
+				s.GlobalTruth.Unsubscribe(id)
+			}
 			delete(s.Engines, id)
 			delete(s.Configs, id)
 			delete(s.Versions, id)
@@ -1389,6 +1435,64 @@ func (s *Server) StartRetentionTicker() {
 					"notifications_deleted", report.NotificationsDeleted,
 				)
 			}
+		}
+	}()
+}
+
+func (s *Server) PerformExpirySweep() {
+	// Copy the current engine map under lock, then sweep outside the lock to
+	// avoid blocking request paths while we scan facts.
+	s.mu.RLock()
+	snapshot := make(map[string]*core.Engine, len(s.Engines))
+	for id, eng := range s.Engines {
+		snapshot[id] = eng
+	}
+	s.mu.RUnlock()
+
+	for sessionID, eng := range snapshot {
+		if eng == nil {
+			continue
+		}
+		expired := eng.SweepExpiredFacts()
+		if len(expired) == 0 {
+			continue
+		}
+
+		FactsExpiredTotal.Add(float64(len(expired)))
+
+		for _, factID := range expired {
+			entry := store.JournalEntry{
+				Type:      store.EventFactExpired,
+				SessionID: sessionID,
+				ActorID:   "system",
+				FactID:    factID,
+				Payload:   map[string]interface{}{"reason": "expired"},
+			}
+			if err := s.Store.Append(entry); err != nil {
+				slog.Warn("Failed to persist fact_expired journal entry",
+					"session_id", sessionID,
+					"fact_id", factID,
+					"error", err,
+				)
+			}
+		}
+
+		s.invalidateSliceCache(sessionID)
+	}
+}
+
+func (s *Server) StartExpirySweepTicker() {
+	intervalSeconds := 60
+	if raw := strings.TrimSpace(os.Getenv("VELARIX_EXPIRY_SWEEP_INTERVAL_SECONDS")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			intervalSeconds = parsed
+		}
+	}
+
+	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
+	go func() {
+		for range ticker.C {
+			s.PerformExpirySweep()
 		}
 	}()
 }
@@ -1828,6 +1932,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /v1/s/{session_id}/summary", s.handleGetSessionSummary)
 
+	// Global facts (org-wide ground truths)
+	mux.HandleFunc("POST /v1/global/facts", s.handleGlobalAssertFact)
+	mux.HandleFunc("GET /v1/global/facts", s.handleGlobalListFacts)
+	mux.HandleFunc("GET /v1/global/facts/{fact_id}", s.handleGlobalGetFact)
+	mux.HandleFunc("DELETE /v1/global/facts/{fact_id}", s.handleGlobalRetractFact)
+
 	// Session-scoped V1 Routes
 	mux.HandleFunc("POST /v1/s/{session_id}/facts", s.handleAssertFact)
 	mux.HandleFunc("POST /v1/s/{session_id}/percepts", s.handleRecordPerception)
@@ -1878,6 +1988,11 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /metrics", promhttp.Handler())
 		mux.HandleFunc("GET /health", s.handleHealth)
 		mux.HandleFunc("GET /health/full", s.handleFullHealth)
+
+		mux.HandleFunc("POST /v1/global/facts", s.handleGlobalAssertFact)
+		mux.HandleFunc("GET /v1/global/facts", s.handleGlobalListFacts)
+		mux.HandleFunc("GET /v1/global/facts/{fact_id}", s.handleGlobalGetFact)
+		mux.HandleFunc("DELETE /v1/global/facts/{fact_id}", s.handleGlobalRetractFact)
 
 		mux.HandleFunc("POST /v1/s/{session_id}/facts", s.handleAssertFact)
 		mux.HandleFunc("POST /v1/s/{session_id}/percepts", s.handleRecordPerception)

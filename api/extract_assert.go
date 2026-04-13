@@ -15,18 +15,18 @@ import (
 )
 
 type extractAndAssertRequest struct {
-	LLMOutput                string `json:"llm_output"`
-	SessionContext           string `json:"session_context"`
+	LLMOutput                 string `json:"llm_output"`
+	SessionContext            string `json:"session_context"`
 	AutoRetractContradictions bool   `json:"auto_retract_contradictions"`
 }
 
 type extractAndAssertResponse struct {
-	ExtractedCount         int                      `json:"extracted_count"`
-	AssertedCount          int                      `json:"asserted_count"`
-	SkippedCount           int                      `json:"skipped_count"`
-	ContradictionsFound    []string                 `json:"contradictions_found"`
-	ContradictionsRetracted []string                `json:"contradictions_retracted"`
-	Facts                  []*core.Fact             `json:"facts"`
+	ExtractedCount          int          `json:"extracted_count"`
+	AssertedCount           int          `json:"asserted_count"`
+	SkippedCount            int          `json:"skipped_count"`
+	ContradictionsFound     []string     `json:"contradictions_found"`
+	ContradictionsRetracted []string     `json:"contradictions_retracted"`
+	Facts                   []*core.Fact `json:"facts"`
 }
 
 func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +77,7 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 	var sorted []extractor.ExtractedFact
 	visited := map[string]bool{}
 	var visit func(ef extractor.ExtractedFact)
-	
+
 	factMap := map[string]extractor.ExtractedFact{}
 	for _, ef := range extracted {
 		factMap[ef.ID] = ef
@@ -131,6 +131,9 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 			}
 			resp.SkippedCount++
 			continue
+		}
+		if s.GlobalTruth != nil {
+			s.GlobalTruth.IndexFactDependencies(sessionID, fact)
 		}
 
 		entry := store.JournalEntry{

@@ -555,6 +555,57 @@ class VelarixSession:
             raise ValueError("kind is required")
         return self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
+class VelarixGlobalFacts:
+    """Org-wide global facts shared across all sessions."""
+
+    def __init__(self, client: 'VelarixClient'):
+        self.client = client
+        self.base_url = f"{client.base_url}/v1/global/facts"
+
+    def assert_fact(
+        self,
+        fact_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        confidence: float = 1.0,
+        metadata: Optional[Dict[str, Any]] = None,
+        assertion_kind: Optional[str] = None,
+        valid_until: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not fact_id:
+            raise ValueError("fact_id is required")
+        data: Dict[str, Any] = {
+            "id": fact_id,
+            "is_root": True,
+            "manual_status": float(confidence),
+            "payload": payload or {},
+        }
+        if metadata is not None:
+            data["metadata"] = metadata
+        if assertion_kind:
+            data["assertion_kind"] = assertion_kind
+        if valid_until is not None:
+            data["valid_until"] = int(valid_until)
+        resp = self.client._request("POST", self.base_url, json=data, headers=self.client.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def retract(self, fact_id: str) -> Dict[str, Any]:
+        if not fact_id:
+            raise ValueError("fact_id is required")
+        resp = self.client._request("DELETE", f"{self.base_url}/{fact_id}", headers=self.client.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def list(self) -> List[Dict[str, Any]]:
+        resp = self.client._request("GET", self.base_url, headers=self.client.headers)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict) and "items" in data:
+            return data["items"]
+        return data
+
+
 class VelarixClient:
     def __init__(
         self, 
@@ -586,6 +637,7 @@ class VelarixClient:
         self.retry_backoff_max = float(retry_backoff_max)
         self.timeout_s = float(timeout_s)
         self._http = requests.Session()
+        self.global_facts = VelarixGlobalFacts(self)
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         retryable_status = {429, 502, 503, 504}
@@ -1086,6 +1138,57 @@ class AsyncVelarixSession:
             raise ValueError("kind is required")
         return await self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
+class AsyncVelarixGlobalFacts:
+    """Org-wide global facts shared across all sessions (async)."""
+
+    def __init__(self, client: 'AsyncVelarixClient'):
+        self.client = client
+        self.base_url = f"{client.base_url}/v1/global/facts"
+
+    async def assert_fact(
+        self,
+        fact_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        confidence: float = 1.0,
+        metadata: Optional[Dict[str, Any]] = None,
+        assertion_kind: Optional[str] = None,
+        valid_until: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not fact_id:
+            raise ValueError("fact_id is required")
+        data: Dict[str, Any] = {
+            "id": fact_id,
+            "is_root": True,
+            "manual_status": float(confidence),
+            "payload": payload or {},
+        }
+        if metadata is not None:
+            data["metadata"] = metadata
+        if assertion_kind:
+            data["assertion_kind"] = assertion_kind
+        if valid_until is not None:
+            data["valid_until"] = int(valid_until)
+        resp = await self.client._request("POST", self.base_url, json=data, headers=self.client.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def retract(self, fact_id: str) -> Dict[str, Any]:
+        if not fact_id:
+            raise ValueError("fact_id is required")
+        resp = await self.client._request("DELETE", f"{self.base_url}/{fact_id}", headers=self.client.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def list(self) -> List[Dict[str, Any]]:
+        resp = await self.client._request("GET", self.base_url, headers=self.client.headers)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict) and "items" in data:
+            return data["items"]
+        return data
+
+
 class AsyncVelarixClient:
     """An asynchronous client for interacting with Velarix."""
     def __init__(
@@ -1113,6 +1216,7 @@ class AsyncVelarixClient:
         self.retry_backoff_max = float(retry_backoff_max)
         self.timeout_s = float(timeout_s)
         self.http_client = httpx.AsyncClient(timeout=self.timeout_s)
+        self.global_facts = AsyncVelarixGlobalFacts(self)
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         retryable_status = {429, 502, 503, 504}

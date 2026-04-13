@@ -34,18 +34,19 @@ func (e *ExtractionError) Error() string {
 // ExtractedFact is the raw parsed output of one atomic claim returned by the
 // extraction model before it is converted to a core.Fact.
 type ExtractedFact struct {
-	ID          string   `json:"id"`
-	Claim       string   `json:"claim"`
-	ClaimKey    string   `json:"claim_key"`
-	ClaimValue  string   `json:"claim_value"`
-	Subject     string   `json:"subject"`
-	Predicate   string   `json:"predicate"`
-	Object      string   `json:"object"`
-	Polarity    string   `json:"polarity"`
-	IsRoot      bool     `json:"is_root"`
-	DependsOn   []string `json:"depends_on"`
-	SourceType  string   `json:"source_type"`
-	Confidence  float64  `json:"confidence"`
+	ID            string   `json:"id"`
+	Claim         string   `json:"claim"`
+	ClaimKey      string   `json:"claim_key"`
+	ClaimValue    string   `json:"claim_value"`
+	Subject       string   `json:"subject"`
+	Predicate     string   `json:"predicate"`
+	Object        string   `json:"object"`
+	Polarity      string   `json:"polarity"`
+	IsRoot        bool     `json:"is_root"`
+	DependsOn     []string `json:"depends_on"`
+	SourceType    string   `json:"source_type"`
+	Confidence    float64  `json:"confidence"`
+	AssertionKind string   `json:"assertion_kind"`
 }
 
 // ToCoreFact converts an ExtractedFact into a core.Fact ready for engine
@@ -53,8 +54,9 @@ type ExtractedFact struct {
 // single-element AND-set per dependency entry ([][]string{{dep_id}}).
 func (ef *ExtractedFact) ToCoreFact() *core.Fact {
 	f := &core.Fact{
-		ID:     ef.ID,
-		IsRoot: ef.IsRoot,
+		ID:            ef.ID,
+		IsRoot:        ef.IsRoot,
+		AssertionKind: strings.TrimSpace(ef.AssertionKind),
 		Payload: map[string]interface{}{
 			"claim":       ef.Claim,
 			"claim_key":   ef.ClaimKey,
@@ -81,6 +83,9 @@ func (ef *ExtractedFact) ToCoreFact() *core.Fact {
 	if ef.SourceType == "" {
 		f.Metadata["source_type"] = "llm_output"
 		f.Payload["source_type"] = "llm_output"
+	}
+	if f.AssertionKind == "" {
+		f.AssertionKind = core.AssertionKindEmpirical
 	}
 
 	if ef.IsRoot {
@@ -109,21 +114,26 @@ func (ef *ExtractedFact) ToCoreFact() *core.Fact {
 	return f
 }
 
-const vLogicSystemPrompt = `You are a Neuro-Symbolic V-Logic Compiler. Your job is to extract atomic factual assertions from the text and compile them into a strict V-Logic DSL script.
+const vLogicSystemPrompt = `You are a Neuro-Symbolic V-Logic Compiler. Your job is to extract atomic assertions from the text and compile them into a strict V-Logic DSL script.
 
 CRITICAL RULES:
 1. Output ONLY valid V-Logic code. No markdown fences, no explanations.
 2. V-Logic has exactly two statement types: 'fact' and 'derive'.
 3. 'fact' is for root premises directly stated in the text.
-   Syntax: fact <id>: "<claim>" (confidence: <float>)
-   Example: fact invoice_1042_paid: "Invoice 1042 is paid" (confidence: 0.9)
+   Syntax: fact <id>: "<claim>" (confidence: <float>, assertion_kind: <kind>)
+   Example: fact invoice_1042_paid: "Invoice 1042 is paid" (confidence: 0.9, assertion_kind: empirical)
 4. 'derive' is for inferences that depend on other facts.
-   Syntax: derive <id>: "<claim>" requires (<comma_separated_ids>) rejects (<comma_separated_ids>)
-   Example: derive payment_released: "Release payment" requires (invoice_1042_paid) rejects (vendor_blocked)
+   Syntax: derive <id>: "<claim>" (assertion_kind: <kind>) requires (<comma_separated_ids>) rejects (<comma_separated_ids>)
+   Example: derive payment_released: "Release payment" (assertion_kind: empirical) requires (invoice_1042_paid) rejects (vendor_blocked)
    (Note: requires or rejects can be omitted if empty. Example: derive p1: "..." requires (f1))
 5. IDs must be unique slug-format strings (lowercase, underscores or hyphens).
 6. Decompose compound claims into separate atomic facts.
 7. NEVER output circular dependencies (A requires B, B requires A).
+8. Every statement MUST include assertion_kind with one of:
+   - empirical: direct factual claim about the real world asserted as true
+   - uncertain: hedged factual claim (e.g. "I think", "possibly", "might be", "I believe", "approximately")
+   - hypothetical: conditional/speculative claim (e.g. "if", "suppose", "assume", "were to", "could")
+   - fictional: claim in a clearly fictional/creative/story context
 `
 
 // Extract sends llmOutput to an OpenAI-compatible endpoint and parses the
@@ -238,7 +248,7 @@ func Extract(ctx context.Context, llmOutput string, sessionContext string) ([]Ex
 		// Topological sort & cycle detection (Dry Run Compilation Phase)
 		visited := map[string]bool{}
 		var visit func(ef ExtractedFact)
-		
+
 		factMap := map[string]ExtractedFact{}
 		for _, ef := range facts {
 			factMap[ef.ID] = ef

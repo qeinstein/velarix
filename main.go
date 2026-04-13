@@ -141,19 +141,23 @@ func main() {
 
 	defer runtimeStore.Close()
 
+	globalTruth := core.NewGlobalTruth()
+
 	server := &api.Server{
-		Engines:    make(map[string]*core.Engine),
-		Configs:    make(map[string]*store.SessionConfig),
-		Versions:   make(map[string]int64),
-		LastAccess: make(map[string]time.Time),
-		SliceCache: make(map[string]*api.SliceCacheEntry),
-		Store:      runtimeStore,
-		StartTime:  time.Now(),
-		LiteMode:   isLite,
+		Engines:     make(map[string]*core.Engine),
+		Configs:     make(map[string]*store.SessionConfig),
+		Versions:    make(map[string]int64),
+		LastAccess:  make(map[string]time.Time),
+		SliceCache:  make(map[string]*api.SliceCacheEntry),
+		Store:       runtimeStore,
+		GlobalTruth: globalTruth,
+		StartTime:   time.Now(),
+		LiteMode:    isLite,
 	}
 
 	server.StartEvictionTicker()
 	server.StartRetentionTicker()
+	server.StartExpirySweepTicker()
 	if backend == "badger" {
 		server.StartBackupTicker()
 	}

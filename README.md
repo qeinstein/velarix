@@ -56,6 +56,14 @@ Velarix belongs at the execution boundary:
 4. call `execute-check` immediately before the side effect
 5. execute only if the decision remains valid
 
+## Truth Semantics
+
+Velarix supports `assertion_kind` scoping on facts (`empirical`, `uncertain`, `hypothetical`, `fictional`) so creative/hypothetical content does not generate false contradiction signals and cannot ground real-world derived conclusions. See [docs/README.md](docs/README.md) and the fact schema in [docs/openapi.yaml](docs/openapi.yaml).
+
+Facts may include `valid_until` (unix ms). After expiry, facts are treated as invalid and an expiry sweep persists `fact_expired` events so downstream dependents are invalidated promptly and reloads reconstruct the same state. See [docs/README.md](docs/README.md).
+
+Velarix also supports org-wide global facts (`/v1/global/facts`) that fan out into active sessions to provide shared ground truths (e.g. verified entities or org-wide reference facts). See [docs/README.md](docs/README.md) and [docs/openapi.yaml](docs/openapi.yaml).
+
 ## Integration Surfaces
 
 - Python SDK: session, fact, slice, and decision APIs
