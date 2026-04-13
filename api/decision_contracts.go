@@ -144,19 +144,39 @@ func (s *Server) buildDecisionDependencies(engine *core.Engine, decision *store.
 	for _, factID := range dependencyIDs {
 		fact, _ := engine.GetFact(factID)
 		currentStatus := float64(engine.GetStatus(factID))
+		sourceType := core.FactSourceType(fact)
+		verificationStatus := core.FactVerificationStatus(fact)
+		verifiedAt := int64(0)
+		if fact != nil && fact.Metadata != nil {
+			if v, ok := fact.Metadata["verified_at"].(float64); ok && int64(v) > 0 {
+				verifiedAt = int64(v)
+			} else if v, ok := fact.Metadata["verified_at"].(int64); ok && v > 0 {
+				verifiedAt = v
+			} else if v, ok := fact.Metadata["verified_at"].(int); ok && v > 0 {
+				verifiedAt = int64(v)
+			}
+		}
+		assertedAt := int64(0)
+		if fact != nil {
+			assertedAt = fact.AssertedAt
+		}
 		deps = append(deps, store.DecisionDependency{
-			DecisionID:      decision.ID,
-			SessionID:       decision.SessionID,
-			FactID:          factID,
-			DependencyType:  "fact",
-			RequiredStatus:  "valid",
-			CurrentStatus:   currentStatus,
-			SourceRef:       factMetadataString(fact, "source_ref"),
-			PolicyVersion:   firstNonEmpty(decision.PolicyVersion, factMetadataString(fact, "policy_version")),
-			ExplanationHint: factMetadataString(fact, "explanation_hint"),
-			Entrenchment:    fact.EffectiveEntrenchment(),
-			ReviewStatus:    fact.ReviewStatus,
-			ReviewRequired:  fact.RequiresHumanReview(),
+			DecisionID:         decision.ID,
+			SessionID:          decision.SessionID,
+			FactID:             factID,
+			DependencyType:     "fact",
+			RequiredStatus:     "valid",
+			CurrentStatus:      currentStatus,
+			SourceType:         sourceType,
+			SourceRef:          factMetadataString(fact, "source_ref"),
+			VerificationStatus: verificationStatus,
+			VerifiedAt:         verifiedAt,
+			AssertedAt:         assertedAt,
+			PolicyVersion:      firstNonEmpty(decision.PolicyVersion, factMetadataString(fact, "policy_version")),
+			ExplanationHint:    factMetadataString(fact, "explanation_hint"),
+			Entrenchment:       fact.EffectiveEntrenchment(),
+			ReviewStatus:       fact.ReviewStatus,
+			ReviewRequired:     fact.RequiresHumanReview(),
 		})
 	}
 	return deps, nil
@@ -243,13 +263,37 @@ func (s *Server) computeDecisionCheck(engine *core.Engine, decision *store.Decis
 		DependencySnapshots: make([]store.DecisionDependency, 0, len(deps)),
 	}
 
+	controls := s.loadPolicyControls(decision.OrgID)
+	now := time.Now().UnixMilli()
+
 	for _, dep := range deps {
 		snapshot := dep
 		currentStatus := float64(engine.GetStatus(dep.FactID))
-		if _, ok := engine.GetFact(dep.FactID); !ok {
+		fact, ok := engine.GetFact(dep.FactID)
+		if !ok {
 			currentStatus = 0
 		}
+		sourceType := core.FactSourceType(fact)
+		verificationStatus := core.FactVerificationStatus(fact)
+		verifiedAt := int64(0)
+		assertedAt := int64(0)
+		if fact != nil {
+			assertedAt = fact.AssertedAt
+			if fact.Metadata != nil {
+				if v, ok := fact.Metadata["verified_at"].(float64); ok && int64(v) > 0 {
+					verifiedAt = int64(v)
+				} else if v, ok := fact.Metadata["verified_at"].(int64); ok && v > 0 {
+					verifiedAt = v
+				} else if v, ok := fact.Metadata["verified_at"].(int); ok && v > 0 {
+					verifiedAt = int64(v)
+				}
+			}
+		}
 		snapshot.CurrentStatus = currentStatus
+		snapshot.SourceType = sourceType
+		snapshot.VerificationStatus = verificationStatus
+		snapshot.VerifiedAt = verifiedAt
+		snapshot.AssertedAt = assertedAt
 		check.DependencySnapshots = append(check.DependencySnapshots, snapshot)
 
 		if currentStatus < float64(core.ConfidenceThreshold) {
@@ -260,36 +304,190 @@ func (s *Server) computeDecisionCheck(engine *core.Engine, decision *store.Decis
 			}
 			check.ReasonCodes = append(check.ReasonCodes, reasonCode)
 			check.BlockedBy = append(check.BlockedBy, store.DecisionBlocker{
-				FactID:          dep.FactID,
-				DependencyType:  dep.DependencyType,
-				RequiredStatus:  dep.RequiredStatus,
-				CurrentStatus:   currentStatus,
-				ReasonCode:      reasonCode,
-				SourceRef:       dep.SourceRef,
-				PolicyVersion:   dep.PolicyVersion,
-				ExplanationHint: dep.ExplanationHint,
-				Entrenchment:    dep.Entrenchment,
-				ReviewStatus:    dep.ReviewStatus,
-				ReviewRequired:  dep.ReviewRequired,
+				FactID:             dep.FactID,
+				DependencyType:     dep.DependencyType,
+				RequiredStatus:     dep.RequiredStatus,
+				CurrentStatus:      currentStatus,
+				ReasonCode:         reasonCode,
+				SourceType:         sourceType,
+				SourceRef:          dep.SourceRef,
+				VerificationStatus: verificationStatus,
+				VerifiedAt:         verifiedAt,
+				AssertedAt:         assertedAt,
+				PolicyVersion:      dep.PolicyVersion,
+				ExplanationHint:    dep.ExplanationHint,
+				Entrenchment:       dep.Entrenchment,
+				ReviewStatus:       dep.ReviewStatus,
+				ReviewRequired:     dep.ReviewRequired,
 			})
 			continue
 		}
+
+		// Grounding / execution gating checks apply to root premises (or facts
+		// explicitly marked as requiring verification). Derived facts are gated
+		// by their dependency validity rather than their own provenance.
+		groundingRelevant := fact != nil && (fact.IsRoot || core.MetadataBool(fact.Metadata, "requires_verification") || strings.TrimSpace(sourceType) != "")
+
+		if groundingRelevant && len(controls.GroundingAllowedSourceTypes) > 0 {
+			if _, ok := controls.GroundingAllowedSourceTypes[sourceType]; !ok {
+				check.Executable = false
+				check.ReasonCodes = append(check.ReasonCodes, "untrusted_source")
+				check.BlockedBy = append(check.BlockedBy, store.DecisionBlocker{
+					FactID:             dep.FactID,
+					DependencyType:     dep.DependencyType,
+					RequiredStatus:     dep.RequiredStatus,
+					CurrentStatus:      currentStatus,
+					ReasonCode:         "untrusted_source",
+					SourceType:         sourceType,
+					SourceRef:          dep.SourceRef,
+					VerificationStatus: verificationStatus,
+					VerifiedAt:         verifiedAt,
+					AssertedAt:         assertedAt,
+					PolicyVersion:      dep.PolicyVersion,
+					ExplanationHint:    dep.ExplanationHint,
+					Entrenchment:       dep.Entrenchment,
+					ReviewStatus:       dep.ReviewStatus,
+					ReviewRequired:     dep.ReviewRequired,
+				})
+			}
+		}
+		if groundingRelevant && controls.GroundingRequireVerified {
+			if verificationStatus != core.VerificationVerified {
+				check.Executable = false
+				check.ReasonCodes = append(check.ReasonCodes, "unverified_dependency")
+				check.BlockedBy = append(check.BlockedBy, store.DecisionBlocker{
+					FactID:             dep.FactID,
+					DependencyType:     dep.DependencyType,
+					RequiredStatus:     dep.RequiredStatus,
+					CurrentStatus:      currentStatus,
+					ReasonCode:         "unverified_dependency",
+					SourceType:         sourceType,
+					SourceRef:          dep.SourceRef,
+					VerificationStatus: verificationStatus,
+					VerifiedAt:         verifiedAt,
+					AssertedAt:         assertedAt,
+					PolicyVersion:      dep.PolicyVersion,
+					ExplanationHint:    dep.ExplanationHint,
+					Entrenchment:       dep.Entrenchment,
+					ReviewStatus:       dep.ReviewStatus,
+					ReviewRequired:     dep.ReviewRequired,
+				})
+			}
+		}
+		if groundingRelevant && controls.GroundingMaxAgeSeconds > 0 && assertedAt > 0 {
+			if now-assertedAt > controls.GroundingMaxAgeSeconds*1000 {
+				check.Executable = false
+				check.ReasonCodes = append(check.ReasonCodes, "dependency_too_old")
+				check.BlockedBy = append(check.BlockedBy, store.DecisionBlocker{
+					FactID:             dep.FactID,
+					DependencyType:     dep.DependencyType,
+					RequiredStatus:     dep.RequiredStatus,
+					CurrentStatus:      currentStatus,
+					ReasonCode:         "dependency_too_old",
+					SourceType:         sourceType,
+					SourceRef:          dep.SourceRef,
+					VerificationStatus: verificationStatus,
+					VerifiedAt:         verifiedAt,
+					AssertedAt:         assertedAt,
+					PolicyVersion:      dep.PolicyVersion,
+					ExplanationHint:    dep.ExplanationHint,
+					Entrenchment:       dep.Entrenchment,
+					ReviewStatus:       dep.ReviewStatus,
+					ReviewRequired:     dep.ReviewRequired,
+				})
+			}
+		}
+
 		if dep.ReviewRequired {
 			check.Executable = false
 			check.ReasonCodes = append(check.ReasonCodes, "human_review_required")
 			check.BlockedBy = append(check.BlockedBy, store.DecisionBlocker{
-				FactID:          dep.FactID,
-				DependencyType:  dep.DependencyType,
-				RequiredStatus:  dep.RequiredStatus,
-				CurrentStatus:   currentStatus,
-				ReasonCode:      "human_review_required",
-				SourceRef:       dep.SourceRef,
-				PolicyVersion:   dep.PolicyVersion,
-				ExplanationHint: dep.ExplanationHint,
-				Entrenchment:    dep.Entrenchment,
-				ReviewStatus:    dep.ReviewStatus,
-				ReviewRequired:  true,
+				FactID:             dep.FactID,
+				DependencyType:     dep.DependencyType,
+				RequiredStatus:     dep.RequiredStatus,
+				CurrentStatus:      currentStatus,
+				ReasonCode:         "human_review_required",
+				SourceType:         sourceType,
+				SourceRef:          dep.SourceRef,
+				VerificationStatus: verificationStatus,
+				VerifiedAt:         verifiedAt,
+				AssertedAt:         assertedAt,
+				PolicyVersion:      dep.PolicyVersion,
+				ExplanationHint:    dep.ExplanationHint,
+				Entrenchment:       dep.Entrenchment,
+				ReviewStatus:       dep.ReviewStatus,
+				ReviewRequired:     true,
 			})
+		}
+	}
+
+	// Optional quorum: decision metadata may request N verified independent
+	// sources for a claim_key before execution.
+	if decision != nil && decision.Metadata != nil {
+		if raw, ok := decision.Metadata["verification_quorum_by_claim_key"]; ok {
+			quorum := map[string]int{}
+			switch v := raw.(type) {
+			case map[string]int:
+				for k, n := range v {
+					quorum[strings.TrimSpace(k)] = n
+				}
+			case map[string]interface{}:
+				for k, val := range v {
+					n := 0
+					switch vv := val.(type) {
+					case float64:
+						n = int(vv)
+					case int:
+						n = vv
+					case string:
+						if parsed, err := strconv.Atoi(strings.TrimSpace(vv)); err == nil {
+							n = parsed
+						}
+					}
+					if strings.TrimSpace(k) != "" && n > 0 {
+						quorum[strings.TrimSpace(k)] = n
+					}
+				}
+			}
+
+			for claimKey, needed := range quorum {
+				if claimKey == "" || needed <= 1 {
+					continue
+				}
+				refs := map[string]struct{}{}
+				for _, snap := range check.DependencySnapshots {
+					if snap.VerificationStatus != core.VerificationVerified {
+						continue
+					}
+					f, ok := engine.GetFact(snap.FactID)
+					if !ok {
+						continue
+					}
+					if core.FactClaimKey(f) != claimKey {
+						continue
+					}
+					ref := strings.TrimSpace(snap.SourceRef)
+					if ref == "" {
+						ref = strings.TrimSpace(core.MetadataString(f.Metadata, "verification_source_ref"))
+					}
+					if ref == "" {
+						ref = snap.SourceType
+					}
+					refs[ref] = struct{}{}
+				}
+				if len(refs) < needed {
+					check.Executable = false
+					check.ReasonCodes = append(check.ReasonCodes, "verification_quorum_not_met")
+					check.BlockedBy = append(check.BlockedBy, store.DecisionBlocker{
+						FactID:          decision.FactID,
+						DependencyType:  "quorum",
+						RequiredStatus:  fmt.Sprintf("verified_quorum_%d", needed),
+						CurrentStatus:   float64(len(refs)),
+						ReasonCode:      "verification_quorum_not_met",
+						ExplanationHint: fmt.Sprintf("claim_key=%s requires %d independent verified sources, have %d", claimKey, needed, len(refs)),
+					})
+				}
+			}
 		}
 	}
 

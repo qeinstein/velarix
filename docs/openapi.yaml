@@ -106,6 +106,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Fact'
+  /v1/s/{session_id}/facts/{fact_id}/verify:
+    post:
+      summary: Update a fact verification status (org admin)
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - name: fact_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FactVerifyRequest'
+      responses:
+        '200':
+          description: Updated fact
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fact'
   /v1/s/{session_id}/facts/{fact_id}/invalidate:
     post:
       summary: Invalidate a root fact
@@ -391,6 +414,26 @@ components:
         metadata:
           type: object
           additionalProperties: true
+          description: >
+            Internal metadata (provenance, verification, governance). Common keys include
+            _provenance, source_type, requires_verification, verification_status, verified_at.
+    FactVerifyRequest:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          description: unverified|verified|rejected
+        method:
+          type: string
+        source_ref:
+          type: string
+        reason:
+          type: string
+        verified_at:
+          type: integer
+          description: Unix milliseconds. Defaults to now.
     CreateDecisionRequest:
       type: object
       required:

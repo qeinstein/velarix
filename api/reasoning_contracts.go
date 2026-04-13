@@ -161,6 +161,7 @@ func (s *Server) handleRecordPerception(w http.ResponseWriter, r *http.Request) 
 	if s.GlobalTruth != nil {
 		s.GlobalTruth.IndexFactDependencies(sessionID, &fact)
 	}
+	s.maybeStartVerification(sessionID, orgID, engine, &fact)
 
 	actorID := getActorID(r)
 	entry := store.JournalEntry{Type: store.EventAssert, SessionID: sessionID, Fact: &fact, ActorID: actorID}
@@ -288,6 +289,9 @@ func (s *Server) handleConsistencyCheck(w http.ResponseWriter, r *http.Request) 
 
 	report := engine.CheckConsistency(factIDs, body.IncludeInvalid)
 	appendVerifierIssues(engine, report, sessionID)
+	if report != nil && report.IssueCount > 0 {
+		s.flagFactsForReviewOnIssues(sessionID, orgID, engine, report.Issues, "contradiction_detected")
+	}
 
 	// Session-level auto-retract: if the session config enables it, retract the
 	// lower-entrenchment fact from each contradicting pair automatically.
@@ -446,6 +450,9 @@ func (s *Server) handleVerifyReasoningChain(w http.ResponseWriter, r *http.Reque
 	if len(chainFactIDs) > 1 {
 		consistencyReport := engine.CheckConsistency(chainFactIDs, false)
 		appendVerifierIssues(engine, consistencyReport, sessionID)
+		if consistencyReport != nil && consistencyReport.IssueCount > 0 {
+			s.flagFactsForReviewOnIssues(sessionID, orgID, engine, consistencyReport.Issues, "contradiction_detected")
+		}
 		if consistencyReport.IssueCount > 0 {
 			report.Valid = false
 			report.Issues = append(report.Issues, consistencyReport.Issues...)

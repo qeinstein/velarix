@@ -11,6 +11,11 @@ All notable changes to Velarix will be documented in this file.
 - **Operations**: Added an expiry sweep ticker to persist `fact_expired` events and invalidate downstream dependents promptly (`VELARIX_EXPIRY_SWEEP_INTERVAL_SECONDS`).
 - **Slices**: Added freshness-aware slice ranking via `asserted_at` plus exponential decay (`VELARIX_SLICE_FRESHNESS_DECAY_HOURS`, `VELARIX_SLICE_FRESHNESS_WEIGHT`).
 - **Metrics**: Added `velarix_facts_expired_total` and `velarix_global_fanout_total`.
+- **Verification**: Added fact verification metadata (`requires_verification`, `verification_status`, `verified_at`, etc), persisted as `fact_verification` journal events for replay.
+- **Verification**: Added admin fact verification endpoint `POST /v1/s/{session_id}/facts/{fact_id}/verify`.
+- **Verification**: Added optional verification webhook automation (`VELARIX_VERIFICATION_WEBHOOK_URL`, `VELARIX_VERIFICATION_WEBHOOK_TIMEOUT_SECONDS`).
+- **Governance**: Added grounding/verification policy controls to prevent fabricated or stale premises from grounding execution-critical facts and decisions.
+- **Consistency**: Added optional auto-flagging of facts for review when contradictions are detected (`VELARIX_AUTO_FLAG_REVIEW_ON_CONTRADICTION`).
 - **Benchmark Harness**: Added a reproducible, standalone benchmark harness (`benchmark/harness.go` and `tests/reproducibility/hallucination_benchmark.py`) for long-horizon contradiction evaluation.
 - **SDK Additions**: Added integrations for CrewAI, LlamaIndex, and LangGraph to the Python SDK (`sdks/python/velarix/integrations`). 
 - **SDK Additions**: Added `client.global_facts.*` helpers to the Python SDK for global facts.

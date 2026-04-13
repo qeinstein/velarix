@@ -62,6 +62,29 @@ items = client.global_facts.list()
 client.global_facts.retract("today")
 ```
 
+## Fact Verification
+
+Velarix can store verification metadata for facts and use it to gate execution-critical conclusions.
+Admins can update verification status via `POST /v1/s/{session_id}/facts/{fact_id}/verify`.
+
+```python
+from velarix import VelarixClient
+
+client = VelarixClient(base_url="http://localhost:8080", api_key="dev-admin-key")
+session = client.session("approval-demo")
+
+session.observe("ceo_of_x", {"summary": "The CEO of X is Y"})
+
+# Mark as verified (admin-only).
+session.verify_fact(
+    "ceo_of_x",
+    "verified",
+    method="human",
+    source_ref="ticket:KYC-123",
+    reason="Checked against the vendor's official filing",
+)
+```
+
 ## Execution Pattern
 
 The production pattern is:
