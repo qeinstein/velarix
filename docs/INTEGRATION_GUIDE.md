@@ -14,6 +14,7 @@ The primary pattern is consistent across products and frameworks:
 
 - Python SDK for direct session, fact, slice, and decision workflows
 - OpenAI adapter for model-facing observation and slice injection
+- LangChain wrapper for runtime injection and tool persistence
 - LangGraph checkpointer backed by Velarix session history
 - CrewAI memory helper for query-aware belief injection
 - LlamaIndex retrieval helper for current valid facts

@@ -12,22 +12,27 @@ import (
 	"time"
 )
 
+// ConfidenceThreshold is the minimum status treated as currently valid.
 const ConfidenceThreshold Status = 0.6
 
+// NilArgumentError reports a required nil argument.
 type NilArgumentError struct {
 	Argument string
 }
 
+// Error formats the nil-argument error.
 func (e *NilArgumentError) Error() string {
 	return fmt.Sprintf("%s cannot be nil", e.Argument)
 }
 
+// ChangeEvent is emitted when a fact's effective status changes.
 type ChangeEvent struct {
 	FactID    string `json:"fact_id"`
 	Status    Status `json:"status"`
 	Timestamp int64  `json:"timestamp"`
 }
 
+// MaxFactsPerSession is the hard in-memory cap enforced per session.
 const MaxFactsPerSession = 80000 // Absolute cap on number of facts to prevent OOM. In practice, performance degradation starts around 50k facts with complex justifications, so this is a safety limit. Users should archive and start a new session if they hit this limit.
 
 // Engine is the authoritative runtime for Velarix.
@@ -1041,4 +1046,3 @@ func (e *Engine) DependencyIDs(factID string, includeSelf bool) ([]string, error
 	sort.Strings(out)
 	return out, nil
 }
-

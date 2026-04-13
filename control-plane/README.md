@@ -5,8 +5,8 @@ The control plane contains the hosted-service operational surfaces that sit alon
 ## Current Components
 
 - `billing/`: Stripe webhook handling, subscription updates, and plan-derived feature state
-- `infrastructure/`: deployment templates and infrastructure definitions
-- `provisioning/`: tenant setup and environment bootstrap helpers
+- `infrastructure/`: reference Terraform scaffold for a hosted deployment
+- `provisioning/`: tenant setup sketch and environment bootstrap helpers
 
 ## Current Shape
 
@@ -15,6 +15,8 @@ The current scope covers:
 - billing-state ingestion
 - deployment scaffolding
 - tenant setup workflows
+
+These surfaces are support code, not a finished hosted control plane. The reasoning API remains the primary product surface in this repository.
 
 ## Product Boundary
 

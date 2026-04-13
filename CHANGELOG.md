@@ -14,6 +14,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `.env.example` extended with all env vars read by the server: `VELARIX_DECISION_TOKEN_SECRET`, `VELARIX_BADGER_PATH`, `VELARIX_DISABLE_REDIS`, `VELARIX_MAX_CONCURRENT_WRITES`, `VELARIX_METRICS_ALLOWED_CIDR`, `VELARIX_OPENAI_BASE_URL`, `OPENAI_API_KEY`, `VELARIX_VERIFIER_MODEL`, `VELARIX_VERIFIER_MAX_PAIRS`, `VELARIX_RETENTION_SWEEP_INTERVAL_MINUTES`, `VELARIX_BASE_URL`, `VELARIX_SMTP_*`
 - `CHANGELOG.md` created
 - `CONTRIBUTING.md` updated with local setup, test, benchmark, and branch convention instructions
+- Documentation accuracy pass across README, operational docs, benchmark notes, API specs, demo docs, env var reference, Go godoc, and Python SDK docstrings
 
 ### Removed
 - Compiled Go binaries (`velarix`, `vlx`, `tests.test`) removed from git tracking
