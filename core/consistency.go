@@ -131,7 +131,7 @@ func semanticNegationMismatch(a, b *Fact) bool {
 		return false
 	}
 	score := CosineSimilarity(EmbeddingForFact(a), EmbeddingForFact(b))
-	if score < 0.92 {
+	if score < 0.88 {
 		return false
 	}
 	hasNegA := strings.Contains(textA, " not ") || strings.Contains(textA, " no ") || strings.Contains(textA, " never ")
