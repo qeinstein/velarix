@@ -2,7 +2,6 @@ import sys
 import os
 import time
 import subprocess
-import requests
 
 # Add the SDK path to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__name__), '..')))
@@ -14,15 +13,9 @@ def test_missing_binary():
     try:
         with VelarixClient(embed_mode=True, binary_path="./non_existent_velarix") as client:
             pass
-        print("FAIL: test_missing_binary - expected error but got none")
-        return False
+        assert False, "expected error but got none"
     except VelarixRuntimeError as e:
-        if "Velarix binary not found" in str(e) and "pip install velarix[local]" in str(e):
-            print("PASS: test_missing_binary")
-            return True
-        else:
-            print(f"FAIL: test_missing_binary - unexpected error message: {e}")
-            return False
+        assert "Velarix binary not found" in str(e) and "pip install velarix[local]" in str(e)
 
 def test_embed_lifecycle():
     """
@@ -30,46 +23,32 @@ def test_embed_lifecycle():
     """
     # Build the binary first to ensure it's available
     print("Building Go binary for embed test...")
-    subprocess.run(["go", "build", "-o", "velarix_test_bin", "../../main.go"], check=True)    
-    binary_path = os.path.abspath("velarix_test_bin")
-    
+    bin_name = "velarix_test_bin.exe" if sys.platform == "win32" else "velarix_test_bin"
+    subprocess.run(["go", "build", "-o", bin_name, "../../main.go"], check=True)
+    binary_path = os.path.abspath(bin_name)    
     try:
+        os.environ["VELARIX_JWT_SECRET"] = "test_secret_for_embed_test_32_bytes_min"
+        os.environ["VELARIX_ENV"] = "dev"
+        os.environ["VELARIX_LITE"] = "true"
         with VelarixClient(embed_mode=True, binary_path=binary_path) as client:
             session = client.session("test_session")
             # Should not raise any error
             session.observe("test_fact", {"msg": "hello from embed"})
             
             # Verify it's actually running
-            sessions = client.get_sessions()
-            if not isinstance(sessions, list):
-                print(f"FAIL: test_embed_lifecycle - get_sessions returned {type(sessions)}")
-                return False
+            slice_data = session.get_slice()
+            assert isinstance(slice_data, list)
             
             # Check port assignment
-            if client.sidecar.port is None or "localhost" not in client.base_url:
-                print(f"FAIL: test_embed_lifecycle - invalid sidecar URL: {client.base_url}")
-                return False
+            assert client.sidecar.port is not None
+            assert "localhost" in client.base_url
                 
             print("Sidecar is running and responding.")
             
         # After exiting the context, the process should be gone
         time.sleep(1)
-        if client.sidecar.process is not None:
-             print("FAIL: test_embed_lifecycle - process was not cleared")
-             return False
+        assert client.sidecar.process is None
         
-        print("PASS: test_embed_lifecycle")
-        return True
-        
-    except Exception as e:
-        print(f"FAIL: test_embed_lifecycle - caught exception: {e}")
-        return False
     finally:
         if os.path.exists(binary_path):
             os.remove(binary_path)
-
-if __name__ == "__main__":
-    s1 = test_missing_binary()
-    s2 = test_embed_lifecycle()
-    if not (s1 and s2):
-        sys.exit(1)
