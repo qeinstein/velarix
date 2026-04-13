@@ -3,10 +3,12 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"velarix/core"
@@ -78,6 +80,19 @@ func (o sliceSelectionOptions) cacheKey(sessionID string) string {
 }
 
 func selectBeliefSlice(engine *core.Engine, opts sliceSelectionOptions) []*core.Fact {
+	decayHours := envFloat64("VELARIX_SLICE_FRESHNESS_DECAY_HOURS", 24)
+	if decayHours <= 0 {
+		decayHours = 24
+	}
+	weight := envFloat64("VELARIX_SLICE_FRESHNESS_WEIGHT", 0.2)
+	if weight < 0 {
+		weight = 0
+	}
+	if weight > 1 {
+		weight = 1
+	}
+	nowMs := time.Now().UnixMilli()
+
 	facts := engine.ListFacts()
 	semanticScores := map[string]float64{}
 	if opts.Query != "" && (opts.Strategy == "semantic" || opts.Strategy == "hybrid" || opts.Strategy == "query_aware") {
@@ -109,6 +124,25 @@ func selectBeliefSlice(engine *core.Engine, opts sliceSelectionOptions) []*core.
 			score += semanticScores[fact.ID] * 5
 			score += lexicalFactScore(opts.Query, fact) * 2
 		}
+
+		// Freshness scoring: exponential decay with configurable half-life-ish
+		// control. With the default (24h), a fact asserted within ~1 hour scores
+		// near 1.0 and a fact ~1 week old scores near 0.1.
+		freshness := 1.0
+		if fact.AssertedAt > 0 && nowMs > fact.AssertedAt {
+			ageHours := float64(nowMs-fact.AssertedAt) / (1000 * 60 * 60)
+			freshness = math.Exp(-math.Ln10 * ageHours / (7 * decayHours))
+			if freshness < 0 {
+				freshness = 0
+			}
+			if freshness > 1 {
+				freshness = 1
+			}
+		}
+		// Add a bounded freshness component so it contributes meaningfully but
+		// doesn't overwhelm validity/entrenchment/query relevance.
+		score += weight * freshness * 3
+
 		ranked = append(ranked, rankedSliceFact{Fact: fact, Score: score})
 	}
 

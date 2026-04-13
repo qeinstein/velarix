@@ -31,6 +31,11 @@ var (
 		Help: "Total facts automatically retracted due to detected contradictions.",
 	})
 
+	FactsExpiredTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "velarix_facts_expired_total",
+		Help: "Total facts expired via ValidUntil sweeps (fact_expired).",
+	})
+
 	BadgerDiskUsage = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "velarix_badger_disk_usage_bytes",
 		Help: "Total bytes used by BadgerDB. Recommended alert: > 80% of volume capacity.",

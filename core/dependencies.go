@@ -78,9 +78,32 @@ func dependencyConfidence(status Status, negated bool) Status {
 	return Valid - status
 }
 
-func dependencySatisfied(status Status, negated bool) bool {
-	if negated {
-		return status < ConfidenceThreshold
+// dependencySatisfied resolves whether a dependency is satisfied,
+// taking into account AssertionKind scoping rules.
+//
+// A hypothetical or fictional fact cannot ground an empirical/uncertain derived
+// fact. However, hypothetical/fictional derived facts may depend on parents in
+// the same scope.
+func dependencySatisfied(parent *Fact, parentStatus Status, negated bool, childAssertionKind string) bool {
+	// Treat "" as empirical scope.
+	childScope := childAssertionKind
+	if strings.TrimSpace(childScope) == "" {
+		childScope = AssertionKindEmpirical
 	}
-	return status >= ConfidenceThreshold
+
+	if parent != nil {
+		parentScope := strings.TrimSpace(parent.AssertionKind)
+		if parentScope == "" {
+			parentScope = AssertionKindEmpirical
+		}
+		if (parentScope == AssertionKindFictional || parentScope == AssertionKindHypothetical) &&
+			(childScope == AssertionKindEmpirical || childScope == AssertionKindUncertain) {
+			return false
+		}
+	}
+
+	if negated {
+		return parentStatus < ConfidenceThreshold
+	}
+	return parentStatus >= ConfidenceThreshold
 }

@@ -47,6 +47,47 @@ Velarix is not positioned as:
 - Workflow-focused OpenAPI document: [`openapi.yaml`](openapi.yaml)
 - Broader generated Swagger surface: [`swagger.yaml`](swagger.yaml)
 
+## API Notes
+
+### Fact Fields: `assertion_kind` and `valid_until`
+
+Facts may include `assertion_kind` to scope epistemic contradictions and grounding:
+`empirical` (default real-world claim), `uncertain` (hedged real-world claim),
+`hypothetical` (conditional/assumed), and `fictional` (story/narrative). Hypothetical
+and fictional facts do not contradict empirical facts and cannot ground empirical
+derived facts.
+
+Facts may include `valid_until` (unix milliseconds). After expiry, the engine treats
+the fact as invalid; an expiry sweep writes `fact_expired` events so dependents are
+repropagated immediately and reloads reconstruct the same state.
+
+### Global Facts (Org-Wide)
+
+Global facts are org-wide ground truths shared across all sessions. Use them for
+verified entities or org-level truths that multiple agents/sessions should reference.
+
+Endpoints (org admin):
+
+```bash
+# Assert a global fact
+curl -sS -X POST "$VELARIX_URL/v1/global/facts" \
+  -H "Authorization: Bearer $VELARIX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"today","is_root":true,"manual_status":1.0,"payload":{"date":"2026-04-13"},"assertion_kind":"empirical"}'
+
+# List global facts
+curl -sS -X GET "$VELARIX_URL/v1/global/facts" \
+  -H "Authorization: Bearer $VELARIX_API_KEY"
+
+# Get one global fact
+curl -sS -X GET "$VELARIX_URL/v1/global/facts/today" \
+  -H "Authorization: Bearer $VELARIX_API_KEY"
+
+# Retract a global fact
+curl -sS -X DELETE "$VELARIX_URL/v1/global/facts/today" \
+  -H "Authorization: Bearer $VELARIX_API_KEY"
+```
+
 ## Read In Order
 
 1. `README.md`

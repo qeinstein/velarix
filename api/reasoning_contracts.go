@@ -158,6 +158,9 @@ func (s *Server) handleRecordPerception(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if s.GlobalTruth != nil {
+		s.GlobalTruth.IndexFactDependencies(sessionID, &fact)
+	}
 
 	actorID := getActorID(r)
 	entry := store.JournalEntry{Type: store.EventAssert, SessionID: sessionID, Fact: &fact, ActorID: actorID}

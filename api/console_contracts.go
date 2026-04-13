@@ -720,6 +720,9 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	if s.GlobalTruth != nil {
+		s.GlobalTruth.Unsubscribe(sessionID)
+	}
 	delete(s.Engines, sessionID)
 	delete(s.Configs, sessionID)
 	delete(s.Versions, sessionID)

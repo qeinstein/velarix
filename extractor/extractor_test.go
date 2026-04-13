@@ -150,6 +150,38 @@ func TestExtract_ToCoreFact_DerivedProperties(t *testing.T) {
 	}
 }
 
+func TestExtract_AssertionKindClassificationToCoreFact(t *testing.T) {
+	vlogic := `fact emp: "Alice is the CEO of Acme" (confidence: 0.9, assertion_kind: empirical)
+fact hedged: "I think Bob is the CFO of Acme" (confidence: 0.6, assertion_kind: uncertain)
+fact conditional: "If revenue grows, hiring will increase" (confidence: 0.8, assertion_kind: hypothetical)
+fact story: "In the story, gravity pulls upward" (confidence: 0.9, assertion_kind: fictional)`
+
+	extracted, err := extractor.ParseVLogic(vlogic)
+	if err != nil {
+		t.Fatalf("ParseVLogic error: %v", err)
+	}
+	if len(extracted) != 4 {
+		t.Fatalf("expected 4 extracted facts, got %d", len(extracted))
+	}
+
+	got := map[string]string{}
+	for _, ef := range extracted {
+		got[ef.ID] = ef.ToCoreFact().AssertionKind
+	}
+	if got["emp"] != "empirical" {
+		t.Fatalf("emp assertion_kind=%q, want empirical", got["emp"])
+	}
+	if got["hedged"] != "uncertain" {
+		t.Fatalf("hedged assertion_kind=%q, want uncertain", got["hedged"])
+	}
+	if got["conditional"] != "hypothetical" {
+		t.Fatalf("conditional assertion_kind=%q, want hypothetical", got["conditional"])
+	}
+	if got["story"] != "fictional" {
+		t.Fatalf("story assertion_kind=%q, want fictional", got["story"])
+	}
+}
+
 func TestExtract_TimeoutError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
