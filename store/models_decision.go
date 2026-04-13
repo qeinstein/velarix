@@ -23,32 +23,40 @@ type Decision struct {
 }
 
 type DecisionDependency struct {
-	DecisionID      string  `json:"decision_id"`
-	SessionID       string  `json:"session_id"`
-	FactID          string  `json:"fact_id"`
-	DependencyType  string  `json:"dependency_type"`
-	RequiredStatus  string  `json:"required_status"`
-	CurrentStatus   float64 `json:"current_status,omitempty"`
-	SourceRef       string  `json:"source_ref,omitempty"`
-	PolicyVersion   string  `json:"policy_version,omitempty"`
-	ExplanationHint string  `json:"explanation_hint,omitempty"`
-	Entrenchment    float64 `json:"entrenchment,omitempty"`
-	ReviewStatus    string  `json:"review_status,omitempty"`
-	ReviewRequired  bool    `json:"review_required,omitempty"`
+	DecisionID         string  `json:"decision_id"`
+	SessionID          string  `json:"session_id"`
+	FactID             string  `json:"fact_id"`
+	DependencyType     string  `json:"dependency_type"`
+	RequiredStatus     string  `json:"required_status"`
+	CurrentStatus      float64 `json:"current_status,omitempty"`
+	SourceType         string  `json:"source_type,omitempty"`
+	SourceRef          string  `json:"source_ref,omitempty"`
+	VerificationStatus string  `json:"verification_status,omitempty"`
+	VerifiedAt         int64   `json:"verified_at,omitempty"`
+	AssertedAt         int64   `json:"asserted_at,omitempty"`
+	PolicyVersion      string  `json:"policy_version,omitempty"`
+	ExplanationHint    string  `json:"explanation_hint,omitempty"`
+	Entrenchment       float64 `json:"entrenchment,omitempty"`
+	ReviewStatus       string  `json:"review_status,omitempty"`
+	ReviewRequired     bool    `json:"review_required,omitempty"`
 }
 
 type DecisionBlocker struct {
-	FactID          string  `json:"fact_id"`
-	DependencyType  string  `json:"dependency_type"`
-	RequiredStatus  string  `json:"required_status"`
-	CurrentStatus   float64 `json:"current_status"`
-	ReasonCode      string  `json:"reason_code"`
-	SourceRef       string  `json:"source_ref,omitempty"`
-	PolicyVersion   string  `json:"policy_version,omitempty"`
-	ExplanationHint string  `json:"explanation_hint,omitempty"`
-	Entrenchment    float64 `json:"entrenchment,omitempty"`
-	ReviewStatus    string  `json:"review_status,omitempty"`
-	ReviewRequired  bool    `json:"review_required,omitempty"`
+	FactID             string  `json:"fact_id"`
+	DependencyType     string  `json:"dependency_type"`
+	RequiredStatus     string  `json:"required_status"`
+	CurrentStatus      float64 `json:"current_status"`
+	ReasonCode         string  `json:"reason_code"`
+	SourceType         string  `json:"source_type,omitempty"`
+	SourceRef          string  `json:"source_ref,omitempty"`
+	VerificationStatus string  `json:"verification_status,omitempty"`
+	VerifiedAt         int64   `json:"verified_at,omitempty"`
+	AssertedAt         int64   `json:"asserted_at,omitempty"`
+	PolicyVersion      string  `json:"policy_version,omitempty"`
+	ExplanationHint    string  `json:"explanation_hint,omitempty"`
+	Entrenchment       float64 `json:"entrenchment,omitempty"`
+	ReviewStatus       string  `json:"review_status,omitempty"`
+	ReviewRequired     bool    `json:"review_required,omitempty"`
 }
 
 type DecisionCheck struct {
