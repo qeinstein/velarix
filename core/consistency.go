@@ -131,7 +131,7 @@ func semanticNegationMismatch(a, b *Fact) bool {
 		return false
 	}
 	score := CosineSimilarity(EmbeddingForFact(a), EmbeddingForFact(b))
-	if score < 0.92 {
+	if score < 0.88 {
 		return false
 	}
 	hasNegA := strings.Contains(textA, " not ") || strings.Contains(textA, " no ") || strings.Contains(textA, " never ")
@@ -139,10 +139,35 @@ func semanticNegationMismatch(a, b *Fact) bool {
 	return hasNegA != hasNegB
 }
 
+// assertionScope returns the effective scope of a fact for contradiction matching.
+// Empirical (default) and uncertain facts share the same scope; hypothetical and
+// fictional facts each live in their own scope and never contradict cross-scope facts.
+func assertionScope(f *Fact) string {
+	if f == nil {
+		return AssertionKindEmpirical
+	}
+	switch f.AssertionKind {
+	case AssertionKindHypothetical, AssertionKindFictional:
+		return f.AssertionKind
+	default:
+		// Both "" and "uncertain" participate in the real-world scope.
+		return AssertionKindEmpirical
+	}
+}
+
 func contradictionIssueForFacts(a, b *Fact) (ConsistencyIssue, bool) {
 	if a == nil || b == nil {
 		return ConsistencyIssue{}, false
 	}
+
+	// Liar-Paradox / creative-scope guard: facts from different scopes (e.g. a
+	// fictional assertion and a real-world fact) do not contradict each other.
+	// This prevents false positives when an LLM is asked to reason or write
+	// within a hypothetical or narrative frame.
+	if assertionScope(a) != assertionScope(b) {
+		return ConsistencyIssue{}, false
+	}
+
 	sigA := extractClaimSignature(a)
 	sigB := extractClaimSignature(b)
 
