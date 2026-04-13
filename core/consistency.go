@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-// ConsistencyIssue describes one contradiction or consistency problem.
 type ConsistencyIssue struct {
 	Type               string   `json:"type"`
 	Severity           string   `json:"severity"`
@@ -20,7 +19,6 @@ type ConsistencyIssue struct {
 	VerifierConfidence float64  `json:"verifier_confidence,omitempty"`
 }
 
-// ConsistencyReport summarises a consistency-check run.
 type ConsistencyReport struct {
 	CheckedFactIDs []string           `json:"checked_fact_ids"`
 	IssueCount     int                `json:"issue_count"`
@@ -130,16 +128,13 @@ func semanticNegationMismatch(a, b *Fact) bool {
 	if textA == "" || textB == "" {
 		return false
 	}
-	// Check for negation words first (O(len(text))) before computing cosine
-	// similarity (O(dims) + possible embedding recompute).  The vast majority
-	// of fact pairs share the same polarity, so this avoids the expensive
-	// vector computation for almost all calls.
-	hasNegA := strings.Contains(textA, " not ") || strings.Contains(textA, " no ") || strings.Contains(textA, " never ")
-	hasNegB := strings.Contains(textB, " not ") || strings.Contains(textB, " no ") || strings.Contains(textB, " never ")
-	if hasNegA == hasNegB {
+	score := CosineSimilarity(EmbeddingForFact(a), EmbeddingForFact(b))
+	if score < 0.92 {
 		return false
 	}
-	return CosineSimilarity(EmbeddingForFact(a), EmbeddingForFact(b)) >= 0.92
+	hasNegA := strings.Contains(textA, " not ") || strings.Contains(textA, " no ") || strings.Contains(textA, " never ")
+	hasNegB := strings.Contains(textB, " not ") || strings.Contains(textB, " no ") || strings.Contains(textB, " never ")
+	return hasNegA != hasNegB
 }
 
 func contradictionIssueForFacts(a, b *Fact) (ConsistencyIssue, bool) {
@@ -201,11 +196,8 @@ func uniqueSortedFactIDs(ids []string) []string {
 }
 
 func (e *Engine) consistencyIssuesForIDsUnsafe(factIDs []string, includeInvalid bool) []ConsistencyIssue {
-	// Callers are expected to pass an already-normalised list (see CheckConsistency).
-	// We only fall back to the full fact set when the list is empty.
-	ids := factIDs
+	ids := uniqueSortedFactIDs(factIDs)
 	if len(ids) == 0 {
-		ids = make([]string, 0, len(e.Facts))
 		for id := range e.Facts {
 			ids = append(ids, id)
 		}
@@ -248,22 +240,14 @@ func (e *Engine) consistencyIssuesForIDsUnsafe(factIDs []string, includeInvalid 
 	}
 
 	sort.Slice(issues, func(i, j int) bool {
-		if issues[i].Severity != issues[j].Severity {
-			return issues[i].Severity < issues[j].Severity
+		if issues[i].Severity == issues[j].Severity {
+			return strings.Join(issues[i].FactIDs, ",") < strings.Join(issues[j].FactIDs, ",")
 		}
-		// Compare FactIDs element-by-element to avoid strings.Join allocations.
-		aIDs, bIDs := issues[i].FactIDs, issues[j].FactIDs
-		for k := 0; k < len(aIDs) && k < len(bIDs); k++ {
-			if aIDs[k] != bIDs[k] {
-				return aIDs[k] < bIDs[k]
-			}
-		}
-		return len(aIDs) < len(bIDs)
+		return issues[i].Severity < issues[j].Severity
 	})
 	return issues
 }
 
-// CheckConsistency scans the requested fact set for contradictions.
 func (e *Engine) CheckConsistency(factIDs []string, includeInvalid bool) *ConsistencyReport {
 	e.mu.RLock()
 	defer e.mu.RUnlock()

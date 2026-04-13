@@ -11,16 +11,14 @@ The product is built around four guarantees:
 
 ## What Ships In This Repository
 
-- Go API for facts, explanations, slices, governance, consistency checks, and first-class decisions
+- Go API for facts, explanations, slices, governance, and first-class decisions
 - symbolic reasoning engine with dependency tracking and negated support
 - query-aware belief retrieval for agent runtimes
-- org-scoped auth, API keys, invitations, notifications, policies, billing metadata, support tickets, backup export, and compliance export
 - Python SDK and runtime helpers
-- LangChain, LangGraph, CrewAI, LlamaIndex, and OpenAI integration surfaces
+- LangGraph, CrewAI, LlamaIndex, and OpenAI integration surfaces
 - `vlx` CLI for core operational workflows
-- reproducible contradiction benchmarks in Python and Go
+- reproducible contradiction benchmark harness
 - maintained demos for approval integrity and framework integrations
-- optional docs-page endpoints backed by repo-local `markdown/*.md` files
 
 ## Product Boundary
 
@@ -47,8 +45,7 @@ Velarix is not positioned as:
 - [Errors](ERRORS.md)
 - [Python SDK](../sdks/python/README.md)
 - Workflow-focused OpenAPI document: [`openapi.yaml`](openapi.yaml)
-- Swagger 2 compatibility stubs that point at the maintained OpenAPI document: [`swagger.yaml`](swagger.yaml), [`swagger.json`](swagger.json), [`docs.go`](docs.go)
-- Postman collection for the maintained subset: [`postman.json`](postman.json)
+- Broader generated Swagger surface: [`swagger.yaml`](swagger.yaml)
 
 ## Read In Order
 
@@ -70,4 +67,3 @@ Velarix is not positioned as:
 - The canonical demo is `demo/approval_integrity.py`.
 - LangGraph and CrewAI are supported surfaces, not the primary product narrative.
 - Postgres plus Redis is the production operating path.
-- The benchmark surfaces are `tests/reproducibility/hallucination_benchmark.py` and the Go `benchmark/` package.

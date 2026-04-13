@@ -10,7 +10,6 @@ type CycleError struct {
 	Path []string
 }
 
-// Error formats the detected dependency cycle for callers.
 func (e *CycleError) Error() string {
 	return fmt.Sprintf("Justification cycle detected. Fact '%s' cannot depend on '%s' because a cycle exists: %s. Please retract one of these facts to proceed.",
 		e.Path[len(e.Path)-1], e.Path[0], strings.Join(e.Path, " -> "))

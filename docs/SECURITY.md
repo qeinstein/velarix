@@ -16,7 +16,6 @@ The security objective is straightforward:
 - credential revocation on password reset
 - bootstrap admin disabled by default outside development
 - production CORS allowlisting
-- localhost-default metrics exposure with optional CIDR allowlisting
 - baseline security headers on API responses
 - append-only history with verification hashes
 - route-level authorization checks
@@ -41,7 +40,7 @@ If Badger is used outside development:
 
 ## Current Limits
 
-- password reset depends on SMTP delivery or the development-only `dev_reset_token` response
+- password reset depends on SMTP or development-only token return
 - Redis coordination is recommended for shared rate limiting and idempotency
 - retention policy is not the same thing as epistemic invalidation
 - export integrity hashes are useful audit material, not audited compliance evidence

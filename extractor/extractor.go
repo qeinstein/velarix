@@ -24,7 +24,6 @@ type ExtractionError struct {
 	Detail string
 }
 
-// Error formats an extraction error for callers and logs.
 func (e *ExtractionError) Error() string {
 	if e.Detail != "" {
 		return fmt.Sprintf("extraction error (%s): %s", e.Cause, e.Detail)
@@ -35,18 +34,18 @@ func (e *ExtractionError) Error() string {
 // ExtractedFact is the raw parsed output of one atomic claim returned by the
 // extraction model before it is converted to a core.Fact.
 type ExtractedFact struct {
-	ID         string   `json:"id"`
-	Claim      string   `json:"claim"`
-	ClaimKey   string   `json:"claim_key"`
-	ClaimValue string   `json:"claim_value"`
-	Subject    string   `json:"subject"`
-	Predicate  string   `json:"predicate"`
-	Object     string   `json:"object"`
-	Polarity   string   `json:"polarity"`
-	IsRoot     bool     `json:"is_root"`
-	DependsOn  []string `json:"depends_on"`
-	SourceType string   `json:"source_type"`
-	Confidence float64  `json:"confidence"`
+	ID          string   `json:"id"`
+	Claim       string   `json:"claim"`
+	ClaimKey    string   `json:"claim_key"`
+	ClaimValue  string   `json:"claim_value"`
+	Subject     string   `json:"subject"`
+	Predicate   string   `json:"predicate"`
+	Object      string   `json:"object"`
+	Polarity    string   `json:"polarity"`
+	IsRoot      bool     `json:"is_root"`
+	DependsOn   []string `json:"depends_on"`
+	SourceType  string   `json:"source_type"`
+	Confidence  float64  `json:"confidence"`
 }
 
 // ToCoreFact converts an ExtractedFact into a core.Fact ready for engine
