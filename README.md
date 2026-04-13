@@ -8,13 +8,12 @@ It keeps recommendations, approvals, and execution paths tied to the facts that 
 
 ## What Velarix Includes
 
-- Go HTTP API for facts, invalidation, explanations, slices, consistency checks, decisions, and execution checks
+- Go HTTP API for facts, invalidation, explanations, slices, governance, decisions, and execution checks
 - symbolic truth-maintenance engine with OR-of-AND justifications and negated dependencies
 - query-aware belief slicing with semantic ranking and dependency expansion
 - review-gated governance controls for protected facts and mutations
-- org-scoped auth, API keys, invitations, notifications, compliance export, and support-ticket surfaces
-- Python SDK plus OpenAI, LangChain, LangGraph, LlamaIndex, and CrewAI integration surfaces
-- reproducible contradiction benchmarks in both Go and Python
+- Python SDK plus OpenAI, LangGraph, LlamaIndex, and CrewAI integration surfaces
+- reproducible long-horizon contradiction benchmark harness
 - `vlx` CLI for health, slice, review, mutation, compliance export, and benchmark workflows
 
 ## Quickstart
@@ -23,8 +22,9 @@ Start the API locally:
 
 ```bash
 export VELARIX_ENV=dev
+export VELARIX_API_KEY=dev-admin-key
 export VELARIX_BADGER_PATH="$(mktemp -d)"
-go run main.go --lite
+go run main.go
 ```
 
 Write facts with the Python SDK:
@@ -32,7 +32,7 @@ Write facts with the Python SDK:
 ```python
 from velarix import VelarixClient
 
-client = VelarixClient(base_url="http://localhost:8080")
+client = VelarixClient(base_url="http://localhost:8080", api_key="dev-admin-key")
 session = client.session("approval-demo")
 
 session.observe("vendor_verified", {"summary": "Vendor 17 passed KYB"})
@@ -59,7 +59,6 @@ Velarix belongs at the execution boundary:
 
 - Python SDK: session, fact, slice, and decision APIs
 - OpenAI adapter: model-facing observation and slice injection
-- LangChain: wrapped chat model with Velarix runtime injection
 - LangGraph: checkpoint-backed graph state in Velarix
 - CrewAI: query-aware belief injection into task descriptions
 - LlamaIndex: lightweight retrieval of current valid beliefs
@@ -86,7 +85,7 @@ Velarix belongs at the execution boundary:
 ## Production Notes
 
 - production requires `VELARIX_JWT_SECRET`
-- browser access with auth cookies requires `VELARIX_ALLOWED_ORIGINS`
+- browser access in production requires `VELARIX_ALLOWED_ORIGINS`
 - production runs on Postgres-backed runtime state
 - Badger outside development requires explicit opt-in
 - Redis coordination is recommended for multi-instance rate limiting and idempotency
