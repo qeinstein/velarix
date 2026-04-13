@@ -1,29 +1,84 @@
-todo.txt
-
+# Environment
 .env
-.venv/
-venv/
-.pytest_cache/
-.mypy_cache/
+.env.local
+.env.production
+.env.staging
+.env.*
+!.env.example
 
-# CausalDB Data and Logs for tests and dev environment
+# Build outputs
+dist/
+build/
+bin/
+velarix
+vlx
+
+# Go artifacts
+*.test
+*.out
+*.prof
+coverage*.out
+coverage*.txt
+*.cover
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+.venv/
+.mypy_cache/
+.pytest_cache/
+
+# Database and storage
 velarix.data/
 *.vlog
 *.mem
 *.data
 *.bin
+*.sst
+MANIFEST
 
-bin/
-*.exe
-*.test
-*.prof
+# Logs and journals
+*.log
+*.jsonl
+web/dev.log
 
-velarix.data/
-velarix_test_bin
-__pycache__/
-*.pyc
+# TLS and secrets
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Benchmark data and generated outputs
+benchmark/data/*
+!benchmark/data/.gitkeep
+benchmark/baseline_core.txt
+benchmark/baseline_internal.txt
+benchmark/coverage.txt
+benchmark/coverage_full.out
+benchmark/govulncheck.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node / web
 node_modules/
 sdks/typescript/node_modules/
+web/.next/
+package-lock.json
 
-# Fluxx(Files i dont want to push but don't want to delete)
+# Fluxx (files not to push but not to delete)
 todo.txt
+velarix_test_bin
