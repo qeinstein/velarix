@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -201,22 +200,11 @@ func (s *Server) issueExecutionToken(orgID string, decision *store.Decision, che
 			Subject:   decision.ID,
 		},
 	}
-	signingKey, err := decisionSigningKey()
+	signingKey, err := jwtSigningKey()
 	if err != nil {
 		return "", err
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(signingKey)
-}
-
-// decisionSigningKey returns the signing key for decision execution tokens.
-// Uses VELARIX_DECISION_TOKEN_SECRET if set, otherwise falls back to VELARIX_JWT_SECRET.
-// For new deployments, set VELARIX_DECISION_TOKEN_SECRET separately so that decision
-// execution tokens and console JWTs use distinct secrets.
-func decisionSigningKey() ([]byte, error) {
-	if v := os.Getenv("VELARIX_DECISION_TOKEN_SECRET"); v != "" {
-		return []byte(v), nil
-	}
-	return jwtSigningKey()
 }
 
 func (s *Server) parseExecutionToken(raw string) (*executionTokenClaims, error) {
@@ -225,7 +213,7 @@ func (s *Server) parseExecutionToken(raw string) (*executionTokenClaims, error) 
 		return nil, fmt.Errorf("execution_token is required")
 	}
 	claims := &executionTokenClaims{}
-	signingKey, err := decisionSigningKey()
+	signingKey, err := jwtSigningKey()
 	if err != nil {
 		return nil, err
 	}

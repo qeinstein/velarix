@@ -45,25 +45,12 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 	var body extractAndAssertRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		APIRequests.WithLabelValues("/v1/s/{session_id}/extract-and-assert", "400").Inc()
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if strings.TrimSpace(body.LLMOutput) == "" {
 		APIRequests.WithLabelValues("/v1/s/{session_id}/extract-and-assert", "400").Inc()
 		http.Error(w, "llm_output is required", http.StatusBadRequest)
-		return
-	}
-	// Enforce per-field size caps after decode.
-	const maxLLMOutput = 32_000
-	const maxSessionContext = 2_000
-	if len(body.LLMOutput) > maxLLMOutput {
-		APIRequests.WithLabelValues("/v1/s/{session_id}/extract-and-assert", "400").Inc()
-		http.Error(w, "llm_output exceeds maximum length of 32000 characters", http.StatusBadRequest)
-		return
-	}
-	if len(body.SessionContext) > maxSessionContext {
-		APIRequests.WithLabelValues("/v1/s/{session_id}/extract-and-assert", "400").Inc()
-		http.Error(w, "session_context exceeds maximum length of 2000 characters", http.StatusBadRequest)
 		return
 	}
 
@@ -132,19 +119,13 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 			Fact:      fact,
 			ActorID:   actorID,
 		}
-		// Journal-first: attempt to persist before finalising the in-memory state.
-		// If the journal append fails, roll back the in-memory assertion so that the
-		// engine state and journal never diverge.
 		if err := s.Store.Append(entry); err != nil {
-			slog.Error("Failed to persist journal for extracted fact — rolling back in-memory assertion",
+			slog.Error("Failed to persist journal for extracted fact",
 				"session_id", sessionID,
 				"fact_id", fact.ID,
 				"error", err,
 			)
-			// Roll back the in-memory assertion so engine state matches journal state.
-			_ = engine.RetractFact(fact.ID, "journal_write_failure")
-			http.Error(w, "an internal error occurred", http.StatusInternalServerError)
-			return
+			// Do not abort the batch — the fact is in memory. Journal failure is logged.
 		}
 		_ = s.Store.AppendOrgActivity(orgID, entry)
 
