@@ -11,6 +11,7 @@ Velarix currently runs as:
 - Badger-backed local persistence for development and tests
 - Postgres-backed shared persistence for production-style deployments
 - optional Redis coordination for rate limiting and idempotency
+- org-scoped metadata for sessions, invitations, notifications, policies, billing state, support tickets, and compliance export
 - SDK and integration clients that talk to the public `/v1` API
 
 ## Reasoning Model

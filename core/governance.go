@@ -13,6 +13,7 @@ const (
 	ReviewRejected = "rejected"
 )
 
+// NormalizeReviewStatus normalizes persisted review-status values.
 func NormalizeReviewStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case ReviewApproved:
@@ -28,6 +29,7 @@ func NormalizeReviewStatus(status string) string {
 	}
 }
 
+// ClampUnitFloat clamps a value into the inclusive [0,1] range.
 func ClampUnitFloat(v float64) float64 {
 	if v < 0 {
 		return 0
@@ -38,6 +40,7 @@ func ClampUnitFloat(v float64) float64 {
 	return v
 }
 
+// MetadataBool reads a boolean-like value from a metadata map.
 func MetadataBool(m map[string]interface{}, key string) bool {
 	if m == nil {
 		return false
@@ -58,6 +61,7 @@ func MetadataBool(m map[string]interface{}, key string) bool {
 	return false
 }
 
+// MetadataString reads a string value from a metadata map.
 func MetadataString(m map[string]interface{}, key string) string {
 	if m == nil {
 		return ""
@@ -68,6 +72,7 @@ func MetadataString(m map[string]interface{}, key string) string {
 	return ""
 }
 
+// EffectiveEntrenchment returns the fact's normalized entrenchment value.
 func (f *Fact) EffectiveEntrenchment() float64 {
 	if f == nil {
 		return 0
@@ -86,6 +91,7 @@ func (f *Fact) EffectiveEntrenchment() float64 {
 	return 0
 }
 
+// RequiresHumanReview reports whether the fact is currently review-gated.
 func (f *Fact) RequiresHumanReview() bool {
 	if f == nil {
 		return false
@@ -98,6 +104,7 @@ func (f *Fact) RequiresHumanReview() bool {
 	return status == ReviewPending
 }
 
+// SetFactReview updates the review metadata stored on a fact.
 func (e *Engine) SetFactReview(factID string, status string, reason string, reviewedAt int64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()

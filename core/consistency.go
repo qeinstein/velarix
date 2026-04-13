@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// ConsistencyIssue describes one contradiction or consistency problem.
 type ConsistencyIssue struct {
 	Type               string   `json:"type"`
 	Severity           string   `json:"severity"`
@@ -19,6 +20,7 @@ type ConsistencyIssue struct {
 	VerifierConfidence float64  `json:"verifier_confidence,omitempty"`
 }
 
+// ConsistencyReport summarises a consistency-check run.
 type ConsistencyReport struct {
 	CheckedFactIDs []string           `json:"checked_fact_ids"`
 	IssueCount     int                `json:"issue_count"`
@@ -261,6 +263,7 @@ func (e *Engine) consistencyIssuesForIDsUnsafe(factIDs []string, includeInvalid 
 	return issues
 }
 
+// CheckConsistency scans the requested fact set for contradictions.
 func (e *Engine) CheckConsistency(factIDs []string, includeInvalid bool) *ConsistencyReport {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
