@@ -38,6 +38,7 @@ def _latest_user_query(messages: Optional[List[Dict[str, Any]]]) -> str:
 
 
 def build_system_instruction(context_markdown: str) -> str:
+    """Compose the Velarix protocol block that is appended to the system prompt."""
     return (
         "\n\n## VELARIX EPISTEMIC PROTOCOL\n"
         "You are equipped with a memory layer (Velarix). Below are the current justified beliefs in this session. "
@@ -59,6 +60,7 @@ def build_system_instruction(context_markdown: str) -> str:
 
 
 def velarix_tools() -> List[Dict[str, Any]]:
+    """Return the OpenAI tool schema set used by the shared Velarix runtime."""
     return [
         {
             "type": "function",
@@ -213,6 +215,7 @@ def velarix_tools() -> List[Dict[str, Any]]:
 
 
 def merge_tools(existing_tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Append Velarix tool definitions without duplicating existing function names."""
     merged = list(existing_tools or [])
     existing_names = {
         tool.get("function", {}).get("name")
@@ -226,6 +229,7 @@ def merge_tools(existing_tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str
 
 
 def inject_system_instruction(messages: Optional[List[Dict[str, Any]]], context_markdown: str) -> List[Dict[str, Any]]:
+    """Insert or extend the system message with the current Velarix context block."""
     prepared = [deepcopy(message) for message in (messages or [])]
     instruction = build_system_instruction(context_markdown)
     for message in prepared:
@@ -237,6 +241,8 @@ def inject_system_instruction(messages: Optional[List[Dict[str, Any]]], context_
 
 
 class VelarixChatRuntime:
+    """Shared sync runtime for injecting Velarix context and handling tool calls."""
+
     def __init__(self, session: Any, source: str, strict: bool = True):
         self.session = session
         self.source = source
@@ -244,6 +250,7 @@ class VelarixChatRuntime:
         self.last_processed: Dict[str, Any] = {}
 
     def prepare_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach a memory slice and Velarix tool definitions to a chat request."""
         prepared = dict(params)
         query = str(prepared.pop("velarix_query", "") or _latest_user_query(prepared.get("messages")))
         max_facts = int(prepared.pop("velarix_max_facts", 120))
@@ -264,6 +271,7 @@ class VelarixChatRuntime:
         return prepared
 
     def process_response(self, response: Any) -> Any:
+        """Persist any Velarix tool effects emitted by a model response."""
         errors: List[str] = []
         self.last_processed = {
             "fact_ids": [],
@@ -394,6 +402,7 @@ class VelarixChatRuntime:
         self.last_processed["consistency_reports"].append(report)
 
     def verify_recent_reasoning(self, auto_retract: bool = True) -> Dict[str, Any]:
+        """Run consistency and reasoning-chain checks for the latest processed tool calls."""
         fact_ids = list(dict.fromkeys(self.last_processed.get("fact_ids", [])))
         chain_ids = list(dict.fromkeys(self.last_processed.get("reasoning_chain_ids", [])))
         consistency = None
@@ -409,6 +418,8 @@ class VelarixChatRuntime:
 
 
 class AsyncVelarixChatRuntime:
+    """Async variant of the shared runtime for injecting Velarix context and tool handling."""
+
     def __init__(self, session: Any, source: str, strict: bool = True):
         self.session = session
         self.source = source
@@ -416,6 +427,7 @@ class AsyncVelarixChatRuntime:
         self.last_processed: Dict[str, Any] = {}
 
     async def prepare_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach a memory slice and Velarix tool definitions to an async chat request."""
         prepared = dict(params)
         query = str(prepared.pop("velarix_query", "") or _latest_user_query(prepared.get("messages")))
         max_facts = int(prepared.pop("velarix_max_facts", 120))
@@ -436,6 +448,7 @@ class AsyncVelarixChatRuntime:
         return prepared
 
     async def process_response(self, response: Any) -> Any:
+        """Persist any Velarix tool effects emitted by an async model response."""
         errors: List[str] = []
         self.last_processed = {
             "fact_ids": [],
@@ -566,6 +579,7 @@ class AsyncVelarixChatRuntime:
         self.last_processed["consistency_reports"].append(report)
 
     async def verify_recent_reasoning(self, auto_retract: bool = True) -> Dict[str, Any]:
+        """Run consistency and reasoning-chain checks for the latest processed async tool calls."""
         fact_ids = list(dict.fromkeys(self.last_processed.get("fact_ids", [])))
         chain_ids = list(dict.fromkeys(self.last_processed.get("reasoning_chain_ids", [])))
         consistency = None

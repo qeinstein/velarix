@@ -2,6 +2,8 @@ from typing import Any, Callable, Dict, Optional
 
 
 class VelarixGateway:
+    """Record tool activity to Velarix while tolerating transient write failures."""
+
     def __init__(self, session, mode: str = "strict", max_buffered: int = 2000):
         self.session = session
         self.mode = mode or "strict"
@@ -9,6 +11,7 @@ class VelarixGateway:
         self._buffer = []
 
     def flush(self) -> None:
+        """Replay any buffered decision events through the attached session."""
         if not self._buffer:
             return
         pending = list(self._buffer)
@@ -36,6 +39,7 @@ class VelarixGateway:
         trace_id: Optional[str] = None,
         tags: Optional[list] = None,
     ) -> Any:
+        """Record a tool call, execute it, and persist either the result or the error."""
         self._record("tool_call", {"trace_id": trace_id, "tool": tool, "input": input, "tags": tags or []})
         try:
             output = fn(input)
