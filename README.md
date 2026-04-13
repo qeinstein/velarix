@@ -66,6 +66,30 @@ Velarix also supports org-wide global facts (`/v1/global/facts`) that fan out in
 
 Velarix can also store verification metadata for facts (verified/unverified/rejected) and use org policy to prevent unverified, untrusted, or stale premises from grounding execution-critical conclusions. Admins can update verification via `POST /v1/s/{session_id}/facts/{fact_id}/verify`, and optional webhook automation can apply verification decisions out-of-band. See [docs/README.md](docs/README.md).
 
+## Extraction
+
+Velarix includes a fact extraction pipeline that converts raw LLM output into atomic facts with inferred dependencies, then (optionally) checks for contradictions before assertion.
+
+- Endpoint: `POST /v1/s/{session_id}/extract-and-assert`
+- Model: set `VELARIX_EXTRACTOR_MODEL` for extraction calls (separate from `VELARIX_VERIFIER_MODEL`)
+- Optional request field: `extraction_config` to enable/disable pipeline stages for benchmarking
+
+Example request body:
+
+```json
+{
+  "llm_output": "…",
+  "session_context": "…",
+  "auto_retract_contradictions": false,
+  "extraction_config": {
+    "EnableSelection": true,
+    "EnableDecontextualisation": true,
+    "EnableCoverageVerification": false,
+    "EnableConsistencyPrecheck": true
+  }
+}
+```
+
 ## Integration Surfaces
 
 - Python SDK: session, fact, slice, and decision APIs

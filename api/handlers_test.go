@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"velarix/core"
+	"velarix/extractor"
 	"velarix/store"
 )
 
@@ -148,7 +149,15 @@ func TestHandleExtractAndAssert(t *testing.T) {
 	s.Engines["s1"] = engine
 	s.Configs["s1"] = &store.SessionConfig{}
 
-	body := extractAndAssertRequest{LLMOutput: "some text"}
+	body := extractAndAssertRequest{
+		LLMOutput: "some text",
+		ExtractionConfig: &extractor.ExtractionConfig{
+			EnableSelection:            false,
+			EnableDecontextualisation:  false,
+			EnableCoverageVerification: false,
+			EnableConsistencyPrecheck:  false,
+		},
+	}
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequest("POST", "/v1/s/s1/extract-and-assert", bytes.NewBuffer(b))
 	req.SetPathValue("session_id", "s1")

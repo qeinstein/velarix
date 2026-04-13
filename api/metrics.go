@@ -21,6 +21,41 @@ var (
 		Buckets: []float64{10, 50, 100, 500, 1000, 3000, 8000, 15000},
 	})
 
+	ExtractionStage1DiscardedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "velarix_extraction_stage1_discarded_total",
+		Help: "Total sentences discarded during Stage 1 sentence selection.",
+	})
+
+	ExtractionStage2UnresolvedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "velarix_extraction_stage2_unresolved_total",
+		Help: "Total unresolved references detected during Stage 2 decontextualisation.",
+	})
+
+	ExtractionStage3EdgesProposedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "velarix_extraction_stage3_edges_proposed_total",
+		Help: "Total dependency edges proposed by the LLM in Stage 3B (above threshold).",
+	})
+
+	ExtractionStage3EdgesAcceptedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "velarix_extraction_stage3_edges_accepted_total",
+		Help: "Total dependency edges accepted by the TMS validator in Stage 3B.",
+	})
+
+	ExtractionStage3EdgesRejectedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "velarix_extraction_stage3_edges_rejected_total",
+		Help: "Total dependency edges rejected by the TMS validator in Stage 3B.",
+	})
+
+	ExtractionStage4MissedClaimsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "velarix_extraction_stage4_missed_claims_total",
+		Help: "Total missed claims recovered during Stage 4 coverage verification.",
+	})
+
+	ExtractionStage5ContradictionsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "velarix_extraction_stage5_contradictions_total",
+		Help: "Total pre-assertion contradictions detected during Stage 5 consistency pre-check.",
+	})
+
 	VerifierFailures = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "velarix_verifier_failures_total",
 		Help: "Total OpenAI consistency-verifier call failures by reason. Reasons: timeout, api_error, parse_error.",
