@@ -1,7 +1,15 @@
-// Package extractor converts raw LLM text output into structured FactInput
-// objects that can be posted directly to POST /v1/s/{id}/perceptions or the
-// extract-and-assert endpoint. It is the fact-extraction layer Velarix
-// previously lacked.
+// Package extractor converts raw LLM text output into structured atomic facts
+// suitable for assertion into the Velarix truth-maintenance engine.
+//
+// Extraction runs as a configurable five-stage pipeline (see ExtractionConfig):
+//  1) Sentence selection (verifiable|hedged|discard)
+//  2) Coreference resolution + decontextualisation
+//  3) Atomic decomposition + TMS-constrained dependency inference
+//  4) Coverage verification (missed-claim recovery)
+//  5) Consistency pre-check (returns contradictions without suppressing facts)
+//
+// The baseline configuration (all optional stages disabled) preserves the
+// prior single-pass V-Logic compiler behavior for benchmarking.
 package extractor
 
 import (
@@ -9,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -136,11 +145,12 @@ CRITICAL RULES:
    - fictional: claim in a clearly fictional/creative/story context
 `
 
-// Extract sends llmOutput to an OpenAI-compatible endpoint and parses the
-// V-Logic response into a slice of ExtractedFacts. It employs a Neuro-Symbolic
-// feedback loop, retrying up to 3 times if the Go compiler detects syntax or
-// topological errors in the LLM's generated V-Logic.
-func Extract(ctx context.Context, llmOutput string, sessionContext string) ([]ExtractedFact, error) {
+// Extract runs the configurable five-stage extraction pipeline and returns
+// extracted facts plus optional pre-assertion contradictions.
+//
+// If cfg is nil, defaults are used. If cfg disables all optional stages, the
+// legacy single-pass V-Logic compiler is used (baseline mode).
+func Extract(ctx context.Context, llmOutput string, sessionContext string, cfg *ExtractionConfig) (*ExtractionResult, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return nil, &ExtractionError{Cause: "configuration", Detail: "OPENAI_API_KEY is not set"}
@@ -151,11 +161,86 @@ func Extract(ctx context.Context, llmOutput string, sessionContext string) ([]Ex
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 
-	model := strings.TrimSpace(os.Getenv("VELARIX_VERIFIER_MODEL"))
-	if model == "" {
-		model = "gpt-4o-mini"
+	client := &openAIClient{
+		apiKey:     apiKey,
+		baseURL:    baseURL,
+		httpClient: &http.Client{},
 	}
 
+	return RunPipeline(ctx, client, llmOutput, sessionContext, cfg)
+}
+
+type openAIClient struct {
+	apiKey     string
+	baseURL    string
+	httpClient *http.Client
+}
+
+func (c *openAIClient) Chat(ctx context.Context, model string, messages []ChatMessage) (string, error) {
+	if strings.TrimSpace(model) == "" {
+		model = strings.TrimSpace(os.Getenv("VELARIX_EXTRACTOR_MODEL"))
+		if model == "" {
+			model = "gpt-4o-mini"
+		}
+	}
+	body := map[string]interface{}{
+		"model":       model,
+		"temperature": 0,
+		"messages":    messages,
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return "", &ExtractionError{Cause: "serialization", Detail: err.Error()}
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(timeoutCtx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return "", &ExtractionError{Cause: "request_build", Detail: err.Error()}
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		if timeoutCtx.Err() != nil {
+			return "", &ExtractionError{Cause: "timeout", Detail: "extraction HTTP call timed out after 15s"}
+		}
+		return "", &ExtractionError{Cause: "http", Detail: err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		details := fmt.Sprintf("extraction model returned HTTP %d", resp.StatusCode)
+		if body, readErr := io.ReadAll(resp.Body); readErr == nil {
+			if strings.TrimSpace(string(body)) != "" {
+				details = details + ": " + strings.TrimSpace(string(body))
+			}
+		}
+		return "", &ExtractionError{Cause: "api_error", Detail: details}
+	}
+
+	var chatResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		return "", &ExtractionError{Cause: "parse_error", Detail: "failed to decode chat completion response: " + err.Error()}
+	}
+	if len(chatResp.Choices) == 0 {
+		return "", &ExtractionError{Cause: "parse_error", Detail: "extraction model returned no choices"}
+	}
+
+	return strings.TrimSpace(chatResp.Choices[0].Message.Content), nil
+}
+
+// extractLegacyVLogic preserves the prior single-pass V-Logic compiler behavior
+// but runs through the LLMClient abstraction so it can be benchmarked and tested.
+func extractLegacyVLogic(ctx context.Context, llm LLMClient, llmOutput string, sessionContext string, model string) ([]ExtractedFact, error) {
 	userContent := llmOutput
 	if strings.TrimSpace(sessionContext) != "" {
 		userContent = fmt.Sprintf("SESSION CONTEXT: %s\n\nLLM OUTPUT TO EXTRACT FROM:\n%s", sessionContext, llmOutput)
@@ -164,81 +249,24 @@ func Extract(ctx context.Context, llmOutput string, sessionContext string) ([]Ex
 	var lastCompilerError string
 	var finalFacts []ExtractedFact
 
-	// Neuro-Symbolic Loop (up to 3 retries)
 	for attempt := 1; attempt <= 3; attempt++ {
-		messages := []map[string]string{
-			{"role": "system", "content": vLogicSystemPrompt},
-			{"role": "user", "content": userContent},
+		messages := []ChatMessage{
+			{Role: "system", Content: vLogicSystemPrompt},
+			{Role: "user", Content: userContent},
 		}
-
 		if lastCompilerError != "" {
-			messages = append(messages, map[string]string{
-				"role":    "user",
-				"content": fmt.Sprintf("COMPILER ERROR from your previous attempt:\n%s\nPlease rewrite the V-Logic script to fix this error.", lastCompilerError),
+			messages = append(messages, ChatMessage{
+				Role: "user",
+				Content: fmt.Sprintf("COMPILER ERROR from your previous attempt:\n%s\nPlease rewrite the V-Logic script to fix this error.", lastCompilerError),
 			})
 		}
 
-		body := map[string]interface{}{
-			"model":       model,
-			"temperature": 0,
-			"messages":    messages,
-		}
-		payload, err := json.Marshal(body)
+		raw, err := llm.Chat(ctx, model, messages)
 		if err != nil {
-			return nil, &ExtractionError{Cause: "serialization", Detail: err.Error()}
+			return nil, err
 		}
 
-		timeoutCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		req, err := http.NewRequestWithContext(timeoutCtx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(payload))
-		if err != nil {
-			cancel()
-			return nil, &ExtractionError{Cause: "request_build", Detail: err.Error()}
-		}
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-		req.Header.Set("Content-Type", "application/json")
-
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			if timeoutCtx.Err() != nil {
-				cancel()
-				return nil, &ExtractionError{Cause: "timeout", Detail: "extraction HTTP call timed out after 15s"}
-			}
-			cancel()
-			return nil, &ExtractionError{Cause: "http", Detail: err.Error()}
-		}
-
-		if resp.StatusCode >= 300 {
-			resp.Body.Close()
-			cancel()
-			return nil, &ExtractionError{
-				Cause:  "api_error",
-				Detail: fmt.Sprintf("extraction model returned HTTP %d", resp.StatusCode),
-			}
-		}
-
-		var chatResp struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-			resp.Body.Close()
-			cancel()
-			return nil, &ExtractionError{Cause: "parse_error", Detail: "failed to decode chat completion response: " + err.Error()}
-		}
-		resp.Body.Close()
-		cancel()
-
-		if len(chatResp.Choices) == 0 {
-			return nil, &ExtractionError{Cause: "parse_error", Detail: "extraction model returned no choices"}
-		}
-
-		content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-		content = stripMarkdownFences(content)
-
+		content := stripMarkdownFences(strings.TrimSpace(raw))
 		facts, err := ParseVLogic(content)
 		if err != nil {
 			lastCompilerError = err.Error()
@@ -290,7 +318,6 @@ func Extract(ctx context.Context, llmOutput string, sessionContext string) ([]Ex
 			continue
 		}
 
-		// Sanitize fallbacks
 		for i := range sorted {
 			if sorted[i].ID == "" {
 				sorted[i].ID = fmt.Sprintf("fact-%d", i)
@@ -304,6 +331,9 @@ func Extract(ctx context.Context, llmOutput string, sessionContext string) ([]Ex
 			if sorted[i].Confidence <= 0 || sorted[i].Confidence > 1 {
 				sorted[i].Confidence = 0.75
 			}
+			if strings.TrimSpace(sorted[i].AssertionKind) == "" {
+				sorted[i].AssertionKind = core.AssertionKindEmpirical
+			}
 		}
 
 		finalFacts = sorted
@@ -313,7 +343,6 @@ func Extract(ctx context.Context, llmOutput string, sessionContext string) ([]Ex
 	if finalFacts == nil {
 		return nil, &ExtractionError{Cause: "compiler_error", Detail: "failed to compile V-Logic after 3 attempts. Last error: " + lastCompilerError}
 	}
-
 	return finalFacts, nil
 }
 

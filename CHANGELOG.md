@@ -6,6 +6,11 @@ All notable changes to Velarix will be documented in this file.
 
 ### Added
 - **Extractor**: Introduced the `extractor` package to convert raw LLM text into atomic factual assertions. Supports compound claim decomposition and dependency tracking.
+- **Extractor**: Replaced the single-pass extraction flow with a configurable five-stage pipeline (selection, decontextualisation, atomic decomposition, TMS-constrained dependency inference, coverage verification, consistency pre-check).
+- **Extractor**: Added `VELARIX_EXTRACTOR_MODEL` to configure extraction calls separately from `VELARIX_VERIFIER_MODEL`.
+- **API**: `extract-and-assert` now accepts an optional `extraction_config` and returns `pre_assertion_contradictions` from the Stage 5 consistency pre-check.
+- **Benchmark Harness**: Velarix path now runs under three extractor configurations (`baseline`, `standard`, `full`) and reports results for each.
+- **Metrics**: Added extraction stage counters for stage 1 discard, stage 2 unresolved refs, stage 3B edges proposed/accepted/rejected, stage 4 missed claims, and stage 5 pre-assertion contradictions.
 - **Extractor**: Added automatic `assertion_kind` classification (empirical|uncertain|hypothetical|fictional) and mapping into `core.Fact`.
 - **Global Truth**: Wired up `GlobalTruth` with org-wide global facts endpoints (`/v1/global/facts`) and session subscriptions.
 - **Operations**: Added an expiry sweep ticker to persist `fact_expired` events and invalidate downstream dependents promptly (`VELARIX_EXPIRY_SWEEP_INTERVAL_SECONDS`).
