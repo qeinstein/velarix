@@ -3,13 +3,20 @@ package core
 import "testing"
 
 func TestConfidenceTier(t *testing.T) {
-	if confidenceTier(0.95) != "certain" {
+	if confidenceTier(0.95, "") != "certain" {
 		t.Error()
 	}
-	if confidenceTier(0.7) != "probable" {
+	if confidenceTier(0.7, "") != "probable" {
 		t.Error()
 	}
-	if confidenceTier(0.5) != "uncertain" {
+	if confidenceTier(0.5, "") != "uncertain" {
+		t.Error()
+	}
+	// Uncertain assertion kind caps tier at "probable" even at high confidence.
+	if confidenceTier(0.95, AssertionKindUncertain) != "probable" {
+		t.Errorf("expected uncertain kind to cap at probable")
+	}
+	if confidenceTier(0.5, AssertionKindUncertain) != "uncertain" {
 		t.Error()
 	}
 }
