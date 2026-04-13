@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // BeliefExplanation represents a single fact in a causal explanation chain.
@@ -13,8 +14,9 @@ type BeliefExplanation struct {
 	Tier       string                 `json:"tier"` // "certain" (>0.9), "probable" (0.6-0.9), "uncertain" (<0.6)
 	Provenance map[string]interface{} `json:"provenance,omitempty"`
 	Payload    map[string]interface{} `json:"payload,omitempty"`
-	IsRoot     bool                   `json:"is_root"`
-	Parents    []string               `json:"parents,omitempty"`
+	IsRoot         bool                   `json:"is_root"`
+	Parents        []string               `json:"parents,omitempty"`
+	NegatedParents []string               `json:"negated_parents,omitempty"`
 }
 
 // CounterfactualResult describes what would change if a specific fact were removed.
@@ -27,6 +29,7 @@ type CounterfactualResult struct {
 	Narrative     string   `json:"narrative"`
 }
 
+// ExplanationSource is documented here.
 type ExplanationSource struct {
 	FactID        string `json:"fact_id"`
 	SourceType    string `json:"source_type,omitempty"`
@@ -178,8 +181,15 @@ func (e *Engine) buildCausalChain(fact *Fact, visited map[string]struct{}) []Bel
 	if !fact.IsRoot {
 		for _, set := range fact.JustificationSets {
 			for _, parentID := range set {
-				belief.Parents = append(belief.Parents, parentID)
-				if parentFact, ok := e.Facts[parentID]; ok {
+				isNegated := strings.HasPrefix(parentID, "!")
+				cleanID := strings.TrimPrefix(parentID, "!")
+				
+				if isNegated {
+					belief.NegatedParents = append(belief.NegatedParents, cleanID)
+				} else {
+					belief.Parents = append(belief.Parents, cleanID)
+				}
+				if parentFact, ok := e.Facts[cleanID]; ok {
 					chain = append(chain, e.buildCausalChain(parentFact, visited)...)
 				}
 			}

@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// ConsistencyIssue is documented here.
 type ConsistencyIssue struct {
 	Type               string   `json:"type"`
 	Severity           string   `json:"severity"`
@@ -19,6 +20,7 @@ type ConsistencyIssue struct {
 	VerifierConfidence float64  `json:"verifier_confidence,omitempty"`
 }
 
+// ConsistencyReport is documented here.
 type ConsistencyReport struct {
 	CheckedFactIDs []string           `json:"checked_fact_ids"`
 	IssueCount     int                `json:"issue_count"`

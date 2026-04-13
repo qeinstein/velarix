@@ -42,6 +42,7 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
 	var body extractAndAssertRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		APIRequests.WithLabelValues("/v1/s/{session_id}/extract-and-assert", "400").Inc()
@@ -72,14 +73,33 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Sort: root facts first, derived facts after.
-	// This ensures all parents exist before derived facts reference them.
-	sort.SliceStable(extracted, func(i, j int) bool {
-		if extracted[i].IsRoot && !extracted[j].IsRoot {
-			return true
+	// Topological sort: ensure all dependencies are asserted before derived facts.
+	var sorted []extractor.ExtractedFact
+	visited := map[string]bool{}
+	var visit func(ef extractor.ExtractedFact)
+	
+	factMap := map[string]extractor.ExtractedFact{}
+	for _, ef := range extracted {
+		factMap[ef.ID] = ef
+	}
+
+	visit = func(ef extractor.ExtractedFact) {
+		if visited[ef.ID] {
+			return
 		}
-		return false
-	})
+		visited[ef.ID] = true
+		for _, dep := range ef.DependsOn {
+			if depFact, exists := factMap[dep]; exists {
+				visit(depFact)
+			}
+		}
+		sorted = append(sorted, ef)
+	}
+
+	for _, ef := range extracted {
+		visit(ef)
+	}
+	extracted = sorted
 
 	resp := extractAndAssertResponse{
 		ExtractedCount:          len(extracted),

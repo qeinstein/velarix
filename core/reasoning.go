@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// ReasoningStep is documented here.
 type ReasoningStep struct {
 	ID                   string   `json:"id"`
 	Kind                 string   `json:"kind,omitempty"`
@@ -18,6 +19,7 @@ type ReasoningStep struct {
 	Confidence           float64  `json:"confidence,omitempty"`
 }
 
+// ReasoningChain is documented here.
 type ReasoningChain struct {
 	ChainID   string          `json:"chain_id"`
 	Model     string          `json:"model,omitempty"`
@@ -27,6 +29,7 @@ type ReasoningChain struct {
 	Steps     []ReasoningStep `json:"steps"`
 }
 
+// ReasoningStepAudit is documented here.
 type ReasoningStepAudit struct {
 	StepID              string             `json:"step_id"`
 	Valid               bool               `json:"valid"`
@@ -36,6 +39,7 @@ type ReasoningStepAudit struct {
 	ConsistencyFindings []ConsistencyIssue `json:"consistency_findings,omitempty"`
 }
 
+// ReasoningAuditReport is documented here.
 type ReasoningAuditReport struct {
 	ChainID                 string               `json:"chain_id"`
 	Valid                   bool                 `json:"valid"`

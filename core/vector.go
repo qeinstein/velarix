@@ -12,6 +12,7 @@ import (
 // used for vector embeddings when no explicit dimension size is provided.
 const defaultEmbeddingDimensions = 128
 
+// SemanticMatch is documented here.
 type SemanticMatch struct {
 	FactID         string                 `json:"fact_id"`
 	Score          float64                `json:"score"`
@@ -68,6 +69,7 @@ func LexicalEmbedding(text string, dims int) []float64 {
 	return NormalizeVector(vec)
 }
 
+// NormalizeVector is documented here.
 func NormalizeVector(vec []float64) []float64 {
 	if len(vec) == 0 {
 		return vec
@@ -87,6 +89,7 @@ func NormalizeVector(vec []float64) []float64 {
 	return out
 }
 
+// CosineSimilarity is documented here.
 func CosineSimilarity(a, b []float64) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
@@ -126,6 +129,7 @@ func factSemanticText(f *Fact) string {
 	return strings.Join(parts, " ")
 }
 
+// EmbeddingForFact is documented here.
 func EmbeddingForFact(f *Fact) []float64 {
 	if f == nil {
 		return nil
