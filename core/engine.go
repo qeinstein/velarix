@@ -12,27 +12,22 @@ import (
 	"time"
 )
 
-// ConfidenceThreshold is the minimum status treated as currently valid.
 const ConfidenceThreshold Status = 0.6
 
-// NilArgumentError reports a required nil argument.
 type NilArgumentError struct {
 	Argument string
 }
 
-// Error formats the nil-argument error.
 func (e *NilArgumentError) Error() string {
 	return fmt.Sprintf("%s cannot be nil", e.Argument)
 }
 
-// ChangeEvent is emitted when a fact's effective status changes.
 type ChangeEvent struct {
 	FactID    string `json:"fact_id"`
 	Status    Status `json:"status"`
 	Timestamp int64  `json:"timestamp"`
 }
 
-// MaxFactsPerSession is the hard in-memory cap enforced per session.
 const MaxFactsPerSession = 80000 // Absolute cap on number of facts to prevent OOM. In practice, performance degradation starts around 50k facts with complex justifications, so this is a safety limit. Users should archive and start a new session if they hit this limit.
 
 // Engine is the authoritative runtime for Velarix.
@@ -47,12 +42,6 @@ type Engine struct {
 
 	// Forward dependency graph: Parent Fact ID -> set of JustificationSet IDs
 	ChildrenIndex map[string]map[string]struct{}
-
-	// Reverse justification index: Child Fact ID -> set of JustificationSet IDs.
-	// Allows O(1) lookup of all JustificationSets that justify a given fact,
-	// replacing the previous O(|JustificationSets|) full scan in getIncomingJustificationSets
-	// and eliminating fmt.Sprintf ID reconstruction in the propagation hot path.
-	ChildJSetIndex map[string]map[string]struct{}
 
 	// Root management for Dominator pruning
 	CollapsedRoots  map[string]struct{}
@@ -81,7 +70,6 @@ func NewEngine() *Engine {
 		Facts:             make(map[string]*Fact),
 		JustificationSets: make(map[string]*JustificationSet),
 		ChildrenIndex:     make(map[string]map[string]struct{}),
-		ChildJSetIndex:    make(map[string]map[string]struct{}),
 		CollapsedRoots:    make(map[string]struct{}),
 		RetractedFacts:    make(map[string]string),
 	}
@@ -149,30 +137,10 @@ func (e *Engine) effectiveStatusUnsafe(fact *Fact) Status {
 
 // propagate processes state changes using a work queue and probabilistic logic.
 // Callers MUST hold e.mu.Lock().
-//
-// Optimisations over the naive implementation:
-//   - Queue deduplication: each fact ID appears at most once in the queue at any
-//     time, so diamond dependencies do not cause redundant re-evaluations.
-//   - OR short-circuit: when a derived fact's best justification set reaches
-//     confidence 1.0, further sets cannot improve the result.
-//   - AND short-circuit for confidence: once the running minimum confidence for
-//     a justification set reaches Invalid (0.0), remaining parent confidence
-//     contributions are skipped (validCount is still computed fully).
-//   - No fmt.Sprintf: JustificationSet IDs for a fact are looked up directly
-//     via ChildJSetIndex instead of being reconstructed by string formatting.
 func (e *Engine) propagate(queue []string) {
-	// Deduplicate the initial queue so concurrent enqueue of the same root
-	// doesn't cause multiple passes over the same downstream subgraph.
-	inQueue := make(map[string]bool, len(queue))
-	for _, id := range queue {
-		inQueue[id] = true
-	}
-
-	head := 0
-	for head < len(queue) {
-		factID := queue[head]
-		head++
-		delete(inQueue, factID)
+	for len(queue) > 0 {
+		factID := queue[0]
+		queue = queue[1:]
 
 		fact, exists := e.Facts[factID]
 		if !exists {
@@ -185,11 +153,11 @@ func (e *Engine) propagate(queue []string) {
 		} else if fact.IsRoot {
 			newStatus = fact.ManualStatus
 		} else {
-			// Derived Fact: max over all justification sets.
-			// Short-circuit as soon as we reach Valid (1.0) — nothing can exceed it.
+			// Derived Fact: max(JustificationSets)
 			maxConf := Invalid
 			var validCount int
-			for jSetID := range e.ChildJSetIndex[fact.ID] {
+			for i := range fact.JustificationSets {
+				jSetID := fmt.Sprintf("%s_jset_%d", fact.ID, i)
 				jSet, ok := e.JustificationSets[jSetID]
 				if !ok {
 					continue
@@ -200,9 +168,6 @@ func (e *Engine) propagate(queue []string) {
 						maxConf = jSet.Confidence
 					}
 				}
-				if maxConf == Valid {
-					break // OR short-circuit: cannot improve beyond 1.0
-				}
 			}
 			fact.ValidJustificationCount = validCount
 			newStatus = maxConf
@@ -212,7 +177,7 @@ func (e *Engine) propagate(queue []string) {
 			fact.DerivedStatus = newStatus
 			e.notify(fact.ID, newStatus)
 
-			// Recalculate dependent justification sets and enqueue changed children.
+			// Recalculate children sets
 			for jSetID := range e.ChildrenIndex[factID] {
 				jSet, ok := e.JustificationSets[jSetID]
 				if !ok {
@@ -224,27 +189,20 @@ func (e *Engine) propagate(queue []string) {
 					continue
 				}
 
-				// JustificationSet confidence: min of all parent confidences when
-				// all parents are satisfied.  We compute validCount in full (needed
-				// for the TargetValidParents comparison) but skip depConf updates
-				// once minConf has already reached Invalid — it cannot go lower.
-				minConf := Valid
+				// JustificationSet: min(all satisfied parent conditions)
+				minConf := Valid // Start at 1.0
 				validCount := 0
-
 				for _, pID := range jSet.PositiveParentFactIDs {
 					pFact, ok := e.Facts[pID]
 					if !ok {
 						continue
 					}
 					pStatus := e.effectiveStatusUnsafe(pFact)
+					if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
+						minConf = depConf
+					}
 					if dependencySatisfied(pStatus, false) {
 						validCount++
-					}
-					if minConf > Invalid {
-						// AND short-circuit for confidence accumulation
-						if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
-							minConf = depConf
-						}
 					}
 				}
 				for _, pID := range jSet.NegativeParentFactIDs {
@@ -253,13 +211,11 @@ func (e *Engine) propagate(queue []string) {
 						continue
 					}
 					pStatus := e.effectiveStatusUnsafe(pFact)
+					if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
+						minConf = depConf
+					}
 					if dependencySatisfied(pStatus, true) {
 						validCount++
-					}
-					if minConf > Invalid {
-						if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
-							minConf = depConf
-						}
 					}
 				}
 
@@ -276,24 +232,25 @@ func (e *Engine) propagate(queue []string) {
 				}
 
 				if oldValidParents != jSet.CurrentValidParents || oldConfidence != jSet.Confidence {
-					childID := childFact.ID
-					if !inQueue[childID] {
-						queue = append(queue, childID)
-						inQueue[childID] = true
-					}
+					queue = append(queue, childFact.ID)
 				}
 			}
 		}
 	}
 }
 
-// assertFactInner is the core fact-insertion logic shared by AssertFact and
-// AssertFacts.  It returns the fact ID that should be used as the propagation
-// seed (empty string if no propagation is needed, e.g. idempotent re-assert).
-// Callers MUST hold e.mu.Lock().
-func (e *Engine) assertFactInner(f *Fact) (string, error) {
+// AssertFact inserts a new fact and initializes its justification sets.
+// This operation is idempotent: if the fact already exists with identical content, it returns nil.
+func (e *Engine) AssertFact(f *Fact) error {
+	if f == nil {
+		return &NilArgumentError{Argument: "fact"}
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	if len(e.Facts) >= MaxFactsPerSession {
-		return "", fmt.Errorf("session memory cap exceeded (%d facts). please archive and start a new session", MaxFactsPerSession)
+		return fmt.Errorf("session memory cap exceeded (%d facts). please archive and start a new session", MaxFactsPerSession)
 	}
 
 	if existing, exists := e.Facts[f.ID]; exists {
@@ -302,32 +259,32 @@ func (e *Engine) assertFactInner(f *Fact) (string, error) {
 			existing.ManualStatus == f.ManualStatus &&
 			reflect.DeepEqual(existing.Payload, f.Payload) &&
 			reflect.DeepEqual(existing.JustificationSets, f.JustificationSets) {
-			return "", nil
+			return nil
 		}
-		return "", errors.New("a fact with this ID already exists with different content")
+		return errors.New("a fact with this ID already exists with different content")
 	}
 
 	if !f.IsRoot && len(f.JustificationSets) == 0 {
-		return "", errors.New("non-root fact must have at least one justification set")
+		return errors.New("non-root fact must have at least one justification set")
 	}
 
 	for _, set := range f.JustificationSets {
 		if len(set) == 0 {
-			return "", errors.New("justification set cannot be empty")
+			return errors.New("justification set cannot be empty")
 		}
 		for _, token := range set {
 			parentID, err := normalizeDependencyToken(token)
 			if err != nil {
-				return "", err
+				return err
 			}
 			if _, ok := e.Facts[parentID]; !ok {
-				return "", errors.New("unknown parent fact: " + parentID)
+				return errors.New("unknown parent fact: " + parentID)
 			}
 		}
 	}
 
 	if err := e.detectCycle(f); err != nil {
-		return "", err
+		return err
 	}
 
 	e.Facts[f.ID] = f
@@ -341,7 +298,8 @@ func (e *Engine) assertFactInner(f *Fact) (string, error) {
 			e.CollapsedRoots[f.ID] = struct{}{}
 		}
 		e.notify(f.ID, f.DerivedStatus)
-		return f.ID, nil
+		e.propagate([]string{f.ID})
+		return nil
 	}
 
 	f.DerivedStatus = Invalid
@@ -350,7 +308,7 @@ func (e *Engine) assertFactInner(f *Fact) (string, error) {
 	for i, set := range f.JustificationSets {
 		positiveParents, negativeParents, allParents, err := splitDependencySet(set)
 		if err != nil {
-			return "", err
+			return err
 		}
 		jSetID := fmt.Sprintf("%s_jset_%d", f.ID, i)
 		jSet := &JustificationSet{
@@ -404,12 +362,6 @@ func (e *Engine) assertFactInner(f *Fact) (string, error) {
 			e.ChildrenIndex[parentID][jSetID] = struct{}{}
 		}
 
-		// Populate the reverse child→jSet index
-		if _, ok := e.ChildJSetIndex[f.ID]; !ok {
-			e.ChildJSetIndex[f.ID] = make(map[string]struct{})
-		}
-		e.ChildJSetIndex[f.ID][jSetID] = struct{}{}
-
 		jSet.CurrentValidParents = validCount
 		if validCount == jSet.TargetValidParents {
 			jSet.Confidence = minConf
@@ -419,59 +371,7 @@ func (e *Engine) assertFactInner(f *Fact) (string, error) {
 		e.JustificationSets[jSetID] = jSet
 	}
 
-	return f.ID, nil
-}
-
-// AssertFact inserts a new fact and initializes its justification sets.
-// This operation is idempotent: if the fact already exists with identical content, it returns nil.
-func (e *Engine) AssertFact(f *Fact) error {
-	if f == nil {
-		return &NilArgumentError{Argument: "fact"}
-	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	seedID, err := e.assertFactInner(f)
-	if err != nil {
-		return err
-	}
-	if seedID != "" {
-		e.propagate([]string{seedID})
-	}
-	return nil
-}
-
-// AssertFacts bulk-asserts multiple facts with a single propagation pass.
-// This is significantly more efficient than calling AssertFact in a loop when
-// asserting many facts at once, because downstream propagation runs once across
-// all seeds rather than once per fact.
-//
-// Facts are validated and inserted in order. If any fact fails, the error is
-// returned immediately; already-inserted facts in the batch are not rolled back.
-func (e *Engine) AssertFacts(facts []*Fact) error {
-	for _, f := range facts {
-		if f == nil {
-			return &NilArgumentError{Argument: "fact"}
-		}
-	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	seeds := make([]string, 0, len(facts))
-	for _, f := range facts {
-		seedID, err := e.assertFactInner(f)
-		if err != nil {
-			return err
-		}
-		if seedID != "" {
-			seeds = append(seeds, seedID)
-		}
-	}
-	if len(seeds) > 0 {
-		e.propagate(seeds)
-	}
+	e.propagate([]string{f.ID})
 	return nil
 }
 
@@ -548,9 +448,18 @@ func (e *Engine) RetractFact(factID string, reason string) error {
 	return nil
 }
 
-// getStatusLocked reads the effective status for factID.
-// Caller must hold at least e.mu.RLock (or e.mu.Lock for the dirty-dominator path).
-func (e *Engine) getStatusLocked(factID string) Status {
+// GetStatus returns the logically resolved status of a fact.
+// It uses the Dominator Tree for O(1) pruning of deep chains.
+func (e *Engine) GetStatus(factID string) Status {
+	e.mu.Lock()
+	if e.DirtyDominators {
+		e.recomputeDominators()
+	}
+	e.mu.Unlock()
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	fact, ok := e.Facts[factID]
 	if !ok {
 		return Invalid
@@ -570,31 +479,6 @@ func (e *Engine) getStatusLocked(factID string) Status {
 	return currentStatus
 }
 
-// GetStatus returns the logically resolved status of a fact.
-// It uses the Dominator Tree for O(1) pruning of deep chains.
-//
-// Lock strategy: if the dominator tree is clean, a shared read lock is used
-// throughout.  If it is dirty, a write lock is held for both recompute and
-// read to avoid the TOCTOU window that the previous Lock→Unlock→RLock pattern
-// created.
-func (e *Engine) GetStatus(factID string) Status {
-	// Fast path: dominators clean — use a shared read lock throughout.
-	e.mu.RLock()
-	if !e.DirtyDominators {
-		defer e.mu.RUnlock()
-		return e.getStatusLocked(factID)
-	}
-	e.mu.RUnlock()
-
-	// Slow path: recompute under write lock, then read within the same critical section.
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.DirtyDominators { // re-check: another goroutine may have beaten us here
-		e.recomputeDominators()
-	}
-	return e.getStatusLocked(factID)
-}
-
 // ImpactReport contains metrics for a potential retraction.
 type ImpactReport struct {
 	ImpactedIDs []string `json:"impacted_ids"`
@@ -605,10 +489,6 @@ type ImpactReport struct {
 }
 
 // GetImpact returns a list of fact IDs that would be invalidated if factID was invalidated.
-//
-// The simulation uses lazy status maps: entries are only populated for facts
-// actually visited during propagation, avoiding the previous O(n) upfront copy
-// of all 80,000 fact statuses.
 func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -617,48 +497,39 @@ func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 		return nil, errors.New("fact not found")
 	}
 
-	// Lazy simulation state: fall back to the live engine values for unvisited nodes.
+	// 1. Setup simulation state
+	// factID -> simulated DerivedStatus
 	simStatus := make(map[string]Status)
-	getSimStatus := func(id string) Status {
-		if s, ok := simStatus[id]; ok {
-			return s
-		}
-		if f, ok := e.Facts[id]; ok {
-			return e.effectiveStatusUnsafe(f)
-		}
-		return Invalid
+	for id, f := range e.Facts {
+		simStatus[id] = e.effectiveStatusUnsafe(f)
 	}
 
+	// jSetID -> simulated Confidence
 	simJSetConf := make(map[string]Status)
-	getSimJSetConf := func(id string) Status {
-		if s, ok := simJSetConf[id]; ok {
-			return s
-		}
-		if js, ok := e.JustificationSets[id]; ok {
-			return js.Confidence
-		}
-		return Invalid
+	for id, js := range e.JustificationSets {
+		simJSetConf[id] = js.Confidence
 	}
 
-	// Simulate invalidation of the target fact.
+	// 2. Simulate Invalidation
 	simStatus[factID] = Invalid
 	queue := []string{factID}
 	impacted := make(map[string]struct{})
 	impacted[factID] = struct{}{}
 
-	// Propagate simulation forward.
+	// 3. Propagate simulation
 	for len(queue) > 0 {
 		uID := queue[0]
 		queue = queue[1:]
 
+		// For each dependent JustificationSet
 		for jSetID := range e.ChildrenIndex[uID] {
 			js := e.JustificationSets[jSetID]
 
-			// Recalculate jSet confidence using simulated parent statuses
+			// Recalculate JSet Confidence
 			minConf := Valid
 			validCount := 0
 			for _, pID := range js.PositiveParentFactIDs {
-				pStatus := getSimStatus(pID)
+				pStatus := simStatus[pID]
 				if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
 					minConf = depConf
 				}
@@ -667,7 +538,7 @@ func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 				}
 			}
 			for _, pID := range js.NegativeParentFactIDs {
-				pStatus := getSimStatus(pID)
+				pStatus := simStatus[pID]
 				if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
 					minConf = depConf
 				}
@@ -681,21 +552,23 @@ func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 				newJSetConf = minConf
 			}
 
-			if newJSetConf != getSimJSetConf(jSetID) {
+			if newJSetConf != simJSetConf[jSetID] {
 				simJSetConf[jSetID] = newJSetConf
 
-				// Recalculate child fact status using ChildJSetIndex (no fmt.Sprintf)
+				// Recalculate Child Fact Status
 				childID := js.ChildFactID
 				childFact := e.Facts[childID]
 
 				maxConf := Invalid
-				for jsID := range e.ChildJSetIndex[childID] {
-					if conf := getSimJSetConf(jsID); conf > maxConf {
+				for i := range childFact.JustificationSets {
+					jsID := fmt.Sprintf("%s_jset_%d", childID, i)
+					conf := simJSetConf[jsID]
+					if conf > maxConf {
 						maxConf = conf
 					}
 				}
 
-				if maxConf != getSimStatus(childID) {
+				if maxConf != simStatus[childID] {
 					simStatus[childID] = maxConf
 					if maxConf < ConfidenceThreshold {
 						if _, exists := impacted[childID]; !exists {
@@ -704,13 +577,11 @@ func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 						}
 					}
 				}
-
-				_ = childFact // used for IDom check below via e.Facts lookup
 			}
 		}
 	}
 
-	// Build Report
+	// 4. Build Report
 	report := &ImpactReport{
 		ImpactedIDs: make([]string, 0, len(impacted)),
 		TotalCount:  len(impacted),
@@ -840,25 +711,7 @@ func buildValidationEngine(facts map[string]*Fact) (*Engine, error) {
 		}
 	}
 
-	// Build the child→jSet reverse index so getIncomingJustificationSets works
-	// during cycle detection (reachable uses ChildrenIndex, but recomputeDominators
-	// would need ChildJSetIndex if triggered — rebuild defensively).
-	validation.rebuildChildJSetIndex()
-
 	return validation, nil
-}
-
-// rebuildChildJSetIndex reconstructs the ChildJSetIndex from JustificationSets.
-// Called after FromSnapshot to restore the derived index without serialising it.
-// Callers MUST hold e.mu.Lock() or call before the engine is shared.
-func (e *Engine) rebuildChildJSetIndex() {
-	e.ChildJSetIndex = make(map[string]map[string]struct{}, len(e.Facts))
-	for id, js := range e.JustificationSets {
-		if _, ok := e.ChildJSetIndex[js.ChildFactID]; !ok {
-			e.ChildJSetIndex[js.ChildFactID] = make(map[string]struct{})
-		}
-		e.ChildJSetIndex[js.ChildFactID][id] = struct{}{}
-	}
 }
 
 // GetFact returns a copy of a fact, locking for safety.
@@ -979,11 +832,8 @@ func (e *Engine) FromSnapshot(snap *Snapshot) error {
 	}
 	e.RetractedFacts = payload.RetractedFacts
 	e.MutationCount = payload.MutationCount
-
-	// Rebuild the derived reverse index (not stored in snapshot)
-	e.rebuildChildJSetIndex()
-
 	e.DirtyDominators = true // Force recompute on next access
+
 	return nil
 }
 
@@ -992,8 +842,7 @@ func (e *Engine) ListFacts() []*Fact {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	// Pre-allocate to avoid repeated slice growth.
-	results := make([]*Fact, 0, len(e.Facts))
+	var results []*Fact
 	for _, f := range e.Facts {
 		results = append(results, cloneFact(f))
 	}
@@ -1010,19 +859,19 @@ func (e *Engine) DependencyIDs(factID string, includeSelf bool) ([]string, error
 	}
 
 	seen := map[string]struct{}{}
-
-	// Add the start node to seen unconditionally so that any shared sub-graph
-	// path that re-encounters factID is correctly short-circuited rather than
-	// re-walked.  It is filtered from the output below if !includeSelf.
 	var walk func(string)
 	walk = func(id string) {
-		if _, exists := seen[id]; exists {
-			return
-		}
-		seen[id] = struct{}{}
 		fact, ok := e.Facts[id]
 		if !ok {
 			return
+		}
+		if !includeSelf && id == factID {
+			// keep walking parents without adding the target fact itself
+		} else {
+			if _, exists := seen[id]; exists {
+				return
+			}
+			seen[id] = struct{}{}
 		}
 		for _, set := range fact.JustificationSets {
 			for _, token := range set {

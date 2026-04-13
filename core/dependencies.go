@@ -7,15 +7,12 @@ import (
 
 const negatedDependencyPrefix = "!"
 
-// DependencyRef is a parsed dependency token from a justification set.
 type DependencyRef struct {
 	FactID   string
 	Negated  bool
 	Original string
 }
 
-// ParseDependencyRef parses a dependency token, including the optional `!`
-// prefix used for negated dependencies.
 func ParseDependencyRef(raw string) (DependencyRef, error) {
 	token := strings.TrimSpace(raw)
 	if token == "" {

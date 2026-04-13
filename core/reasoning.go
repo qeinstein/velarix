@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// ReasoningStep records one step in a persisted reasoning chain.
 type ReasoningStep struct {
 	ID                   string   `json:"id"`
 	Kind                 string   `json:"kind,omitempty"`
@@ -19,7 +18,6 @@ type ReasoningStep struct {
 	Confidence           float64  `json:"confidence,omitempty"`
 }
 
-// ReasoningChain is a stored multi-step reasoning artifact.
 type ReasoningChain struct {
 	ChainID   string          `json:"chain_id"`
 	Model     string          `json:"model,omitempty"`
@@ -29,7 +27,6 @@ type ReasoningChain struct {
 	Steps     []ReasoningStep `json:"steps"`
 }
 
-// ReasoningStepAudit records the audit result for one reasoning step.
 type ReasoningStepAudit struct {
 	StepID              string             `json:"step_id"`
 	Valid               bool               `json:"valid"`
@@ -39,7 +36,6 @@ type ReasoningStepAudit struct {
 	ConsistencyFindings []ConsistencyIssue `json:"consistency_findings,omitempty"`
 }
 
-// ReasoningAuditReport summarises a reasoning-chain verification run.
 type ReasoningAuditReport struct {
 	ChainID                 string               `json:"chain_id"`
 	Valid                   bool                 `json:"valid"`
@@ -59,8 +55,6 @@ func uniqueIDs(values ...[]string) []string {
 	return uniqueSortedFactIDs(merged)
 }
 
-// AuditReasoningChain checks a reasoning chain for stale, missing, or
-// contradictory facts.
 func (e *Engine) AuditReasoningChain(chain *ReasoningChain) *ReasoningAuditReport {
 	report := &ReasoningAuditReport{
 		ChainID:    "",
@@ -114,7 +108,7 @@ func (e *Engine) AuditReasoningChain(chain *ReasoningChain) *ReasoningAuditRepor
 				stepAudit.InvalidFactIDs = append(stepAudit.InvalidFactIDs, step.OutputFactID)
 			}
 
-			candidateIDs := uniqueSortedFactIDs(append([]string{step.OutputFactID}, priorOutputIDs...))
+			candidateIDs := append([]string{step.OutputFactID}, priorOutputIDs...)
 			issues := e.consistencyIssuesForIDsUnsafe(candidateIDs, false)
 			if len(issues) > 0 {
 				stepAudit.Valid = false

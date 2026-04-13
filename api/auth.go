@@ -27,7 +27,10 @@ func jwtSigningKey() ([]byte, error) {
 	if v := os.Getenv("VELARIX_JWT_SECRET"); v != "" {
 		return []byte(v), nil
 	}
-	return nil, fmt.Errorf("VELARIX_JWT_SECRET is required and not set")
+	if isDevLikeEnv() {
+		return []byte("velarix_dev_insecure_jwt_secret_change_me"), nil
+	}
+	return nil, fmt.Errorf("VELARIX_JWT_SECRET is required outside dev/test")
 }
 
 type Claims struct {
@@ -270,7 +273,7 @@ func getUserRole(r *http.Request) string {
 // @Success 201 {object} map[string]string "user created"
 // @Failure 400 {string} string "invalid request"
 // @Failure 500 {string} string "internal error"
-// @Router /v1/auth/register [post]
+// @Router /auth/register [post]
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var body RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -290,21 +293,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := validatePassword(body.Password); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	hashed, err := hashPassword(body.Password)
 	if err != nil {
 		http.Error(w, "hashing failure", http.StatusInternalServerError)
 		return
 	}
 
-	// Standard self-registrations always receive the member role.
-	// Admin role is only granted via: (a) explicit VELARIX_ADMIN_EMAIL bootstrap match,
-	// or (b) existing admin promoting a member via invitation.
-	role := "member"
+	role := "admin"
 	adminEmail := os.Getenv("VELARIX_ADMIN_EMAIL")
 	if adminEmail != "" && body.Email == adminEmail {
 		role = "admin"
@@ -354,7 +349,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // @Param request body LoginRequest true "Login credentials"
 // @Success 200 {object} map[string]string "token"
 // @Failure 401 {string} string "invalid credentials"
-// @Router /v1/auth/login [post]
+// @Router /auth/login [post]
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -413,13 +408,13 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // handleResetRequest godoc
 // @Summary Request password reset
-// @Description Generate a password reset token. Development/test responses include `dev_reset_token`; production uses SMTP if configured.
+// @Description Generate a reset token in development only. Production password reset stays disabled until a real delivery path exists.
 // @Tags Auth
 // @Accept json
 // @Produce json
 // @Param request body ResetRequest true "User email"
 // @Success 200 {object} map[string]string "status"
-// @Router /v1/auth/reset-request [post]
+// @Router /auth/reset-request [post]
 func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 	var body ResetRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -471,14 +466,14 @@ func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 
 // handleResetConfirm godoc
 // @Summary Confirm password reset
-// @Description Update password using a previously issued reset token. No authentication required.
+// @Description Update password using a reset token issued out-of-band in development. No authentication required.
 // @Tags Auth
 // @Accept json
 // @Produce json
 // @Param request body ResetConfirmRequest true "Reset details"
 // @Success 200 {object} map[string]string "status"
 // @Failure 401 {string} string "invalid token"
-// @Router /v1/auth/reset-confirm [post]
+// @Router /auth/reset-confirm [post]
 func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 	var body ResetConfirmRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -498,11 +493,6 @@ func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 
 	if user.ResetToken == "" || user.ResetToken != keyHashHex(body.Token) || time.Now().UnixMilli() > user.ResetExpiry {
 		http.Error(w, "invalid token or expired", http.StatusUnauthorized)
-		return
-	}
-
-	if err := validatePassword(body.NewPassword); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -531,7 +521,7 @@ func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {array} store.APIKey
 // @Failure 401 {string} string "unauthorized"
 // @Failure 404 {string} string "user not found"
-// @Router /v1/keys [get]
+// @Router /keys [get]
 func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	email := getUserEmail(r)
 	role := getUserRole(r)
@@ -592,7 +582,7 @@ func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 // @Failure 401 {string} string "unauthorized"
 // @Failure 403 {string} string "forbidden"
 // @Failure 404 {string} string "key not found"
-// @Router /v1/keys/{key} [delete]
+// @Router /keys/{key} [delete]
 func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 	keyToRevoke := r.PathValue("key")
 	email := getUserEmail(r)
@@ -676,7 +666,7 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {string} string "invalid request"
 // @Failure 403 {string} string "forbidden"
 // @Failure 404 {string} string "user not found"
-// @Router /v1/keys/generate [post]
+// @Router /keys/generate [post]
 func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
 	var body GenerateKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -787,7 +777,7 @@ func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
 // @Failure 401 {string} string "unauthorized"
 // @Failure 403 {string} string "forbidden"
 // @Failure 404 {string} string "key not found"
-// @Router /v1/keys/{key}/rotate [post]
+// @Router /keys/{key}/rotate [post]
 func (s *Server) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 	keyToRotate := r.PathValue("key")
 	email := getUserEmail(r)

@@ -30,14 +30,8 @@ Badger in production is an explicit opt-in path, not the default operating mode.
 
 ## Health Endpoints
 
-- `GET /health`: status, version, and uptime
-- `GET /health/full`: detailed backend status for admin operators
-- `GET /metrics`: Prometheus metrics, restricted to localhost by default unless `VELARIX_METRICS_ALLOWED_CIDR` is set
-
-## Operator Endpoints
-
-- `GET /v1/org/backup`: admin-only org-scoped JSON backup of organization metadata, sessions, and session history
-- `GET /v1/docs/pages` and `GET /v1/docs/pages/{slug}`: repo-local markdown page listing and retrieval when `markdown/*.md` files are present
+- `GET /health`: connectivity, version, and uptime
+- `GET /health/full`: detailed status for admin operators
 
 ## Key Metrics
 
@@ -79,7 +73,7 @@ Outside development, Velarix expects:
 
 - `VELARIX_ENV=prod`
 - `VELARIX_JWT_SECRET`
-- `VELARIX_ALLOWED_ORIGINS` when auth cookies are enabled
+- `VELARIX_ALLOWED_ORIGINS`
 - `VELARIX_STORE_BACKEND=postgres`
 - `VELARIX_POSTGRES_DSN`
 
