@@ -24,6 +24,7 @@ func setupTestServer(t *testing.T) (*api.Server, *store.BadgerStore) {
 	t.Setenv("VELARIX_API_KEY", "test_admin_key")
 	t.Setenv("VELARIX_ENV", "test")
 	t.Setenv("VELARIX_JWT_SECRET", "test_jwt_secret_32_bytes_minimum_value")
+	t.Setenv("VELARIX_ENABLE_PUBLIC_REGISTRATION", "true")
 	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	badgerStore, err := store.OpenBadger(dbPath, nil)
