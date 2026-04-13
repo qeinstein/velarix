@@ -109,43 +109,27 @@ func (ef *ExtractedFact) ToCoreFact() *core.Fact {
 	return f
 }
 
-const extractionSystemPrompt = `You are a precise fact-extraction system. Your only job is to decompose the provided text into an array of atomic factual assertions.
+const vLogicSystemPrompt = `You are a Neuro-Symbolic V-Logic Compiler. Your job is to extract atomic factual assertions from the text and compile them into a strict V-Logic DSL script.
 
 CRITICAL RULES:
-1. Return ONLY valid JSON — no preamble, no explanation, no markdown fences.
-2. Decompose compound claims into separate atomic facts. "Paris is the capital of France and has a population of 2 million" must become TWO objects, not one.
-3. Each fact must be a single, standalone, checkable assertion.
-4. Assign a unique slug-format id to each fact (lowercase, hyphens, no spaces). Example: "paris-capital-france".
-5. polarity must be exactly "positive" or "negative".
-6. source_type must be exactly "llm_output".
-7. confidence is a float 0.0–1.0 representing how confidently the source text asserts this claim.
-8. is_root is true for direct premises stated in the input context; false for inferences derived from other extracted facts.
-9. depends_on lists IDs of other extracted facts this one logically requires. Leave empty for root facts.
-
-Return a JSON array where each element has exactly these fields:
-[
-  {
-    "id": "slug-format-string",
-    "claim": "the atomic factual assertion as plain text",
-    "claim_key": "short_snake_case_label",
-    "claim_value": "the asserted value",
-    "subject": "what the claim is about",
-    "predicate": "the relationship or property",
-    "object": "the value or object",
-    "polarity": "positive",
-    "is_root": true,
-    "depends_on": [],
-    "source_type": "llm_output",
-    "confidence": 0.9
-  }
-]`
+1. Output ONLY valid V-Logic code. No markdown fences, no explanations.
+2. V-Logic has exactly two statement types: 'fact' and 'derive'.
+3. 'fact' is for root premises directly stated in the text.
+   Syntax: fact <id>: "<claim>" (confidence: <float>)
+   Example: fact invoice_1042_paid: "Invoice 1042 is paid" (confidence: 0.9)
+4. 'derive' is for inferences that depend on other facts.
+   Syntax: derive <id>: "<claim>" requires (<comma_separated_ids>) rejects (<comma_separated_ids>)
+   Example: derive payment_released: "Release payment" requires (invoice_1042_paid) rejects (vendor_blocked)
+   (Note: requires or rejects can be omitted if empty. Example: derive p1: "..." requires (f1))
+5. IDs must be unique slug-format strings (lowercase, underscores or hyphens).
+6. Decompose compound claims into separate atomic facts.
+7. NEVER output circular dependencies (A requires B, B requires A).
+`
 
 // Extract sends llmOutput to an OpenAI-compatible endpoint and parses the
-// structured JSON response into a slice of ExtractedFacts. sessionContext is
-// optional — it gives the extractor domain context for better categorisation.
-//
-// Temperature is hardcoded to 0 for determinism. Timeout is 15 seconds.
-// On failure, a typed *ExtractionError is always returned.
+// V-Logic response into a slice of ExtractedFacts. It employs a Neuro-Symbolic
+// feedback loop, retrying up to 3 times if the Go compiler detects syntax or
+// topological errors in the LLM's generated V-Logic.
 func Extract(ctx context.Context, llmOutput string, sessionContext string) ([]ExtractedFact, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
@@ -167,95 +151,166 @@ func Extract(ctx context.Context, llmOutput string, sessionContext string) ([]Ex
 		userContent = fmt.Sprintf("SESSION CONTEXT: %s\n\nLLM OUTPUT TO EXTRACT FROM:\n%s", sessionContext, llmOutput)
 	}
 
-	body := map[string]interface{}{
-		"model":       model,
-		"temperature": 0,
-		"messages": []map[string]string{
-			{"role": "system", "content": extractionSystemPrompt},
+	var lastCompilerError string
+	var finalFacts []ExtractedFact
+
+	// Neuro-Symbolic Loop (up to 3 retries)
+	for attempt := 1; attempt <= 3; attempt++ {
+		messages := []map[string]string{
+			{"role": "system", "content": vLogicSystemPrompt},
 			{"role": "user", "content": userContent},
-		},
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, &ExtractionError{Cause: "serialization", Detail: err.Error()}
-	}
-
-	// Enforce 15-second timeout even if ctx has a longer deadline.
-	timeoutCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(timeoutCtx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return nil, &ExtractionError{Cause: "request_build", Detail: err.Error()}
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		if timeoutCtx.Err() != nil {
-			return nil, &ExtractionError{Cause: "timeout", Detail: "extraction HTTP call timed out after 15s"}
 		}
-		return nil, &ExtractionError{Cause: "http", Detail: err.Error()}
-	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode >= 300 {
-		return nil, &ExtractionError{
-			Cause:  "api_error",
-			Detail: fmt.Sprintf("extraction model returned HTTP %d", resp.StatusCode),
+		if lastCompilerError != "" {
+			messages = append(messages, map[string]string{
+				"role":    "user",
+				"content": fmt.Sprintf("COMPILER ERROR from your previous attempt:\n%s\nPlease rewrite the V-Logic script to fix this error.", lastCompilerError),
+			})
 		}
-	}
 
-	var chatResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, &ExtractionError{Cause: "parse_error", Detail: "failed to decode chat completion response: " + err.Error()}
-	}
-	if len(chatResp.Choices) == 0 {
-		return nil, &ExtractionError{Cause: "parse_error", Detail: "extraction model returned no choices"}
-	}
-
-	content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-	// Strip markdown fences if model disobeyed the instruction.
-	content = stripMarkdownFences(content)
-
-	var facts []ExtractedFact
-	if err := json.Unmarshal([]byte(content), &facts); err != nil {
-		return nil, &ExtractionError{Cause: "parse_error", Detail: "failed to parse extracted facts JSON: " + err.Error()}
-	}
-
-	// Sanitize: ensure required fields have fallbacks.
-	for i := range facts {
-		facts[i].ID = strings.TrimSpace(facts[i].ID)
-		if facts[i].ID == "" {
-			facts[i].ID = fmt.Sprintf("fact-%d", i)
+		body := map[string]interface{}{
+			"model":       model,
+			"temperature": 0,
+			"messages":    messages,
 		}
-		if facts[i].SourceType == "" {
-			facts[i].SourceType = "llm_output"
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, &ExtractionError{Cause: "serialization", Detail: err.Error()}
 		}
-		if facts[i].Polarity == "" {
-			facts[i].Polarity = "positive"
+
+		timeoutCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		req, err := http.NewRequestWithContext(timeoutCtx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(payload))
+		if err != nil {
+			cancel()
+			return nil, &ExtractionError{Cause: "request_build", Detail: err.Error()}
 		}
-		if facts[i].Confidence <= 0 || facts[i].Confidence > 1 {
-			facts[i].Confidence = 0.75
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			if timeoutCtx.Err() != nil {
+				cancel()
+				return nil, &ExtractionError{Cause: "timeout", Detail: "extraction HTTP call timed out after 15s"}
+			}
+			cancel()
+			return nil, &ExtractionError{Cause: "http", Detail: err.Error()}
 		}
+
+		if resp.StatusCode >= 300 {
+			resp.Body.Close()
+			cancel()
+			return nil, &ExtractionError{
+				Cause:  "api_error",
+				Detail: fmt.Sprintf("extraction model returned HTTP %d", resp.StatusCode),
+			}
+		}
+
+		var chatResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+			resp.Body.Close()
+			cancel()
+			return nil, &ExtractionError{Cause: "parse_error", Detail: "failed to decode chat completion response: " + err.Error()}
+		}
+		resp.Body.Close()
+		cancel()
+
+		if len(chatResp.Choices) == 0 {
+			return nil, &ExtractionError{Cause: "parse_error", Detail: "extraction model returned no choices"}
+		}
+
+		content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+		content = stripMarkdownFences(content)
+
+		facts, err := ParseVLogic(content)
+		if err != nil {
+			lastCompilerError = err.Error()
+			continue
+		}
+
+		// Topological sort & cycle detection (Dry Run Compilation Phase)
+		visited := map[string]bool{}
+		var visit func(ef ExtractedFact)
+		
+		factMap := map[string]ExtractedFact{}
+		for _, ef := range facts {
+			factMap[ef.ID] = ef
+		}
+
+		var cycleErr string
+		var inStack = map[string]bool{}
+		var sorted []ExtractedFact
+
+		visit = func(ef ExtractedFact) {
+			if cycleErr != "" {
+				return
+			}
+			if inStack[ef.ID] {
+				cycleErr = "Circular dependency detected involving " + ef.ID
+				return
+			}
+			if visited[ef.ID] {
+				return
+			}
+			inStack[ef.ID] = true
+			for _, dep := range ef.DependsOn {
+				cleanDep := strings.TrimPrefix(dep, "!")
+				if depFact, exists := factMap[cleanDep]; exists {
+					visit(depFact)
+				}
+			}
+			inStack[ef.ID] = false
+			visited[ef.ID] = true
+			sorted = append(sorted, ef)
+		}
+
+		for _, ef := range facts {
+			visit(ef)
+		}
+
+		if cycleErr != "" {
+			lastCompilerError = cycleErr
+			continue
+		}
+
+		// Sanitize fallbacks
+		for i := range sorted {
+			if sorted[i].ID == "" {
+				sorted[i].ID = fmt.Sprintf("fact-%d", i)
+			}
+			if sorted[i].SourceType == "" {
+				sorted[i].SourceType = "v-logic"
+			}
+			if sorted[i].Polarity == "" {
+				sorted[i].Polarity = "positive"
+			}
+			if sorted[i].Confidence <= 0 || sorted[i].Confidence > 1 {
+				sorted[i].Confidence = 0.75
+			}
+		}
+
+		finalFacts = sorted
+		break
 	}
 
-	return facts, nil
+	if finalFacts == nil {
+		return nil, &ExtractionError{Cause: "compiler_error", Detail: "failed to compile V-Logic after 3 attempts. Last error: " + lastCompilerError}
+	}
+
+	return finalFacts, nil
 }
 
-// stripMarkdownFences removes ```json ... ``` or ``` ... ``` wrappers in case
-// the model ignores the no-markdown-fences instruction.
+// stripMarkdownFences removes wrappers in case the model ignores the no-markdown-fences instruction.
 func stripMarkdownFences(s string) string {
 	s = strings.TrimSpace(s)
-	for _, prefix := range []string{"```json", "```"} {
+	for _, prefix := range []string{"```vlogic", "```text", "```"} {
 		if strings.HasPrefix(s, prefix) {
 			s = strings.TrimPrefix(s, prefix)
 			break
