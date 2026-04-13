@@ -1,8 +1,11 @@
 openapi: 3.0.3
 info:
-  title: Velarix Decision Integrity API
+  title: Velarix API
   version: v1
-  description: Stable workflow routes for decision integrity in AI-assisted internal approvals.
+  description: >
+    Maintained OpenAPI subset for the public Velarix workflow routes. It covers
+    the auth, key-management, fact, slice, extract-and-assert, decision, and
+    org-search surfaces that are stable in this repository.
 servers:
   - url: http://localhost:8080
 security:
@@ -14,10 +17,185 @@ paths:
       security: []
       responses:
         '200':
-          description: Service is healthy
-  /v1/s/{session_id}/facts:
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  version:
+                    type: string
+                  uptime:
+                    type: string
+  /v1/auth/register:
     post:
-      summary: Assert a fact into a session
+      summary: Register a new account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /v1/auth/login:
+    post:
+      summary: Authenticate a user and issue a console JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+  /v1/auth/reset-request:
+    post:
+      summary: Request a password reset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetRequest'
+      responses:
+        '200':
+          description: Reset flow accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  dev_reset_token:
+                    type: string
+                    description: Returned only in `dev` and `test` environments.
+  /v1/auth/reset-confirm:
+    post:
+      summary: Complete a password reset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetConfirmRequest'
+      responses:
+        '200':
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /v1/keys:
+    get:
+      summary: List the current user's API keys
+      responses:
+        '200':
+          description: API key list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/APIKeyView'
+  /v1/keys/generate:
+    post:
+      summary: Generate a new API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateKeyRequest'
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyView'
+  /v1/keys/{key}:
+    delete:
+      summary: Revoke an API key
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /v1/keys/{key}/rotate:
+    post:
+      summary: Rotate an API key
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: API key rotated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyView'
+  /v1/s/{session_id}/facts:
+    get:
+      summary: List facts in a session
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - name: valid
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Session facts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Fact'
+    post:
+      summary: Assert a root or derived fact
       parameters:
         - $ref: '#/components/parameters/SessionID'
       requestBody:
@@ -33,16 +211,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Fact'
-  /v1/s/{session_id}/facts/{fact_id}/invalidate:
+  /v1/s/{session_id}/facts/{id}:
+    get:
+      summary: Fetch a fact
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/FactID'
+      responses:
+        '200':
+          description: Fact payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fact'
+  /v1/s/{session_id}/facts/{id}/invalidate:
     post:
       summary: Invalidate a root fact
       parameters:
         - $ref: '#/components/parameters/SessionID'
-        - name: fact_id
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/FactID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                force:
+                  type: boolean
       responses:
         '200':
           description: Fact invalidated
@@ -53,9 +251,150 @@ paths:
                 properties:
                   status:
                     type: string
-  /v1/s/{session_id}/decisions:
+  /v1/s/{session_id}/slice:
+    get:
+      summary: Fetch a ranked belief slice
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, markdown]
+        - name: max_facts
+          in: query
+          schema:
+            type: integer
+        - name: max_chars
+          in: query
+          schema:
+            type: integer
+        - name: query
+          in: query
+          schema:
+            type: string
+        - name: strategy
+          in: query
+          schema:
+            type: string
+        - name: include_dependencies
+          in: query
+          schema:
+            type: boolean
+        - name: include_invalid
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Slice response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Fact'
+            text/markdown:
+              schema:
+                type: string
+  /v1/s/{session_id}/consistency-check:
     post:
-      summary: Create a first-class decision
+      summary: Check a session or fact subset for contradictions
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fact_ids:
+                  type: array
+                  items:
+                    type: string
+                max_facts:
+                  type: integer
+                include_invalid:
+                  type: boolean
+      responses:
+        '200':
+          description: Consistency report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checked_fact_ids:
+                    type: array
+                    items:
+                      type: string
+                  issue_count:
+                    type: integer
+                  issues:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                        severity:
+                          type: string
+                        fact_ids:
+                          type: array
+                          items:
+                            type: string
+                        message:
+                          type: string
+                        suggested_action:
+                          type: string
+                        source:
+                          type: string
+                        verifier_model:
+                          type: string
+                        verifier_label:
+                          type: string
+                        verifier_reason:
+                          type: string
+                        verifier_confidence:
+                          type: number
+  /v1/s/{session_id}/extract-and-assert:
+    post:
+      summary: Extract facts from LLM output and assert them
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractAndAssertRequest'
+      responses:
+        '200':
+          description: Extraction results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractAndAssertResponse'
+  /v1/s/{session_id}/decisions:
+    get:
+      summary: List decisions for a session
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/SubjectQuery'
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Session decisions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionListResponse'
+    post:
+      summary: Create a decision
       parameters:
         - $ref: '#/components/parameters/SessionID'
       requestBody:
@@ -71,22 +410,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Decision'
-    get:
-      summary: List decisions for a session
-      parameters:
-        - $ref: '#/components/parameters/SessionID'
-        - $ref: '#/components/parameters/StatusQuery'
-        - $ref: '#/components/parameters/SubjectQuery'
-        - $ref: '#/components/parameters/FromQuery'
-        - $ref: '#/components/parameters/ToQuery'
-        - $ref: '#/components/parameters/LimitQuery'
-      responses:
-        '200':
-          description: Session decision list
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DecisionListResponse'
   /v1/s/{session_id}/decisions/{decision_id}:
     get:
       summary: Fetch a decision
@@ -95,7 +418,7 @@ paths:
         - $ref: '#/components/parameters/DecisionID'
       responses:
         '200':
-          description: Decision record
+          description: Decision payload
           content:
             application/json:
               schema:
@@ -118,23 +441,28 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DecisionWithCheck'
+                type: object
+                properties:
+                  decision:
+                    $ref: '#/components/schemas/Decision'
+                  check:
+                    $ref: '#/components/schemas/DecisionCheck'
   /v1/s/{session_id}/decisions/{decision_id}/execute-check:
     post:
-      summary: Re-check whether a decision is still executable
+      summary: Check whether a decision is executable
       parameters:
         - $ref: '#/components/parameters/SessionID'
         - $ref: '#/components/parameters/DecisionID'
       responses:
         '200':
-          description: Execution eligibility
+          description: Execution check
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DecisionCheck'
   /v1/s/{session_id}/decisions/{decision_id}/execute:
     post:
-      summary: Attempt execution of a decision
+      summary: Execute a decision with a fresh execution token
       parameters:
         - $ref: '#/components/parameters/SessionID'
         - $ref: '#/components/parameters/DecisionID'
@@ -150,13 +478,31 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DecisionWithCheck'
+                type: object
+                properties:
+                  decision:
+                    $ref: '#/components/schemas/Decision'
+                  check:
+                    $ref: '#/components/schemas/DecisionCheck'
         '409':
-          description: Execution blocked because the decision is stale
+          description: Execution token stale or decision blocked
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DecisionCheck'
+  /v1/s/{session_id}/decisions/{decision_id}/lineage:
+    get:
+      summary: Fetch decision lineage
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/DecisionID'
+      responses:
+        '200':
+          description: Decision lineage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionLineageResponse'
   /v1/s/{session_id}/decisions/{decision_id}/why-blocked:
     get:
       summary: Explain why a decision is blocked
@@ -165,7 +511,7 @@ paths:
         - $ref: '#/components/parameters/DecisionID'
       responses:
         '200':
-          description: Decision explanation payload
+          description: Blocked-decision explanation
           content:
             application/json:
               schema:
@@ -181,7 +527,7 @@ paths:
         - $ref: '#/components/parameters/LimitQuery'
       responses:
         '200':
-          description: Organization decision list
+          description: Organization decisions
           content:
             application/json:
               schema:
@@ -190,20 +536,17 @@ paths:
     get:
       summary: List blocked organization decisions
       parameters:
-        - $ref: '#/components/parameters/SubjectQuery'
-        - $ref: '#/components/parameters/FromQuery'
-        - $ref: '#/components/parameters/ToQuery'
         - $ref: '#/components/parameters/LimitQuery'
       responses:
         '200':
-          description: Blocked organization decision list
+          description: Blocked decisions
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DecisionListResponse'
   /v1/org/search:
     get:
-      summary: Search indexed workflow documents
+      summary: Search indexed org documents
       parameters:
         - name: q
           in: query
@@ -212,14 +555,18 @@ paths:
             type: string
         - name: type
           in: query
-          required: false
           schema:
             type: string
-        - $ref: '#/components/parameters/StatusQuery'
-        - $ref: '#/components/parameters/SubjectQuery'
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: subject
+          in: query
+          schema:
+            type: string
         - name: cursor
           in: query
-          required: false
           schema:
             type: string
         - $ref: '#/components/parameters/LimitQuery'
@@ -229,16 +576,84 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchResponse'
+                $ref: '#/components/schemas/SearchResultsResponse'
+  /v1/org/compliance-export:
+    get:
+      summary: Export org-scoped compliance and audit data
+      parameters:
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, ndjson]
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Compliance export payload
+          content:
+            application/json:
+              schema:
+                type: object
+            application/x-ndjson:
+              schema:
+                type: string
+  /v1/org/backup:
+    get:
+      summary: Export an admin-only org-scoped backup payload
+      responses:
+        '200':
+          description: Backup payload
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: Admin role required
+  /v1/docs/pages:
+    get:
+      summary: List repo-local markdown documentation pages
+      responses:
+        '200':
+          description: Markdown pages available under `markdown/`
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DocsPage'
+  /v1/docs/pages/{slug}:
+    get:
+      summary: Read a repo-local markdown documentation page
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Markdown page content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocsPageContent'
+        '404':
+          description: Page not found
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: APIKeyOrJWT
+      bearerFormat: JWT or API key
   parameters:
     SessionID:
       name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+    FactID:
+      name: id
       in: path
       required: true
       schema:
@@ -249,6 +664,12 @@ components:
       required: true
       schema:
         type: string
+    LimitQuery:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
     StatusQuery:
       name: status
       in: query
@@ -267,25 +688,89 @@ components:
       required: false
       schema:
         type: integer
-        format: int64
     ToQuery:
       name: to
       in: query
       required: false
       schema:
         type: integer
-        format: int64
-    LimitQuery:
-      name: limit
-      in: query
-      required: false
-      schema:
-        type: integer
-        minimum: 1
-        maximum: 200
   schemas:
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    ResetRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+    ResetConfirmRequest:
+      type: object
+      required: [email, token, new_password]
+      properties:
+        email:
+          type: string
+          format: email
+        token:
+          type: string
+        new_password:
+          type: string
+    GenerateKeyRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        label:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+    APIKeyView:
+      type: object
+      properties:
+        id:
+          type: string
+        key:
+          type: string
+        key_prefix:
+          type: string
+        key_last4:
+          type: string
+        label:
+          type: string
+        created_at:
+          type: integer
+        last_used_at:
+          type: integer
+        expires_at:
+          type: integer
+        is_revoked:
+          type: boolean
+        scopes:
+          type: array
+          items:
+            type: string
     Fact:
       type: object
+      required: [id]
       properties:
         id:
           type: string
@@ -297,22 +782,62 @@ components:
           type: number
         resolved_status:
           type: number
-        justification_sets:
-          type: array
-          items:
-            type: array
-            items:
-              type: string
         payload:
           type: object
           additionalProperties: true
         metadata:
           type: object
           additionalProperties: true
+        justification_sets:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+        validation_errors:
+          type: array
+          items:
+            type: string
+        review_status:
+          type: string
+        review_reason:
+          type: string
+        reviewed_at:
+          type: integer
+    ExtractAndAssertRequest:
+      type: object
+      required: [llm_output]
+      properties:
+        llm_output:
+          type: string
+        session_context:
+          type: string
+        auto_retract_contradictions:
+          type: boolean
+    ExtractAndAssertResponse:
+      type: object
+      properties:
+        extracted_count:
+          type: integer
+        asserted_count:
+          type: integer
+        skipped_count:
+          type: integer
+        contradictions_found:
+          type: array
+          items:
+            type: string
+        contradictions_retracted:
+          type: array
+          items:
+            type: string
+        facts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fact'
     CreateDecisionRequest:
       type: object
-      required:
-        - decision_type
+      required: [decision_type]
       properties:
         decision_id:
           type: string
@@ -384,16 +909,12 @@ components:
           type: string
         created_at:
           type: integer
-          format: int64
         updated_at:
           type: integer
-          format: int64
         last_checked_at:
           type: integer
-          format: int64
         executed_at:
           type: integer
-          format: int64
         executed_by:
           type: string
         metadata:
@@ -420,6 +941,12 @@ components:
           type: string
         explanation_hint:
           type: string
+        entrenchment:
+          type: number
+        review_status:
+          type: string
+        review_required:
+          type: boolean
     DecisionBlocker:
       type: object
       properties:
@@ -439,6 +966,12 @@ components:
           type: string
         explanation_hint:
           type: string
+        entrenchment:
+          type: number
+        review_status:
+          type: string
+        review_required:
+          type: boolean
     DecisionCheck:
       type: object
       properties:
@@ -458,16 +991,12 @@ components:
             type: string
         checked_at:
           type: integer
-          format: int64
         decision_version:
           type: integer
-          format: int64
         session_version:
           type: integer
-          format: int64
         expires_at:
           type: integer
-          format: int64
         execution_token:
           type: string
         explanation_summary:
@@ -483,38 +1012,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Decision'
-    DecisionWithCheck:
+    DecisionLineageResponse:
       type: object
       properties:
         decision:
           $ref: '#/components/schemas/Decision'
-        check:
-          $ref: '#/components/schemas/DecisionCheck'
-    SearchResult:
-      type: object
-      properties:
-        type:
-          type: string
-        session_id:
-          type: string
-        fact_id:
-          type: string
-        timestamp:
-          type: integer
-          format: int64
-        snippet:
-          type: string
-        payload:
-          type: object
-          additionalProperties: true
-    SearchResponse:
-      type: object
-      properties:
-        items:
+        dependencies:
           type: array
           items:
-            $ref: '#/components/schemas/SearchResult'
-        next_cursor:
+            $ref: '#/components/schemas/DecisionDependency'
+        latest_check:
+          $ref: '#/components/schemas/DecisionCheck'
+        decision_fact:
           type: string
     DecisionWhyBlockedResponse:
       type: object
@@ -533,4 +1042,45 @@ components:
             type: string
         explanation:
           type: object
+          nullable: true
+    SearchResult:
+      type: object
+      properties:
+        type:
+          type: string
+        session_id:
+          type: string
+        fact_id:
+          type: string
+        timestamp:
+          type: integer
+        snippet:
+          type: string
+        payload:
+          type: object
           additionalProperties: true
+    SearchResultsResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+        next_cursor:
+          type: string
+    DocsPage:
+      type: object
+      required: [slug, title]
+      properties:
+        slug:
+          type: string
+        title:
+          type: string
+    DocsPageContent:
+      type: object
+      required: [slug, content]
+      properties:
+        slug:
+          type: string
+        content:
+          type: string
