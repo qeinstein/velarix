@@ -11,9 +11,13 @@ import (
 type BeliefExplanation struct {
 	FactID     string                 `json:"fact_id"`
 	Confidence float64                `json:"confidence"`
-	Tier       string                 `json:"tier"` // "certain" (>0.9), "probable" (0.6-0.9), "uncertain" (<0.6)
-	Provenance map[string]interface{} `json:"provenance,omitempty"`
-	Payload    map[string]interface{} `json:"payload,omitempty"`
+	// Tier is one of "certain" (>0.9), "probable" (0.6–0.9), "uncertain" (<0.6).
+	// For facts with AssertionKind "uncertain", the tier is capped at "probable"
+	// regardless of the numeric confidence, reflecting epistemic hedging.
+	Tier          string                 `json:"tier"`
+	AssertionKind string                 `json:"assertion_kind,omitempty"`
+	Provenance    map[string]interface{} `json:"provenance,omitempty"`
+	Payload       map[string]interface{} `json:"payload,omitempty"`
 	IsRoot         bool                   `json:"is_root"`
 	Parents        []string               `json:"parents,omitempty"`
 	NegatedParents []string               `json:"negated_parents,omitempty"`
@@ -53,11 +57,21 @@ type ExplanationOutput struct {
 }
 
 // confidenceTier returns a human-readable tier for a confidence score.
-func confidenceTier(confidence float64) string {
+// When assertionKind is "uncertain" the tier is capped at "probable" even if
+// the numeric confidence exceeds 0.9, because the fact itself is epistemically
+// hedged (e.g. "X is probably the CEO"). This prevents the engine from
+// presenting logically consistent but factually nuanced claims as "certain".
+func confidenceTier(confidence float64, assertionKind string) string {
+	if assertionKind == AssertionKindUncertain {
+		if confidence >= float64(ConfidenceThreshold) {
+			return "probable"
+		}
+		return "uncertain"
+	}
 	if confidence > 0.9 {
 		return "certain"
 	}
-	if confidence >= 0.6 {
+	if confidence >= float64(ConfidenceThreshold) {
 		return "probable"
 	}
 	return "uncertain"
@@ -159,11 +173,12 @@ func (e *Engine) buildCausalChain(fact *Fact, visited map[string]struct{}) []Bel
 	conf := float64(e.effectiveStatusUnsafe(fact))
 
 	belief := BeliefExplanation{
-		FactID:     fact.ID,
-		Confidence: conf,
-		Tier:       confidenceTier(conf),
-		Payload:    fact.Payload,
-		IsRoot:     fact.IsRoot,
+		FactID:        fact.ID,
+		Confidence:    conf,
+		Tier:          confidenceTier(conf, fact.AssertionKind),
+		AssertionKind: fact.AssertionKind,
+		Payload:       fact.Payload,
+		IsRoot:        fact.IsRoot,
 	}
 
 	// Attach provenance from metadata if available

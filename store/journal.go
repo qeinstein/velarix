@@ -24,6 +24,10 @@ const (
 	EventRevalidationComplete EventType = "revalidation_complete"
 	EventAdminAction          EventType = "admin_action"
 	EventDecisionRecord       EventType = "decision_record"
+	// EventFactExpired is written by the retention sweep when a fact's ValidUntil
+	// has passed. On replay, the fact is retracted with reason "expired" so that
+	// downstream dependents are re-propagated correctly.
+	EventFactExpired EventType = "fact_expired"
 )
 
 type JournalEntry struct {
@@ -227,6 +231,22 @@ func Replay(path string, engines map[string]*core.Engine) error {
 			// Decision records are audit trail only — not engine state.
 			slog.Debug("Replaying journal: skipping decision_record event (audit trail only)",
 				"line", lineNum, "session_id", entry.SessionID, "fact_id", entry.FactID)
+
+		case EventFactExpired:
+			// Re-apply a temporal-decay retraction written by SweepExpiredFacts.
+			factID := entry.FactID
+			if factID == "" && entry.Fact != nil {
+				factID = entry.Fact.ID
+			}
+			if factID != "" {
+				if err := engine.RetractFact(factID, "expired"); err != nil {
+					slog.Warn("Replaying journal: fact_expired retraction failed",
+						"line", lineNum, "session_id", entry.SessionID, "fact_id", factID, "error", err)
+				}
+			} else {
+				slog.Warn("Replaying journal: skipping fact_expired event — missing fact_id",
+					"line", lineNum, "session_id", entry.SessionID)
+			}
 
 		default:
 			// Future event types must never be silently lost.
