@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 	"velarix/core"
 )
 
@@ -44,6 +45,101 @@ func TestSimpleInvalidationChain(t *testing.T) {
 
 	if engine.GetStatus("B") != core.Invalid {
 		t.Fatalf("expected B to be invalid after A invalidation")
+	}
+}
+
+func TestExpiredFactInvalidatesDescendants(t *testing.T) {
+	engine := core.NewEngine()
+
+	root := &core.Fact{
+		ID:           "root_expiring",
+		IsRoot:       true,
+		ManualStatus: core.Valid,
+		ValidUntil:   time.Now().Add(100 * time.Millisecond).UnixMilli(),
+	}
+	if err := engine.AssertFact(root); err != nil {
+		t.Fatal(err)
+	}
+
+	child := &core.Fact{
+		ID: "child_derived",
+		JustificationSets: [][]string{
+			{"root_expiring"},
+		},
+	}
+	if err := engine.AssertFact(child); err != nil {
+		t.Fatal(err)
+	}
+	if st := engine.GetStatus(child.ID); st < core.ConfidenceThreshold {
+		t.Fatalf("expected child to be valid before expiry, got %.4f", st)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	engine.SweepExpiredFacts()
+
+	f, ok := engine.GetFact(child.ID)
+	if !ok {
+		t.Fatalf("missing child fact")
+	}
+	if f.DerivedStatus >= core.ConfidenceThreshold {
+		t.Fatalf("expected child DerivedStatus to be below threshold after expiry, got %.4f", f.DerivedStatus)
+	}
+}
+
+func TestHypotheticalFactCannotGroundEmpiricalDerived(t *testing.T) {
+	engine := core.NewEngine()
+
+	hyp := &core.Fact{
+		ID:            "hyp_root",
+		IsRoot:        true,
+		ManualStatus:  core.Valid,
+		AssertionKind: core.AssertionKindHypothetical,
+	}
+	if err := engine.AssertFact(hyp); err != nil {
+		t.Fatal(err)
+	}
+
+	derived := &core.Fact{
+		ID:            "emp_derived",
+		AssertionKind: core.AssertionKindEmpirical,
+		JustificationSets: [][]string{
+			{"hyp_root"},
+		},
+	}
+	if err := engine.AssertFact(derived); err != nil {
+		t.Fatal(err)
+	}
+	f, ok := engine.GetFact(derived.ID)
+	if !ok {
+		t.Fatalf("missing derived fact")
+	}
+	if f.DerivedStatus != core.Invalid {
+		t.Fatalf("expected DerivedStatus=0 for empirical derived from hypothetical parent, got %.4f", f.DerivedStatus)
+	}
+}
+
+func TestGlobalFactFansOutToActiveSessions(t *testing.T) {
+	gt := core.NewGlobalTruth()
+	e1 := core.NewEngine()
+	e2 := core.NewEngine()
+
+	if err := gt.Subscribe("s1", e1); err != nil {
+		t.Fatal(err)
+	}
+	if err := gt.Subscribe("s2", e2); err != nil {
+		t.Fatal(err)
+	}
+
+	g0 := &core.Fact{ID: "g0", IsRoot: true, ManualStatus: core.Valid}
+	if _, err := gt.AssertGlobal(g0); err != nil {
+		t.Fatal(err)
+	}
+
+	if st := e1.GetStatus("g0"); st < core.ConfidenceThreshold {
+		t.Fatalf("expected session s1 to see global fact g0 as valid, got %.4f", st)
+	}
+	if st := e2.GetStatus("g0"); st < core.ConfidenceThreshold {
+		t.Fatalf("expected session s2 to see global fact g0 as valid, got %.4f", st)
 	}
 }
 

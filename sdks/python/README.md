@@ -48,6 +48,20 @@ facts = session.get_slice(
 )
 ```
 
+## Global Facts
+
+Global facts are org-wide assertions shared across sessions (admin-only endpoints).
+
+```python
+from velarix import VelarixClient
+
+client = VelarixClient(base_url="http://localhost:8080", api_key="dev-admin-key")
+
+client.global_facts.assert_fact("today", {"date": "2026-04-13"})
+items = client.global_facts.list()
+client.global_facts.retract("today")
+```
+
 ## Execution Pattern
 
 The production pattern is:

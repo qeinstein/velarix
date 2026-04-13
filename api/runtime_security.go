@@ -40,6 +40,17 @@ func envBool(name string) bool {
 	}
 }
 
+func envFloat64(name string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	if v, err := strconv.ParseFloat(raw, 64); err == nil {
+		return v
+	}
+	return fallback
+}
+
 func bootstrapAdminEnabled() bool {
 	return envBool("VELARIX_ENABLE_BOOTSTRAP_ADMIN_KEY") || isDevLikeEnv()
 }

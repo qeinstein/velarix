@@ -243,7 +243,7 @@ func (e *Engine) propagate(queue []string) {
 					if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
 						minConf = depConf
 					}
-					if dependencySatisfied(pStatus, false) {
+					if dependencySatisfied(pFact, pStatus, false, childFact.AssertionKind) {
 						validCount++
 					}
 				}
@@ -256,7 +256,7 @@ func (e *Engine) propagate(queue []string) {
 					if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
 						minConf = depConf
 					}
-					if dependencySatisfied(pStatus, true) {
+					if dependencySatisfied(pFact, pStatus, true, childFact.AssertionKind) {
 						validCount++
 					}
 				}
@@ -293,6 +293,10 @@ func (e *Engine) AssertFact(f *Fact) error {
 
 	if len(e.Facts) >= MaxFactsPerSession {
 		return fmt.Errorf("session memory cap exceeded (%d facts). please archive and start a new session", MaxFactsPerSession)
+	}
+
+	if f.AssertedAt == 0 {
+		f.AssertedAt = time.Now().UnixMilli()
 	}
 
 	if existing, exists := e.Facts[f.ID]; exists {
@@ -376,7 +380,7 @@ func (e *Engine) AssertFact(f *Fact) error {
 			if depConf := dependencyConfidence(parentStatus, false); depConf < minConf {
 				minConf = depConf
 			}
-			if dependencySatisfied(parentStatus, false) {
+			if dependencySatisfied(pFact, parentStatus, false, f.AssertionKind) {
 				validCount++
 			}
 
@@ -394,7 +398,7 @@ func (e *Engine) AssertFact(f *Fact) error {
 			if depConf := dependencyConfidence(parentStatus, true); depConf < minConf {
 				minConf = depConf
 			}
-			if dependencySatisfied(parentStatus, true) {
+			if dependencySatisfied(pFact, parentStatus, true, f.AssertionKind) {
 				validCount++
 			}
 
@@ -568,20 +572,32 @@ func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 			minConf := Valid
 			validCount := 0
 			for _, pID := range js.PositiveParentFactIDs {
+				pFact := e.Facts[pID]
 				pStatus := simStatus[pID]
 				if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
 					minConf = depConf
 				}
-				if dependencySatisfied(pStatus, false) {
+				childFact := e.Facts[js.ChildFactID]
+				childKind := ""
+				if childFact != nil {
+					childKind = childFact.AssertionKind
+				}
+				if dependencySatisfied(pFact, pStatus, false, childKind) {
 					validCount++
 				}
 			}
 			for _, pID := range js.NegativeParentFactIDs {
+				pFact := e.Facts[pID]
 				pStatus := simStatus[pID]
 				if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
 					minConf = depConf
 				}
-				if dependencySatisfied(pStatus, true) {
+				childFact := e.Facts[js.ChildFactID]
+				childKind := ""
+				if childFact != nil {
+					childKind = childFact.AssertionKind
+				}
+				if dependencySatisfied(pFact, pStatus, true, childKind) {
 					validCount++
 				}
 			}

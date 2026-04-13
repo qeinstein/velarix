@@ -2,7 +2,9 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +41,13 @@ type GlobalTruth struct {
 	retracted   map[string]string // factID -> reason
 	version     atomic.Int64
 	subscribers map[string]*Engine // sessionID -> engine
+
+	// Reverse index: globalFactID -> sessionIDs that reference it.
+	// Used to do selective fan-out on global fact updates.
+	depIndex map[string]map[string]struct{}
+
+	// Session-local index for efficient removal on Unsubscribe.
+	sessionDeps map[string]map[string]struct{} // sessionID -> set(globalFactID)
 }
 
 // NewGlobalTruth returns an empty GlobalTruth store.
@@ -47,6 +56,8 @@ func NewGlobalTruth() *GlobalTruth {
 		facts:       make(map[string]*Fact),
 		retracted:   make(map[string]string),
 		subscribers: make(map[string]*Engine),
+		depIndex:    make(map[string]map[string]struct{}),
+		sessionDeps: make(map[string]map[string]struct{}),
 	}
 }
 
@@ -75,6 +86,8 @@ func (gt *GlobalTruth) Subscribe(sessionID string, engine *Engine) error {
 
 	gt.subscribers[sessionID] = engine
 
+	gt.rebuildSessionIndexLocked(sessionID, engine)
+
 	// Replay all existing non-retracted global facts into the new subscriber
 	// so it starts in a consistent state without a separate bootstrap step.
 	for _, fact := range gt.facts {
@@ -95,6 +108,7 @@ func (gt *GlobalTruth) Unsubscribe(sessionID string) {
 	gt.mu.Lock()
 	defer gt.mu.Unlock()
 	delete(gt.subscribers, sessionID)
+	gt.removeSessionIndexLocked(sessionID)
 }
 
 // AssertGlobal adds or replaces a fact in the global namespace and broadcasts
@@ -110,6 +124,7 @@ func (gt *GlobalTruth) AssertGlobal(fact *Fact) (int64, error) {
 	gt.mu.Lock()
 	defer gt.mu.Unlock()
 
+	_, existed := gt.facts[fact.ID]
 	gt.facts[fact.ID] = cloneFact(fact)
 	delete(gt.retracted, fact.ID)
 	version := gt.version.Add(1)
@@ -118,7 +133,37 @@ func (gt *GlobalTruth) AssertGlobal(fact *Fact) (int64, error) {
 	broadcast := cloneFact(fact)
 	broadcast.Metadata = withGlobalTruthFlag(broadcast.Metadata)
 
-	for _, eng := range gt.subscribers {
+	// Fan-out strategy:
+	// - New global facts are broadcast to all subscribers so they can be used as
+	//   dependencies without requiring a separate fetch path.
+	// - Updates to existing global facts are broadcast selectively based on the
+	//   dependency index and global connected-components.
+	targets := map[string]*Engine{}
+	selective := false
+	if !existed {
+		for sid, eng := range gt.subscribers {
+			targets[sid] = eng
+		}
+	} else {
+		selective = true
+		for _, sid := range gt.affectedSubscribersLocked(fact.ID) {
+			if eng, ok := gt.subscribers[sid]; ok {
+				targets[sid] = eng
+			}
+		}
+		// If we couldn't compute any affected subscribers, fall back to full
+		// broadcast to preserve correctness.
+		if len(targets) == 0 {
+			selective = false
+			for sid, eng := range gt.subscribers {
+				targets[sid] = eng
+			}
+		}
+	}
+
+	GlobalFanoutTotal.WithLabelValues(fmt.Sprintf("%t", selective)).Inc()
+
+	for _, eng := range targets {
 		_ = eng.AssertFact(cloneFact(broadcast))
 	}
 
@@ -146,7 +191,21 @@ func (gt *GlobalTruth) RetractGlobal(factID string, reason string) (int64, error
 	gt.retracted[factID] = reason
 	version := gt.version.Add(1)
 
-	for _, eng := range gt.subscribers {
+	targets := gt.subscribers
+	selective := false
+	affected := gt.affectedSubscribersLocked(factID)
+	if len(affected) > 0 && len(affected) < len(gt.subscribers) {
+		selective = true
+		targets = map[string]*Engine{}
+		for _, sid := range affected {
+			if eng, ok := gt.subscribers[sid]; ok {
+				targets[sid] = eng
+			}
+		}
+	}
+	GlobalFanoutTotal.WithLabelValues(fmt.Sprintf("%t", selective)).Inc()
+
+	for _, eng := range targets {
 		_ = eng.RetractFact(factID, reason)
 	}
 
@@ -166,6 +225,20 @@ func (gt *GlobalTruth) ListGlobalFacts() []*Fact {
 		out = append(out, cloneFact(f))
 	}
 	return out
+}
+
+// GetGlobalFact returns a snapshot of a global fact, if present and not retracted.
+func (gt *GlobalTruth) GetGlobalFact(factID string) (*Fact, bool) {
+	gt.mu.RLock()
+	defer gt.mu.RUnlock()
+	f, ok := gt.facts[factID]
+	if !ok {
+		return nil, false
+	}
+	if _, isRetracted := gt.retracted[factID]; isRetracted {
+		return nil, false
+	}
+	return cloneFact(f), true
 }
 
 // SubscriberCount returns the number of currently registered engines.
@@ -192,7 +265,10 @@ func (gt *GlobalTruth) SubscriberCount() int {
 func (gt *GlobalTruth) Partition() [][]string {
 	gt.mu.RLock()
 	defer gt.mu.RUnlock()
+	return gt.partitionLocked()
+}
 
+func (gt *GlobalTruth) partitionLocked() [][]string {
 	// Union-Find with path compression.
 	parent := make(map[string]string, len(gt.facts))
 	for id := range gt.facts {
@@ -263,6 +339,126 @@ func (gt *GlobalTruth) WaitForVersion(minVersion int64, deadline time.Time) erro
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+func (gt *GlobalTruth) removeSessionIndexLocked(sessionID string) {
+	deps := gt.sessionDeps[sessionID]
+	delete(gt.sessionDeps, sessionID)
+	for factID := range deps {
+		if sessions, ok := gt.depIndex[factID]; ok {
+			delete(sessions, sessionID)
+			if len(sessions) == 0 {
+				delete(gt.depIndex, factID)
+			}
+		}
+	}
+}
+
+func (gt *GlobalTruth) rebuildSessionIndexLocked(sessionID string, engine *Engine) {
+	gt.removeSessionIndexLocked(sessionID)
+	if engine == nil {
+		return
+	}
+	deps := map[string]struct{}{}
+	for _, fact := range engine.ListFacts() {
+		if fact == nil {
+			continue
+		}
+		for _, set := range fact.JustificationSets {
+			for _, token := range set {
+				parentID := token
+				if len(parentID) > 0 && parentID[0] == '!' {
+					parentID = parentID[1:]
+				}
+				parentID = strings.TrimSpace(parentID)
+				if parentID == "" {
+					continue
+				}
+				if _, isGlobal := gt.facts[parentID]; !isGlobal {
+					continue
+				}
+				deps[parentID] = struct{}{}
+			}
+		}
+	}
+	if len(deps) == 0 {
+		return
+	}
+	gt.sessionDeps[sessionID] = deps
+	for factID := range deps {
+		if _, ok := gt.depIndex[factID]; !ok {
+			gt.depIndex[factID] = map[string]struct{}{}
+		}
+		gt.depIndex[factID][sessionID] = struct{}{}
+	}
+}
+
+// IndexFactDependencies incrementally records that sessionID references one or
+// more global facts (directly) via fact.JustificationSets.
+func (gt *GlobalTruth) IndexFactDependencies(sessionID string, fact *Fact) {
+	if gt == nil || sessionID == "" || fact == nil {
+		return
+	}
+	gt.mu.Lock()
+	defer gt.mu.Unlock()
+
+	if _, ok := gt.sessionDeps[sessionID]; !ok {
+		gt.sessionDeps[sessionID] = map[string]struct{}{}
+	}
+	for _, set := range fact.JustificationSets {
+		for _, token := range set {
+			parentID := token
+			if len(parentID) > 0 && parentID[0] == '!' {
+				parentID = parentID[1:]
+			}
+			parentID = strings.TrimSpace(parentID)
+			if parentID == "" {
+				continue
+			}
+			if _, isGlobal := gt.facts[parentID]; !isGlobal {
+				continue
+			}
+			gt.sessionDeps[sessionID][parentID] = struct{}{}
+			if _, ok := gt.depIndex[parentID]; !ok {
+				gt.depIndex[parentID] = map[string]struct{}{}
+			}
+			gt.depIndex[parentID][sessionID] = struct{}{}
+		}
+	}
+}
+
+func (gt *GlobalTruth) affectedSubscribersLocked(globalFactID string) []string {
+	// Use Partition() connected-components on global facts to include
+	// transitive influence through global fact dependencies.
+	components := gt.partitionLocked()
+	componentIDs := map[string]struct{}{globalFactID: {}}
+	for _, comp := range components {
+		for _, id := range comp {
+			if id == globalFactID {
+				componentIDs = map[string]struct{}{}
+				for _, cid := range comp {
+					componentIDs[cid] = struct{}{}
+				}
+				break
+			}
+		}
+		if _, ok := componentIDs[globalFactID]; !ok {
+			break
+		}
+	}
+
+	seen := map[string]struct{}{}
+	for factID := range componentIDs {
+		for sid := range gt.depIndex[factID] {
+			seen[sid] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for sid := range seen {
+		out = append(out, sid)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // withGlobalTruthFlag returns meta with "_global_truth" = true added.

@@ -8,10 +8,12 @@ import (
 )
 
 var (
-	factRegex   = regexp.MustCompile(`(?i)^fact\s+([a-zA-Z0-9_-]+)\s*:\s*"(.*?)"(?:\s*\(confidence:\s*([0-9.]+)\))?$`)
-	deriveRegex = regexp.MustCompile(`(?i)^derive\s+([a-zA-Z0-9_-]+)\s*:\s*"(.*?)"(?:.*)?$`)
+	factRegex   = regexp.MustCompile(`(?i)^fact\s+([a-zA-Z0-9_-]+)\s*:\s*"(.*?)"(?:\s*\((.*?)\))?$`)
+	deriveRegex = regexp.MustCompile(`(?i)^derive\s+([a-zA-Z0-9_-]+)\s*:\s*"(.*?)"(?:\s*\((.*?)\))?(?:.*)?$`)
 	reqRegex    = regexp.MustCompile(`(?i)requires\s*\((.*?)\)`)
 	rejRegex    = regexp.MustCompile(`(?i)rejects\s*\((.*?)\)`)
+	confRegex   = regexp.MustCompile(`(?i)\bconfidence\s*:\s*([0-9.]+)\b`)
+	kindRegex   = regexp.MustCompile(`(?i)\bassertion_kind\s*:\s*(empirical|uncertain|hypothetical|fictional)\b`)
 )
 
 // ParseVLogic parses a V-Logic DSL script into ExtractedFacts.
@@ -29,27 +31,32 @@ func ParseVLogic(script string) ([]ExtractedFact, error) {
 		if match := factRegex.FindStringSubmatch(line); match != nil {
 			id := match[1]
 			claim := match[2]
-			confStr := match[3]
-			
+			args := match[3]
+
 			if seenIDs[id] {
 				return nil, fmt.Errorf("line %d: duplicate ID '%s'", i+1, id)
 			}
 			seenIDs[id] = true
 
 			conf := 0.9
-			if confStr != "" {
-				if c, err := strconv.ParseFloat(confStr, 64); err == nil {
+			if m := confRegex.FindStringSubmatch(args); m != nil {
+				if c, err := strconv.ParseFloat(m[1], 64); err == nil {
 					conf = c
 				}
 			}
+			kind := "empirical"
+			if m := kindRegex.FindStringSubmatch(args); m != nil {
+				kind = strings.ToLower(strings.TrimSpace(m[1]))
+			}
 
 			facts = append(facts, ExtractedFact{
-				ID:         id,
-				Claim:      claim,
-				IsRoot:     true,
-				Confidence: conf,
-				SourceType: "v-logic",
-				Polarity:   "positive",
+				ID:            id,
+				Claim:         claim,
+				IsRoot:        true,
+				Confidence:    conf,
+				AssertionKind: kind,
+				SourceType:    "v-logic",
+				Polarity:      "positive",
 			})
 			continue
 		}
@@ -57,6 +64,7 @@ func ParseVLogic(script string) ([]ExtractedFact, error) {
 		if match := deriveRegex.FindStringSubmatch(line); match != nil {
 			id := match[1]
 			claim := match[2]
+			args := match[3]
 
 			if seenIDs[id] {
 				return nil, fmt.Errorf("line %d: duplicate ID '%s'", i+1, id)
@@ -90,6 +98,12 @@ func ParseVLogic(script string) ([]ExtractedFact, error) {
 				IsRoot:     false,
 				Confidence: 0.9,
 				DependsOn:  dependsOn,
+				AssertionKind: func() string {
+					if m := kindRegex.FindStringSubmatch(args); m != nil {
+						return strings.ToLower(strings.TrimSpace(m[1]))
+					}
+					return "empirical"
+				}(),
 				SourceType: "v-logic",
 				Polarity:   "positive",
 			})
