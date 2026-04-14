@@ -49,11 +49,13 @@ fact france-europe: "France is located in Europe" (confidence: 0.90)`
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-	got, err := extractor.Extract(context.Background(),
-		"Paris is the capital of France and is located in Europe.", "")
+	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	res, err := extractor.Extract(context.Background(),
+		"Paris is the capital of France and is located in Europe.", "", cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	got := res.Facts
 	if len(got) != 2 {
 		t.Fatalf("expected 2 facts, got %d", len(got))
 	}
@@ -75,10 +77,12 @@ func TestExtract_CorrectVLogicParsing_MarkdownFences(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-	got, err := extractor.Extract(context.Background(), "The sky is blue.", "")
+	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	res, err := extractor.Extract(context.Background(), "The sky is blue.", "", cfg)
 	if err != nil {
 		t.Fatalf("expected fences to be stripped; got error: %v", err)
 	}
+	got := res.Facts
 	if len(got) != 1 || got[0].ID != "fact-1" {
 		t.Fatalf("expected 1 fact with id fact-1, got %+v", got)
 	}
@@ -150,6 +154,38 @@ func TestExtract_ToCoreFact_DerivedProperties(t *testing.T) {
 	}
 }
 
+func TestExtract_AssertionKindClassificationToCoreFact(t *testing.T) {
+	vlogic := `fact emp: "Alice is the CEO of Acme" (confidence: 0.9, assertion_kind: empirical)
+fact hedged: "I think Bob is the CFO of Acme" (confidence: 0.6, assertion_kind: uncertain)
+fact conditional: "If revenue grows, hiring will increase" (confidence: 0.8, assertion_kind: hypothetical)
+fact story: "In the story, gravity pulls upward" (confidence: 0.9, assertion_kind: fictional)`
+
+	extracted, err := extractor.ParseVLogic(vlogic)
+	if err != nil {
+		t.Fatalf("ParseVLogic error: %v", err)
+	}
+	if len(extracted) != 4 {
+		t.Fatalf("expected 4 extracted facts, got %d", len(extracted))
+	}
+
+	got := map[string]string{}
+	for _, ef := range extracted {
+		got[ef.ID] = ef.ToCoreFact().AssertionKind
+	}
+	if got["emp"] != "empirical" {
+		t.Fatalf("emp assertion_kind=%q, want empirical", got["emp"])
+	}
+	if got["hedged"] != "uncertain" {
+		t.Fatalf("hedged assertion_kind=%q, want uncertain", got["hedged"])
+	}
+	if got["conditional"] != "hypothetical" {
+		t.Fatalf("conditional assertion_kind=%q, want hypothetical", got["conditional"])
+	}
+	if got["story"] != "fictional" {
+		t.Fatalf("story assertion_kind=%q, want fictional", got["story"])
+	}
+}
+
 func TestExtract_TimeoutError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
@@ -162,7 +198,8 @@ func TestExtract_TimeoutError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := extractor.Extract(ctx, "some text", "")
+	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	_, err := extractor.Extract(ctx, "some text", "", cfg)
 	if err == nil {
 		t.Fatal("expected error on cancelled context, got nil")
 	}
@@ -192,7 +229,8 @@ func TestExtract_Non200Response(t *testing.T) {
 			t.Setenv("OPENAI_API_KEY", "test-key")
 			t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-			_, err := extractor.Extract(context.Background(), "some text", "")
+			cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+			_, err := extractor.Extract(context.Background(), "some text", "", cfg)
 			if err == nil {
 				t.Fatalf("expected error for HTTP %d, got nil", tc.status)
 			}
@@ -217,12 +255,14 @@ fact water-is-h2o: "Water is composed of H2O" (confidence: 0.99)`
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-	got, err := extractor.Extract(context.Background(),
+	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	res, err := extractor.Extract(context.Background(),
 		"Water boils at 100 degrees Celsius, freezes at 0 degrees Celsius, and is composed of H2O.",
-		"")
+		"", cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	got := res.Facts
 	if len(got) != 3 {
 		t.Fatalf("expected 3 atomic facts from compound sentence, got %d", len(got))
 	}
@@ -231,7 +271,8 @@ fact water-is-h2o: "Water is composed of H2O" (confidence: 0.99)`
 func TestExtract_MissingAPIKey(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 
-	_, err := extractor.Extract(context.Background(), "any text", "")
+	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	_, err := extractor.Extract(context.Background(), "any text", "", cfg)
 	if err == nil {
 		t.Fatal("expected error when API key is missing, got nil")
 	}
@@ -269,7 +310,8 @@ func TestExtract_SessionContextPrefixed(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-	_, _ = extractor.Extract(context.Background(), "the llm output text", "domain: medical")
+	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	_, _ = extractor.Extract(context.Background(), "the llm output text", "domain: medical", cfg)
 
 	if !strings.Contains(capturedUserMsg, "domain: medical") {
 		t.Errorf("session context not in user message; got: %q", capturedUserMsg)

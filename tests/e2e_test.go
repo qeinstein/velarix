@@ -136,6 +136,111 @@ func TestJournalResilience(t *testing.T) {
 	}
 }
 
+func TestVerificationGatesDecisionExecution(t *testing.T) {
+	server, _ := setupTestServer(t)
+
+	// Enable grounding policy: allow llm_output but require verified.
+	policyBody, _ := json.Marshal(map[string]interface{}{
+		"name":    "grounding",
+		"enabled": true,
+		"rules": map[string]interface{}{
+			"grounding_require_verified":         true,
+			"grounding_allowed_source_types":     []string{"llm_output", "perception", "user"},
+			"verification_required_source_types": []string{"llm_output"},
+		},
+	})
+	resp := performRequest(t, server, http.MethodPost, "/v1/policies", policyBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create policy: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	sessionID := "verification_gate_session"
+
+	// Root fact from an untrusted source (LLM output) starts unverified.
+	rootBody, _ := json.Marshal(map[string]interface{}{
+		"id":            "ceo_claim",
+		"is_root":       true,
+		"manual_status": 1.0,
+		"payload":       map[string]interface{}{"claim_key": "ceo", "claim_value": "alice"},
+		"metadata":      map[string]interface{}{"source_type": "llm_output"},
+	})
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", rootBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to assert root: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	// Execution-critical derived fact (decision.*) depends on the root.
+	decisionFactBody, _ := json.Marshal(map[string]interface{}{
+		"id":                 "decision.release_payment",
+		"justification_sets": [][]string{{"ceo_claim"}},
+		"payload":            map[string]interface{}{"type": "action", "summary": "release payment"},
+	})
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts", decisionFactBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to assert decision fact: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	createDecisionBody, _ := json.Marshal(map[string]interface{}{
+		"decision_type": "verification_gate",
+		"fact_id":       "decision.release_payment",
+		"subject_ref":   "vendor:1",
+		"target_ref":    "invoice:1",
+	})
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions", createDecisionBody)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("failed to create decision: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var decision store.Decision
+	if err := json.NewDecoder(resp.Body).Decode(&decision); err != nil {
+		t.Fatalf("failed to decode decision: %v", err)
+	}
+
+	// Execute-check should be blocked because ceo_claim is unverified.
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute-check", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("execute-check failed: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var check store.DecisionCheck
+	if err := json.NewDecoder(resp.Body).Decode(&check); err != nil {
+		t.Fatalf("failed to decode check: %v", err)
+	}
+	if check.Executable {
+		t.Fatalf("expected blocked decision before verification, got executable")
+	}
+	found := false
+	for _, rc := range check.ReasonCodes {
+		if rc == "unverified_dependency" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected reason code unverified_dependency, got %+v", check.ReasonCodes)
+	}
+
+	// Verify the root fact, then re-check.
+	verifyBody, _ := json.Marshal(map[string]interface{}{
+		"status":     "verified",
+		"method":     "test",
+		"source_ref": "unit",
+	})
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/facts/ceo_claim/verify", verifyBody)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("verify failed: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	resp = performRequest(t, server, http.MethodPost, "/v1/s/"+sessionID+"/decisions/"+decision.ID+"/execute-check", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("execute-check after verify failed: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&check); err != nil {
+		t.Fatalf("failed to decode check after verify: %v", err)
+	}
+	if !check.Executable {
+		t.Fatalf("expected executable decision after verification, got blocked: %+v", check.ReasonCodes)
+	}
+}
+
 func TestE2ELifecycle(t *testing.T) {
 	server, _ := setupTestServer(t)
 	sessionID := "e2e_session"

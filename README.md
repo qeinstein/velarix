@@ -56,6 +56,65 @@ Velarix belongs at the execution boundary:
 4. call `execute-check` immediately before the side effect
 5. execute only if the decision remains valid
 
+## Truth Semantics
+
+Velarix supports `assertion_kind` scoping on facts (`empirical`, `uncertain`, `hypothetical`, `fictional`) so creative/hypothetical content does not generate false contradiction signals and cannot ground real-world derived conclusions. See [docs/README.md](docs/README.md) and the fact schema in [docs/openapi.yaml](docs/openapi.yaml).
+
+Facts may include `valid_until` (unix ms). After expiry, facts are treated as invalid and an expiry sweep persists `fact_expired` events so downstream dependents are invalidated promptly and reloads reconstruct the same state. See [docs/README.md](docs/README.md).
+
+Velarix also supports org-wide global facts (`/v1/global/facts`) that fan out into active sessions to provide shared ground truths (e.g. verified entities or org-wide reference facts). See [docs/README.md](docs/README.md) and [docs/openapi.yaml](docs/openapi.yaml).
+
+Velarix can also store verification metadata for facts (verified/unverified/rejected) and use org policy to prevent unverified, untrusted, or stale premises from grounding execution-critical conclusions. Admins can update verification via `POST /v1/s/{session_id}/facts/{fact_id}/verify`, and optional webhook automation can apply verification decisions out-of-band. See [docs/README.md](docs/README.md).
+
+## Extraction
+
+Velarix includes a fact extraction pipeline that converts raw LLM output into atomic facts with inferred dependencies, then (optionally) checks for contradictions before assertion.
+
+- Endpoint: `POST /v1/s/{session_id}/extract-and-assert`
+- Model: set `VELARIX_EXTRACTOR_MODEL` for extraction calls (separate from `VELARIX_VERIFIER_MODEL`)
+- Optional request field: `extraction_config` to enable/disable pipeline stages for benchmarking
+
+Example request body:
+
+```json
+{
+  "llm_output": "…",
+  "session_context": "…",
+  "auto_retract_contradictions": false,
+  "extraction_config": {
+    "EnableSelection": true,
+    "EnableDecontextualisation": true,
+    "EnableCoverageVerification": false,
+    "EnableConsistencyPrecheck": true
+  }
+}
+```
+
+### Tiered Extraction Architecture
+
+Velarix supports three extraction tiers, selectable via `VELARIX_EXTRACTION_TIER` or the `extraction_config.Tier` field:
+
+| Tier | Name | Pipeline | Cost | Latency |
+|------|------|----------|------|---------|
+| 1 | SRL (default) | spaCy + AllenNLP SRL via local Python service | Zero | ~50ms |
+| 2 | Hybrid | SRL first, LLM fallback for low-confidence sentences | Low | ~200ms |
+| 3 | Full LLM | Five-stage LLM pipeline (selection → decomposition → coverage → consistency) | Standard | ~3s |
+
+```json
+{
+  "extraction_config": {
+    "Tier": 1,
+    "SRLServiceURL": "http://localhost:8090"
+  }
+}
+```
+
+The SRL service runs as a sidecar (`extractor/srl_service/`). Start it with:
+
+```bash
+cd extractor/srl_service && pip install -r requirements.txt && python main.py
+```
+
 ## Integration Surfaces
 
 - Python SDK: session, fact, slice, and decision APIs

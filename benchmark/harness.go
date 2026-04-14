@@ -27,6 +27,7 @@ import (
 	"unicode"
 
 	"velarix/core"
+	"velarix/extractor"
 )
 
 // Config is loaded from a JSON file and governs every aspect of the benchmark.
@@ -76,25 +77,48 @@ type QuestionScore struct {
 	BaselineScores   []float64 `json:"baseline_scores"`
 	BaselineMean     float64   `json:"baseline_mean"`
 	BaselineStdDev   float64   `json:"baseline_std_dev"`
-	VelarixScores    []float64 `json:"velarix_scores"`
-	VelarixMean      float64   `json:"velarix_mean"`
-	VelarixStdDev    float64   `json:"velarix_std_dev"`
+	VelarixBaselineScores []float64 `json:"velarix_baseline_scores"`
+	VelarixBaselineMean   float64   `json:"velarix_baseline_mean"`
+	VelarixBaselineStdDev float64   `json:"velarix_baseline_std_dev"`
+
+	VelarixStandardScores []float64 `json:"velarix_standard_scores"`
+	VelarixStandardMean   float64   `json:"velarix_standard_mean"`
+	VelarixStandardStdDev float64   `json:"velarix_standard_std_dev"`
+
+	VelarixFullScores []float64 `json:"velarix_full_scores"`
+	VelarixFullMean   float64   `json:"velarix_full_mean"`
+	VelarixFullStdDev float64   `json:"velarix_full_std_dev"`
+
 	Flagged          bool      `json:"flagged_high_variance"` // std_dev >= 0.05
 	BaselineLatencyP50Ms int64 `json:"baseline_latency_p50_ms"`
-	VelarixLatencyP50Ms  int64 `json:"velarix_latency_p50_ms"`
+	VelarixBaselineLatencyP50Ms int64 `json:"velarix_baseline_latency_p50_ms"`
+	VelarixStandardLatencyP50Ms int64 `json:"velarix_standard_latency_p50_ms"`
+	VelarixFullLatencyP50Ms     int64 `json:"velarix_full_latency_p50_ms"`
 }
 
 // AggregateStats summarises across all questions.
 type AggregateStats struct {
 	TotalQuestions           int     `json:"total_questions"`
 	BaselineMean             float64 `json:"baseline_mean"`
-	VelarixMean              float64 `json:"velarix_mean"`
-	ImprovementAbsolute      float64 `json:"improvement_absolute"`
-	ImprovementRelative      float64 `json:"improvement_relative_pct"`
+	VelarixBaselineMean      float64 `json:"velarix_baseline_mean"`
+	VelarixStandardMean      float64 `json:"velarix_standard_mean"`
+	VelarixFullMean          float64 `json:"velarix_full_mean"`
+	ImprovementBaselineAbsolute float64 `json:"improvement_baseline_absolute"`
+	ImprovementBaselineRelative float64 `json:"improvement_baseline_relative_pct"`
+	ImprovementStandardAbsolute float64 `json:"improvement_standard_absolute"`
+	ImprovementStandardRelative float64 `json:"improvement_standard_relative_pct"`
+	ImprovementFullAbsolute     float64 `json:"improvement_full_absolute"`
+	ImprovementFullRelative     float64 `json:"improvement_full_relative_pct"`
 	FlaggedHighVariance      int     `json:"flagged_high_variance"`
-	ContradictionsDetected   int     `json:"contradictions_detected"`
-	AutoRetractionsTotal     int     `json:"auto_retractions_total"`
-	ExtractionFailures       int     `json:"extraction_failures"`
+	ContradictionsDetectedBaseline int `json:"contradictions_detected_baseline"`
+	ContradictionsDetectedStandard int `json:"contradictions_detected_standard"`
+	ContradictionsDetectedFull     int `json:"contradictions_detected_full"`
+	AutoRetractionsBaseline        int `json:"auto_retractions_baseline"`
+	AutoRetractionsStandard        int `json:"auto_retractions_standard"`
+	AutoRetractionsFull            int `json:"auto_retractions_full"`
+	ExtractionFailuresBaseline     int `json:"extraction_failures_baseline"`
+	ExtractionFailuresStandard     int `json:"extraction_failures_standard"`
+	ExtractionFailuresFull         int `json:"extraction_failures_full"`
 }
 
 // LatencyStats holds p50/p95/p99 in milliseconds.
@@ -122,7 +146,9 @@ type Report struct {
 	Questions        []QuestionScore  `json:"questions"`
 	Aggregate        AggregateStats   `json:"aggregate"`
 	BaselineLatency  LatencyStats     `json:"baseline_latency"`
-	VelarixLatency   LatencyStats     `json:"velarix_latency"`
+	VelarixBaselineLatency LatencyStats `json:"velarix_baseline_latency"`
+	VelarixStandardLatency LatencyStats `json:"velarix_standard_latency"`
+	VelarixFullLatency     LatencyStats `json:"velarix_full_latency"`
 	GeneratedAt      string           `json:"generated_at"`
 }
 
@@ -165,8 +191,54 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 	}
 
 	agg := AggregateStats{}
-	var baselineLatencies, velarixLatencies []int64
+	var baselineLatencies []int64
+	var velarixBaselineLatencies []int64
+	var velarixStandardLatencies []int64
+	var velarixFullLatencies []int64
 	judgeCache := map[string]bool{}
+
+	velarixConfigs := map[string]*extractor.ExtractionConfig{
+		"baseline": {
+			Tier:                       extractor.TierFullLLM,
+			EnableSelection:            false,
+			EnableDecontextualisation:  false,
+			EnableCoverageVerification: false,
+			EnableConsistencyPrecheck:  false,
+		},
+		"standard": {
+			Tier:                       extractor.TierFullLLM,
+			EnableSelection:            true,
+			EnableDecontextualisation:  true,
+			EnableCoverageVerification: false,
+			EnableConsistencyPrecheck:  true,
+		},
+		"full": {
+			Tier:                       extractor.TierFullLLM,
+			EnableSelection:            true,
+			EnableDecontextualisation:  true,
+			EnableCoverageVerification: true,
+			EnableConsistencyPrecheck:  true,
+		},
+		// Tiered extraction variants
+		"tier1_srl": {
+			Tier: extractor.TierSRL,
+		},
+		"tier2_hybrid": {
+			Tier:                       extractor.TierHybrid,
+			EnableSelection:            true,
+			EnableDecontextualisation:  true,
+			EnableCoverageVerification: false,
+			EnableConsistencyPrecheck:  true,
+		},
+		"tier3_llm": {
+			Tier:                       extractor.TierFullLLM,
+			EnableSelection:            true,
+			EnableDecontextualisation:  true,
+			EnableCoverageVerification: true,
+			EnableConsistencyPrecheck:  true,
+		},
+	}
+	velarixVariants := []string{"baseline", "standard", "full", "tier1_srl", "tier2_hybrid", "tier3_llm"}
 
 	processQuestion := func(qID, dataset, question string, scorer func(response string) float64) QuestionScore {
 		qs := QuestionScore{
@@ -174,6 +246,10 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 			Dataset:    dataset,
 			Question:   question,
 		}
+		var baselineQuestionLatencies []int64
+		var velarixBaselineQuestionLatencies []int64
+		var velarixStandardQuestionLatencies []int64
+		var velarixFullQuestionLatencies []int64
 
 		for run := 0; run < cfg.RunsPerQuestion; run++ {
 			// Baseline path.
@@ -181,6 +257,7 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 			bResp, bErr := callLLM(ctx, cfg, question)
 			bLatMs := time.Since(bStart).Milliseconds()
 			baselineLatencies = append(baselineLatencies, bLatMs)
+			baselineQuestionLatencies = append(baselineQuestionLatencies, bLatMs)
 
 			bScore := 0.0
 			if bErr == nil {
@@ -190,22 +267,55 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 			}
 			qs.BaselineScores = append(qs.BaselineScores, bScore)
 
-			// Velarix path.
-			vStart := time.Now()
-			vResp, contradictions, retractions, extractErr := velarixPath(ctx, cfg, qID, run, bResp)
-			vLatMs := time.Since(vStart).Milliseconds()
-			velarixLatencies = append(velarixLatencies, vLatMs)
+			// Velarix path variants.
+			for _, name := range velarixVariants {
+				exCfg := velarixConfigs[name]
+				vStart := time.Now()
+				vResp, contradictions, retractions, extractErr := velarixPath(ctx, cfg, qID, run, name, bResp, exCfg)
+				vLatMs := time.Since(vStart).Milliseconds()
 
-			if extractErr != nil {
-				slog.Warn("Velarix path failed", "question_id", qID, "error", extractErr)
-				agg.ExtractionFailures++
-				qs.VelarixScores = append(qs.VelarixScores, bScore) // fallback
-			} else {
-				vScore := scorer(vResp)
-				qs.VelarixScores = append(qs.VelarixScores, vScore)
+				switch name {
+				case "baseline":
+					velarixBaselineLatencies = append(velarixBaselineLatencies, vLatMs)
+					velarixBaselineQuestionLatencies = append(velarixBaselineQuestionLatencies, vLatMs)
+				case "standard":
+					velarixStandardLatencies = append(velarixStandardLatencies, vLatMs)
+					velarixStandardQuestionLatencies = append(velarixStandardQuestionLatencies, vLatMs)
+				case "full":
+					velarixFullLatencies = append(velarixFullLatencies, vLatMs)
+					velarixFullQuestionLatencies = append(velarixFullQuestionLatencies, vLatMs)
+				}
+
+				scoreOrFallback := bScore
+				if extractErr != nil {
+					slog.Warn("Velarix path failed", "variant", name, "question_id", qID, "error", extractErr)
+					switch name {
+					case "baseline":
+						agg.ExtractionFailuresBaseline++
+					case "standard":
+						agg.ExtractionFailuresStandard++
+					case "full":
+						agg.ExtractionFailuresFull++
+					}
+				} else {
+					scoreOrFallback = scorer(vResp)
+				}
+
+				switch name {
+				case "baseline":
+					qs.VelarixBaselineScores = append(qs.VelarixBaselineScores, scoreOrFallback)
+					agg.ContradictionsDetectedBaseline += contradictions
+					agg.AutoRetractionsBaseline += retractions
+				case "standard":
+					qs.VelarixStandardScores = append(qs.VelarixStandardScores, scoreOrFallback)
+					agg.ContradictionsDetectedStandard += contradictions
+					agg.AutoRetractionsStandard += retractions
+				case "full":
+					qs.VelarixFullScores = append(qs.VelarixFullScores, scoreOrFallback)
+					agg.ContradictionsDetectedFull += contradictions
+					agg.AutoRetractionsFull += retractions
+				}
 			}
-			agg.ContradictionsDetected += contradictions
-			agg.AutoRetractionsTotal += retractions
 		}
 
 		// Special handling for HaluEval: use judge for scoring.
@@ -218,15 +328,32 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 
 		qs.BaselineMean = mean(qs.BaselineScores)
 		qs.BaselineStdDev = stdDev(qs.BaselineScores)
-		qs.VelarixMean = mean(qs.VelarixScores)
-		qs.VelarixStdDev = stdDev(qs.VelarixScores)
-		qs.Flagged = qs.BaselineStdDev >= 0.05 || qs.VelarixStdDev >= 0.05
+		qs.VelarixBaselineMean = mean(qs.VelarixBaselineScores)
+		qs.VelarixBaselineStdDev = stdDev(qs.VelarixBaselineScores)
+		qs.VelarixStandardMean = mean(qs.VelarixStandardScores)
+		qs.VelarixStandardStdDev = stdDev(qs.VelarixStandardScores)
+		qs.VelarixFullMean = mean(qs.VelarixFullScores)
+		qs.VelarixFullStdDev = stdDev(qs.VelarixFullScores)
+		qs.Flagged = qs.BaselineStdDev >= 0.05 ||
+			qs.VelarixBaselineStdDev >= 0.05 ||
+			qs.VelarixStandardStdDev >= 0.05 ||
+			qs.VelarixFullStdDev >= 0.05
 
 		if qs.Flagged {
 			slog.Warn("High-variance result — flagged for review",
-				"question_id", qID, "baseline_std", qs.BaselineStdDev, "velarix_std", qs.VelarixStdDev)
+				"question_id", qID,
+				"baseline_std", qs.BaselineStdDev,
+				"velarix_baseline_std", qs.VelarixBaselineStdDev,
+				"velarix_standard_std", qs.VelarixStandardStdDev,
+				"velarix_full_std", qs.VelarixFullStdDev,
+			)
 			agg.FlaggedHighVariance++
 		}
+
+		qs.BaselineLatencyP50Ms = percentileFromLatencies(baselineQuestionLatencies, 50)
+		qs.VelarixBaselineLatencyP50Ms = percentileFromLatencies(velarixBaselineQuestionLatencies, 50)
+		qs.VelarixStandardLatencyP50Ms = percentileFromLatencies(velarixStandardQuestionLatencies, 50)
+		qs.VelarixFullLatencyP50Ms = percentileFromLatencies(velarixFullQuestionLatencies, 50)
 
 		return qs
 	}
@@ -249,20 +376,43 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 
 	// Aggregate.
 	agg.TotalQuestions = len(report.Questions)
-	var bMeans, vMeans []float64
+	var bMeans []float64
+	var vBaseMeans []float64
+	var vStdMeans []float64
+	var vFullMeans []float64
 	for _, q := range report.Questions {
 		bMeans = append(bMeans, q.BaselineMean)
-		vMeans = append(vMeans, q.VelarixMean)
+		vBaseMeans = append(vBaseMeans, q.VelarixBaselineMean)
+		vStdMeans = append(vStdMeans, q.VelarixStandardMean)
+		vFullMeans = append(vFullMeans, q.VelarixFullMean)
 	}
 	agg.BaselineMean = mean(bMeans)
-	agg.VelarixMean = mean(vMeans)
-	agg.ImprovementAbsolute = agg.VelarixMean - agg.BaselineMean
 	if agg.BaselineMean > 0 {
-		agg.ImprovementRelative = (agg.ImprovementAbsolute / agg.BaselineMean) * 100
+		agg.VelarixBaselineMean = mean(vBaseMeans)
+		agg.VelarixStandardMean = mean(vStdMeans)
+		agg.VelarixFullMean = mean(vFullMeans)
+
+		agg.ImprovementBaselineAbsolute = agg.VelarixBaselineMean - agg.BaselineMean
+		agg.ImprovementBaselineRelative = (agg.ImprovementBaselineAbsolute / agg.BaselineMean) * 100
+
+		agg.ImprovementStandardAbsolute = agg.VelarixStandardMean - agg.BaselineMean
+		agg.ImprovementStandardRelative = (agg.ImprovementStandardAbsolute / agg.BaselineMean) * 100
+
+		agg.ImprovementFullAbsolute = agg.VelarixFullMean - agg.BaselineMean
+		agg.ImprovementFullRelative = (agg.ImprovementFullAbsolute / agg.BaselineMean) * 100
+	} else {
+		agg.VelarixBaselineMean = mean(vBaseMeans)
+		agg.VelarixStandardMean = mean(vStdMeans)
+		agg.VelarixFullMean = mean(vFullMeans)
+		agg.ImprovementBaselineAbsolute = agg.VelarixBaselineMean - agg.BaselineMean
+		agg.ImprovementStandardAbsolute = agg.VelarixStandardMean - agg.BaselineMean
+		agg.ImprovementFullAbsolute = agg.VelarixFullMean - agg.BaselineMean
 	}
 	report.Aggregate = agg
 	report.BaselineLatency = percentileStats(baselineLatencies)
-	report.VelarixLatency = percentileStats(velarixLatencies)
+	report.VelarixBaselineLatency = percentileStats(velarixBaselineLatencies)
+	report.VelarixStandardLatency = percentileStats(velarixStandardLatencies)
+	report.VelarixFullLatency = percentileStats(velarixFullLatencies)
 
 	return report, nil
 }
@@ -270,14 +420,15 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 // velarixPath sends the LLM response through Velarix extract-and-assert and
 // reconstructs a grounded response by filtering sentences against the session's
 // valid facts. Returns (groundedResponse, contradictions, retractions, error).
-func velarixPath(ctx context.Context, cfg *Config, questionID string, run int, llmResponse string) (string, int, int, error) {
-	sessionID := fmt.Sprintf("bench-%s-run%d-%d", questionID, run, time.Now().UnixNano())
+func velarixPath(ctx context.Context, cfg *Config, questionID string, run int, variant string, llmResponse string, extractionConfig *extractor.ExtractionConfig) (string, int, int, error) {
+	sessionID := fmt.Sprintf("bench-%s-%s-run%d-%d", questionID, variant, run, time.Now().UnixNano())
 	url := strings.TrimRight(cfg.VelarixURL, "/") + "/v1/s/" + sessionID + "/extract-and-assert"
 
 	body := map[string]interface{}{
 		"llm_output":                  llmResponse,
 		"session_context":             "benchmark evaluation",
 		"auto_retract_contradictions": cfg.AutoRetractContradictions,
+		"extraction_config":           extractionConfig,
 	}
 	payload, _ := json.Marshal(body)
 
@@ -618,28 +769,42 @@ func buildMarkdownSummary(r *Report) string {
 	b.WriteString(fmt.Sprintf("| Metric | Value |\n|--------|-------|\n"))
 	b.WriteString(fmt.Sprintf("| Total Questions | %d |\n", r.Aggregate.TotalQuestions))
 	b.WriteString(fmt.Sprintf("| Baseline Mean Score | %.4f |\n", r.Aggregate.BaselineMean))
-	b.WriteString(fmt.Sprintf("| Velarix Mean Score | %.4f |\n", r.Aggregate.VelarixMean))
-	b.WriteString(fmt.Sprintf("| Absolute Improvement | %+.4f |\n", r.Aggregate.ImprovementAbsolute))
-	b.WriteString(fmt.Sprintf("| Relative Improvement | %+.2f%% |\n", r.Aggregate.ImprovementRelative))
+	b.WriteString(fmt.Sprintf("| Velarix (baseline) Mean Score | %.4f |\n", r.Aggregate.VelarixBaselineMean))
+	b.WriteString(fmt.Sprintf("| Velarix (standard) Mean Score | %.4f |\n", r.Aggregate.VelarixStandardMean))
+	b.WriteString(fmt.Sprintf("| Velarix (full) Mean Score | %.4f |\n", r.Aggregate.VelarixFullMean))
+	b.WriteString(fmt.Sprintf("| Improvement (baseline) Absolute | %+.4f |\n", r.Aggregate.ImprovementBaselineAbsolute))
+	b.WriteString(fmt.Sprintf("| Improvement (baseline) Relative | %+.2f%% |\n", r.Aggregate.ImprovementBaselineRelative))
+	b.WriteString(fmt.Sprintf("| Improvement (standard) Absolute | %+.4f |\n", r.Aggregate.ImprovementStandardAbsolute))
+	b.WriteString(fmt.Sprintf("| Improvement (standard) Relative | %+.2f%% |\n", r.Aggregate.ImprovementStandardRelative))
+	b.WriteString(fmt.Sprintf("| Improvement (full) Absolute | %+.4f |\n", r.Aggregate.ImprovementFullAbsolute))
+	b.WriteString(fmt.Sprintf("| Improvement (full) Relative | %+.2f%% |\n", r.Aggregate.ImprovementFullRelative))
 	b.WriteString(fmt.Sprintf("| Flagged High Variance | %d |\n", r.Aggregate.FlaggedHighVariance))
-	b.WriteString(fmt.Sprintf("| Contradictions Detected | %d |\n", r.Aggregate.ContradictionsDetected))
-	b.WriteString(fmt.Sprintf("| Auto-Retractions | %d |\n", r.Aggregate.AutoRetractionsTotal))
-	b.WriteString(fmt.Sprintf("| Extraction Failures | %d |\n\n", r.Aggregate.ExtractionFailures))
+	b.WriteString(fmt.Sprintf("| Contradictions Detected (baseline) | %d |\n", r.Aggregate.ContradictionsDetectedBaseline))
+	b.WriteString(fmt.Sprintf("| Contradictions Detected (standard) | %d |\n", r.Aggregate.ContradictionsDetectedStandard))
+	b.WriteString(fmt.Sprintf("| Contradictions Detected (full) | %d |\n", r.Aggregate.ContradictionsDetectedFull))
+	b.WriteString(fmt.Sprintf("| Auto-Retractions (baseline) | %d |\n", r.Aggregate.AutoRetractionsBaseline))
+	b.WriteString(fmt.Sprintf("| Auto-Retractions (standard) | %d |\n", r.Aggregate.AutoRetractionsStandard))
+	b.WriteString(fmt.Sprintf("| Auto-Retractions (full) | %d |\n", r.Aggregate.AutoRetractionsFull))
+	b.WriteString(fmt.Sprintf("| Extraction Failures (baseline) | %d |\n", r.Aggregate.ExtractionFailuresBaseline))
+	b.WriteString(fmt.Sprintf("| Extraction Failures (standard) | %d |\n", r.Aggregate.ExtractionFailuresStandard))
+	b.WriteString(fmt.Sprintf("| Extraction Failures (full) | %d |\n\n", r.Aggregate.ExtractionFailuresFull))
 
 	b.WriteString("## Latency\n\n")
 	b.WriteString("| Path | P50 (ms) | P95 (ms) | P99 (ms) |\n|------|----------|----------|----------|\n")
 	b.WriteString(fmt.Sprintf("| Baseline | %d | %d | %d |\n", r.BaselineLatency.P50Ms, r.BaselineLatency.P95Ms, r.BaselineLatency.P99Ms))
-	b.WriteString(fmt.Sprintf("| Velarix | %d | %d | %d |\n\n", r.VelarixLatency.P50Ms, r.VelarixLatency.P95Ms, r.VelarixLatency.P99Ms))
+	b.WriteString(fmt.Sprintf("| Velarix (baseline) | %d | %d | %d |\n", r.VelarixBaselineLatency.P50Ms, r.VelarixBaselineLatency.P95Ms, r.VelarixBaselineLatency.P99Ms))
+	b.WriteString(fmt.Sprintf("| Velarix (standard) | %d | %d | %d |\n", r.VelarixStandardLatency.P50Ms, r.VelarixStandardLatency.P95Ms, r.VelarixStandardLatency.P99Ms))
+	b.WriteString(fmt.Sprintf("| Velarix (full) | %d | %d | %d |\n\n", r.VelarixFullLatency.P50Ms, r.VelarixFullLatency.P95Ms, r.VelarixFullLatency.P99Ms))
 
 	b.WriteString("## Per-Question Results\n\n")
-	b.WriteString("| ID | Dataset | Baseline | Velarix | Flagged |\n|----|---------|----------|---------|--------|\n")
+	b.WriteString("| ID | Dataset | Baseline | Velarix baseline | Velarix standard | Velarix full | Flagged |\n|----|---------|----------|-----------------|------------------|-------------|--------|\n")
 	for _, q := range r.Questions {
 		flagged := ""
 		if q.Flagged {
 			flagged = "⚠️"
 		}
-		b.WriteString(fmt.Sprintf("| %s | %s | %.3f | %.3f | %s |\n",
-			q.QuestionID, q.Dataset, q.BaselineMean, q.VelarixMean, flagged))
+		b.WriteString(fmt.Sprintf("| %s | %s | %.3f | %.3f | %.3f | %.3f | %s |\n",
+			q.QuestionID, q.Dataset, q.BaselineMean, q.VelarixBaselineMean, q.VelarixStandardMean, q.VelarixFullMean, flagged))
 	}
 	return b.String()
 }
@@ -682,6 +847,16 @@ func percentileStats(latencies []int64) LatencyStats {
 		P95Ms: percentile(sorted, 95),
 		P99Ms: percentile(sorted, 99),
 	}
+}
+
+func percentileFromLatencies(latencies []int64, p int) int64 {
+	if len(latencies) == 0 {
+		return 0
+	}
+	sorted := make([]int64, len(latencies))
+	copy(sorted, latencies)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return percentile(sorted, p)
 }
 
 func percentile(sorted []int64, p int) int64 {

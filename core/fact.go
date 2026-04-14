@@ -29,17 +29,17 @@ type JustificationSet struct {
 //
 //   - ""  / "empirical"    – default; a factual claim about the real world
 //   - "uncertain"          – logically consistent but epistemically hedged
-//                            (e.g. "X is probably the CEO"); confidence is
-//                            capped at "probable" regardless of numeric value
+//     (e.g. "X is probably the CEO"); confidence is
+//     capped at "probable" regardless of numeric value
 //   - "hypothetical"       – what-if / scoped reasoning; does not contradict
-//                            empirical facts
+//     empirical facts
 //   - "fictional"          – narrative / creative content; does not contradict
-//                            empirical or hypothetical facts
+//     empirical or hypothetical facts
 const (
-	AssertionKindEmpirical   = "empirical"
-	AssertionKindUncertain   = "uncertain"
+	AssertionKindEmpirical    = "empirical"
+	AssertionKindUncertain    = "uncertain"
 	AssertionKindHypothetical = "hypothetical"
-	AssertionKindFictional   = "fictional"
+	AssertionKindFictional    = "fictional"
 )
 
 // Fact is documented here.
@@ -66,6 +66,11 @@ type Fact struct {
 	// Temporal decay: Unix millisecond timestamp after which this fact is
 	// automatically treated as Invalid. Zero means the fact never expires.
 	ValidUntil int64 `json:"valid_until,omitempty"`
+
+	// AssertedAt is the Unix millisecond timestamp when this fact was first
+	// asserted into an engine. It is set automatically by Engine.AssertFact when
+	// missing and is used for freshness-aware slice ranking.
+	AssertedAt int64 `json:"asserted_at,omitempty"`
 
 	// Epistemic classification. See AssertionKind* constants.
 	// Controls confidence-tier labelling and contradiction-scope matching.

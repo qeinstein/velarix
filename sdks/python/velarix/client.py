@@ -241,6 +241,47 @@ class VelarixSession:
         resp.raise_for_status()
         return resp.json()
 
+    def verify_fact(
+        self,
+        fact_id: str,
+        status: str,
+        *,
+        method: str = "",
+        source_ref: str = "",
+        reason: str = "",
+        verified_at: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Admin-only: update verification metadata for a fact.
+
+        Args:
+            fact_id: Fact ID in the session namespace.
+            status: One of "unverified", "verified", "rejected".
+            method: Optional verification method label (e.g. "tool", "human", "db").
+            source_ref: Optional external reference (e.g. URL, ticket id, database key).
+            reason: Optional human-readable note.
+            verified_at: Optional unix ms timestamp; defaults to now server-side.
+        """
+        self._clear_cache()
+        body: Dict[str, Any] = {"status": status}
+        if method:
+            body["method"] = method
+        if source_ref:
+            body["source_ref"] = source_ref
+        if reason:
+            body["reason"] = reason
+        if verified_at is not None:
+            body["verified_at"] = int(verified_at)
+        resp = self.client._request(
+            "POST",
+            f"{self.base_url}/facts/{fact_id}/verify",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def get_history(self) -> List[Dict[str, Any]]:
         """Return the persisted journal for the session."""
         resp = self.client._request("GET", f"{self.base_url}/history", headers=self._headers())
@@ -606,6 +647,57 @@ class VelarixSession:
             raise ValueError("kind is required")
         return self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
+class VelarixGlobalFacts:
+    """Org-wide global facts shared across all sessions."""
+
+    def __init__(self, client: 'VelarixClient'):
+        self.client = client
+        self.base_url = f"{client.base_url}/v1/global/facts"
+
+    def assert_fact(
+        self,
+        fact_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        confidence: float = 1.0,
+        metadata: Optional[Dict[str, Any]] = None,
+        assertion_kind: Optional[str] = None,
+        valid_until: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not fact_id:
+            raise ValueError("fact_id is required")
+        data: Dict[str, Any] = {
+            "id": fact_id,
+            "is_root": True,
+            "manual_status": float(confidence),
+            "payload": payload or {},
+        }
+        if metadata is not None:
+            data["metadata"] = metadata
+        if assertion_kind:
+            data["assertion_kind"] = assertion_kind
+        if valid_until is not None:
+            data["valid_until"] = int(valid_until)
+        resp = self.client._request("POST", self.base_url, json=data, headers=self.client.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def retract(self, fact_id: str) -> Dict[str, Any]:
+        if not fact_id:
+            raise ValueError("fact_id is required")
+        resp = self.client._request("DELETE", f"{self.base_url}/{fact_id}", headers=self.client.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def list(self) -> List[Dict[str, Any]]:
+        resp = self.client._request("GET", self.base_url, headers=self.client.headers)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict) and "items" in data:
+            return data["items"]
+        return data
+
+
     def delete(self) -> Dict[str, Any]:
         """Archive the session through the org-scoped session endpoint."""
         resp = self.client._request(
@@ -649,6 +741,7 @@ class VelarixClient:
         self.retry_backoff_max = float(retry_backoff_max)
         self.timeout_s = float(timeout_s)
         self._http = requests.Session()
+        self.global_facts = VelarixGlobalFacts(self)
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         retryable_status = {429, 502, 503, 504}
@@ -841,6 +934,47 @@ class AsyncVelarixSession:
     async def get_fact(self, fact_id: str) -> Dict[str, Any]:
         """Fetch one fact by ID."""
         resp = await self.client._request("GET", f"{self.base_url}/facts/{fact_id}", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def verify_fact(
+        self,
+        fact_id: str,
+        status: str,
+        *,
+        method: str = "",
+        source_ref: str = "",
+        reason: str = "",
+        verified_at: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Admin-only: update verification metadata for a fact.
+
+        Args:
+            fact_id: Fact ID in the session namespace.
+            status: One of "unverified", "verified", "rejected".
+            method: Optional verification method label (e.g. "tool", "human", "db").
+            source_ref: Optional external reference (e.g. URL, ticket id, database key).
+            reason: Optional human-readable note.
+            verified_at: Optional unix ms timestamp; defaults to now server-side.
+        """
+        self._clear_cache()
+        body: Dict[str, Any] = {"status": status}
+        if method:
+            body["method"] = method
+        if source_ref:
+            body["source_ref"] = source_ref
+        if reason:
+            body["reason"] = reason
+        if verified_at is not None:
+            body["verified_at"] = int(verified_at)
+        resp = await self.client._request(
+            "POST",
+            f"{self.base_url}/facts/{fact_id}/verify",
+            json=body,
+            headers=self._idem_headers(idempotency_key),
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -1209,6 +1343,57 @@ class AsyncVelarixSession:
             raise ValueError("kind is required")
         return await self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
+class AsyncVelarixGlobalFacts:
+    """Org-wide global facts shared across all sessions (async)."""
+
+    def __init__(self, client: 'AsyncVelarixClient'):
+        self.client = client
+        self.base_url = f"{client.base_url}/v1/global/facts"
+
+    async def assert_fact(
+        self,
+        fact_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        confidence: float = 1.0,
+        metadata: Optional[Dict[str, Any]] = None,
+        assertion_kind: Optional[str] = None,
+        valid_until: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not fact_id:
+            raise ValueError("fact_id is required")
+        data: Dict[str, Any] = {
+            "id": fact_id,
+            "is_root": True,
+            "manual_status": float(confidence),
+            "payload": payload or {},
+        }
+        if metadata is not None:
+            data["metadata"] = metadata
+        if assertion_kind:
+            data["assertion_kind"] = assertion_kind
+        if valid_until is not None:
+            data["valid_until"] = int(valid_until)
+        resp = await self.client._request("POST", self.base_url, json=data, headers=self.client.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def retract(self, fact_id: str) -> Dict[str, Any]:
+        if not fact_id:
+            raise ValueError("fact_id is required")
+        resp = await self.client._request("DELETE", f"{self.base_url}/{fact_id}", headers=self.client.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def list(self) -> List[Dict[str, Any]]:
+        resp = await self.client._request("GET", self.base_url, headers=self.client.headers)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict) and "items" in data:
+            return data["items"]
+        return data
+
+
     async def delete(self) -> Dict[str, Any]:
         """Archive the session through the org-scoped session endpoint."""
         resp = await self.client._request(
@@ -1247,6 +1432,7 @@ class AsyncVelarixClient:
         self.retry_backoff_max = float(retry_backoff_max)
         self.timeout_s = float(timeout_s)
         self.http_client = httpx.AsyncClient(timeout=self.timeout_s)
+        self.global_facts = AsyncVelarixGlobalFacts(self)
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         retryable_status = {429, 502, 503, 504}

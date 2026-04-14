@@ -28,6 +28,11 @@ const (
 	// has passed. On replay, the fact is retracted with reason "expired" so that
 	// downstream dependents are re-propagated correctly.
 	EventFactExpired EventType = "fact_expired"
+
+	// EventFactVerification records a verification status update for a fact.
+	// On replay, the fact's verification metadata is re-applied so execution
+	// gating and grounding checks remain consistent across reloads.
+	EventFactVerification EventType = "fact_verification"
 )
 
 type JournalEntry struct {
@@ -245,6 +250,44 @@ func Replay(path string, engines map[string]*core.Engine) error {
 				}
 			} else {
 				slog.Warn("Replaying journal: skipping fact_expired event — missing fact_id",
+					"line", lineNum, "session_id", entry.SessionID)
+			}
+
+		case EventFactVerification:
+			// Re-apply verification metadata for grounding/execution gating.
+			factID := entry.FactID
+			if factID == "" && entry.Fact != nil {
+				factID = entry.Fact.ID
+			}
+			status := ""
+			method := ""
+			sourceRef := ""
+			reason := ""
+			verifiedAt := entry.Timestamp
+			if entry.Payload != nil {
+				if v, ok := entry.Payload["status"].(string); ok {
+					status = v
+				}
+				if v, ok := entry.Payload["method"].(string); ok {
+					method = v
+				}
+				if v, ok := entry.Payload["source_ref"].(string); ok {
+					sourceRef = v
+				}
+				if v, ok := entry.Payload["reason"].(string); ok {
+					reason = v
+				}
+				if v, ok := entry.Payload["verified_at"].(float64); ok && int64(v) > 0 {
+					verifiedAt = int64(v)
+				}
+			}
+			if factID != "" {
+				if err := engine.SetFactVerification(factID, status, method, sourceRef, reason, verifiedAt); err != nil {
+					slog.Warn("Replaying journal: fact_verification apply failed",
+						"line", lineNum, "session_id", entry.SessionID, "fact_id", factID, "error", err)
+				}
+			} else {
+				slog.Warn("Replaying journal: skipping fact_verification event — missing fact_id",
 					"line", lineNum, "session_id", entry.SessionID)
 			}
 

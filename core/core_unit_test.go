@@ -37,13 +37,13 @@ func TestNormalizeDependencyToken(t *testing.T) {
 }
 
 func TestDependencySatisfied(t *testing.T) {
-	if !dependencySatisfied(1.0, false) {
+	if !dependencySatisfied(nil, 1.0, false, &Fact{AssertionKind: AssertionKindEmpirical}) {
 		t.Error("expected true for 1.0 false")
 	}
-	if dependencySatisfied(0.5, false) {
+	if dependencySatisfied(nil, 0.5, false, &Fact{AssertionKind: AssertionKindEmpirical}) {
 		t.Error("expected false for 0.5 false")
 	}
-	if !dependencySatisfied(0.5, true) {
+	if !dependencySatisfied(nil, 0.5, true, &Fact{AssertionKind: AssertionKindEmpirical}) {
 		t.Error("expected true for 0.5 true")
 	}
 }

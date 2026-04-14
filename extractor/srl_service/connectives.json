@@ -1,0 +1,19 @@
+{
+  "causal": [
+    "because", "since", "as a result", "therefore", "consequently",
+    "due to", "caused by", "led to", "resulted in", "triggered",
+    "enabled", "prevented"
+  ],
+  "temporal": [
+    "after", "before", "when", "while", "since", "until",
+    "following", "prior to"
+  ],
+  "conditional": [
+    "if", "unless", "provided that", "assuming", "given that",
+    "in the event that"
+  ],
+  "contrastive": [
+    "but", "however", "although", "despite", "nevertheless",
+    "whereas", "yet"
+  ]
+}

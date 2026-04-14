@@ -243,7 +243,7 @@ func (e *Engine) propagate(queue []string) {
 					if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
 						minConf = depConf
 					}
-					if dependencySatisfied(pStatus, false) {
+					if dependencySatisfied(pFact, pStatus, false, childFact) {
 						validCount++
 					}
 				}
@@ -256,7 +256,7 @@ func (e *Engine) propagate(queue []string) {
 					if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
 						minConf = depConf
 					}
-					if dependencySatisfied(pStatus, true) {
+					if dependencySatisfied(pFact, pStatus, true, childFact) {
 						validCount++
 					}
 				}
@@ -281,6 +281,68 @@ func (e *Engine) propagate(queue []string) {
 	}
 }
 
+// recomputeChildrenForParentUnsafe recalculates justification sets that depend
+// on parentFactID and returns child fact IDs whose derived status may need
+// recomputation.
+// Callers MUST hold e.mu.Lock().
+func (e *Engine) recomputeChildrenForParentUnsafe(parentFactID string) []string {
+	queue := []string{}
+	for jSetID := range e.ChildrenIndex[parentFactID] {
+		jSet, ok := e.JustificationSets[jSetID]
+		if !ok {
+			continue
+		}
+		childFact, ok := e.Facts[jSet.ChildFactID]
+		if !ok {
+			continue
+		}
+
+		minConf := Valid // Start at 1.0
+		validCount := 0
+		for _, pID := range jSet.PositiveParentFactIDs {
+			pFact, ok := e.Facts[pID]
+			if !ok {
+				continue
+			}
+			pStatus := e.effectiveStatusUnsafe(pFact)
+			if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
+				minConf = depConf
+			}
+			if dependencySatisfied(pFact, pStatus, false, childFact) {
+				validCount++
+			}
+		}
+		for _, pID := range jSet.NegativeParentFactIDs {
+			pFact, ok := e.Facts[pID]
+			if !ok {
+				continue
+			}
+			pStatus := e.effectiveStatusUnsafe(pFact)
+			if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
+				minConf = depConf
+			}
+			if dependencySatisfied(pFact, pStatus, true, childFact) {
+				validCount++
+			}
+		}
+
+		oldValidParents := jSet.CurrentValidParents
+		oldConfidence := jSet.Confidence
+		jSet.CurrentValidParents = validCount
+
+		if validCount == jSet.TargetValidParents {
+			jSet.Confidence = minConf
+		} else {
+			jSet.Confidence = Invalid
+		}
+
+		if oldValidParents != jSet.CurrentValidParents || oldConfidence != jSet.Confidence {
+			queue = append(queue, childFact.ID)
+		}
+	}
+	return queue
+}
+
 // AssertFact inserts a new fact and initializes its justification sets.
 // This operation is idempotent: if the fact already exists with identical content, it returns nil.
 func (e *Engine) AssertFact(f *Fact) error {
@@ -293,6 +355,10 @@ func (e *Engine) AssertFact(f *Fact) error {
 
 	if len(e.Facts) >= MaxFactsPerSession {
 		return fmt.Errorf("session memory cap exceeded (%d facts). please archive and start a new session", MaxFactsPerSession)
+	}
+
+	if f.AssertedAt == 0 {
+		f.AssertedAt = time.Now().UnixMilli()
 	}
 
 	if existing, exists := e.Facts[f.ID]; exists {
@@ -376,7 +442,7 @@ func (e *Engine) AssertFact(f *Fact) error {
 			if depConf := dependencyConfidence(parentStatus, false); depConf < minConf {
 				minConf = depConf
 			}
-			if dependencySatisfied(parentStatus, false) {
+			if dependencySatisfied(pFact, parentStatus, false, f) {
 				validCount++
 			}
 
@@ -394,7 +460,7 @@ func (e *Engine) AssertFact(f *Fact) error {
 			if depConf := dependencyConfidence(parentStatus, true); depConf < minConf {
 				minConf = depConf
 			}
-			if dependencySatisfied(parentStatus, true) {
+			if dependencySatisfied(pFact, parentStatus, true, f) {
 				validCount++
 			}
 
@@ -568,20 +634,24 @@ func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 			minConf := Valid
 			validCount := 0
 			for _, pID := range js.PositiveParentFactIDs {
+				pFact := e.Facts[pID]
 				pStatus := simStatus[pID]
 				if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
 					minConf = depConf
 				}
-				if dependencySatisfied(pStatus, false) {
+				childFact := e.Facts[js.ChildFactID]
+				if dependencySatisfied(pFact, pStatus, false, childFact) {
 					validCount++
 				}
 			}
 			for _, pID := range js.NegativeParentFactIDs {
+				pFact := e.Facts[pID]
 				pStatus := simStatus[pID]
 				if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
 					minConf = depConf
 				}
-				if dependencySatisfied(pStatus, true) {
+				childFact := e.Facts[js.ChildFactID]
+				if dependencySatisfied(pFact, pStatus, true, childFact) {
 					validCount++
 				}
 			}

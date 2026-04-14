@@ -22,6 +22,15 @@ type policyControlSet struct {
 	ReviewSourceTypes          map[string]struct{}
 	ReviewFactIDs              map[string]struct{}
 	ProtectedFactIDs           map[string]struct{}
+
+	// Grounding / execution gating controls.
+	GroundingAllowedSourceTypes map[string]struct{}
+	GroundingRequireVerified    bool
+	GroundingMaxAgeSeconds      int64
+
+	// Verification admission controls.
+	VerificationRequiredClaimKeys   map[string]struct{}
+	VerificationRequiredSourceTypes map[string]struct{}
 }
 
 type factReviewRequest struct {
@@ -115,10 +124,13 @@ func floatMapRule(rules map[string]interface{}, key string) map[string]float64 {
 
 func (s *Server) loadPolicyControls(orgID string) policyControlSet {
 	controls := policyControlSet{
-		AutoEntrenchmentBySource: map[string]float64{},
-		ReviewSourceTypes:        map[string]struct{}{},
-		ReviewFactIDs:            map[string]struct{}{},
-		ProtectedFactIDs:         map[string]struct{}{},
+		AutoEntrenchmentBySource:        map[string]float64{},
+		ReviewSourceTypes:               map[string]struct{}{},
+		ReviewFactIDs:                   map[string]struct{}{},
+		ProtectedFactIDs:                map[string]struct{}{},
+		GroundingAllowedSourceTypes:     map[string]struct{}{},
+		VerificationRequiredClaimKeys:   map[string]struct{}{},
+		VerificationRequiredSourceTypes: map[string]struct{}{},
 	}
 	policies, err := s.Store.ListPolicies(orgID)
 	if err != nil {
@@ -155,6 +167,26 @@ func (s *Server) loadPolicyControls(orgID string) policyControlSet {
 		}
 		for _, factID := range stringSliceRule(policy.Rules, "protected_fact_ids") {
 			controls.ProtectedFactIDs[factID] = struct{}{}
+		}
+
+		for _, sourceType := range stringSliceRule(policy.Rules, "grounding_allowed_source_types") {
+			controls.GroundingAllowedSourceTypes[sourceType] = struct{}{}
+		}
+		if core.MetadataBool(policy.Rules, "grounding_require_verified") {
+			controls.GroundingRequireVerified = true
+		}
+		if v := floatRule(policy.Rules, "grounding_max_age_seconds", 0); v > 0 {
+			age := int64(v)
+			if controls.GroundingMaxAgeSeconds == 0 || age < controls.GroundingMaxAgeSeconds {
+				controls.GroundingMaxAgeSeconds = age
+			}
+		}
+
+		for _, claimKey := range stringSliceRule(policy.Rules, "verification_required_claim_keys") {
+			controls.VerificationRequiredClaimKeys[claimKey] = struct{}{}
+		}
+		for _, sourceType := range stringSliceRule(policy.Rules, "verification_required_source_types") {
+			controls.VerificationRequiredSourceTypes[sourceType] = struct{}{}
 		}
 	}
 	sort.Strings(controls.PolicyIDs)
@@ -211,6 +243,70 @@ func applyFactGovernance(fact *core.Fact, controls policyControlSet) {
 	}
 	if len(controls.PolicyIDs) > 0 {
 		fact.Metadata["policy_ids"] = append([]string(nil), controls.PolicyIDs...)
+	}
+
+	// Verification admission control: mark untrusted roots as requiring verification.
+	sourceType := strings.TrimSpace(core.MetadataString(fact.Metadata, "source_type"))
+	claimKey := strings.TrimSpace(core.MetadataString(fact.Metadata, "claim_key"))
+	if claimKey == "" {
+		claimKey = strings.TrimSpace(core.MetadataString(fact.Payload, "claim_key"))
+	}
+	requiresVerification := core.MetadataBool(fact.Metadata, "requires_verification")
+	if _, ok := controls.VerificationRequiredSourceTypes[sourceType]; ok {
+		requiresVerification = true
+	}
+	if claimKey != "" {
+		if _, ok := controls.VerificationRequiredClaimKeys[claimKey]; ok {
+			requiresVerification = true
+		}
+	}
+	// Default: treat LLM-extracted facts as unverified unless explicitly trusted.
+	if sourceType == "llm_output" || sourceType == "v-logic" {
+		requiresVerification = true
+	}
+
+	if requiresVerification {
+		fact.Metadata["requires_verification"] = true
+		if strings.TrimSpace(core.MetadataString(fact.Metadata, "verification_status")) == "" {
+			fact.Metadata["verification_status"] = core.VerificationUnverified
+		}
+	}
+
+	// Trusted roots can be considered verified by default.
+	if strings.TrimSpace(core.MetadataString(fact.Metadata, "verification_status")) == "" {
+		if sourceType == "perception" || sourceType == "user" || core.MetadataBool(fact.Metadata, "_global_truth") {
+			fact.Metadata["verification_status"] = core.VerificationVerified
+			fact.Metadata["verification_method"] = sourceType
+			fact.Metadata["verified_at"] = time.Now().UnixMilli()
+		}
+	}
+
+	// Grounding policy: attach to execution-critical/action facts so the engine
+	// can gate dependency satisfaction without coupling to org policy at runtime.
+	actionLike := false
+	if fact.Payload != nil {
+		if v, ok := fact.Payload["type"].(string); ok && strings.EqualFold(strings.TrimSpace(v), "action") {
+			actionLike = true
+		}
+	}
+	if strings.HasPrefix(fact.ID, "decision.") || core.MetadataBool(fact.Metadata, "execution_critical") {
+		actionLike = true
+	}
+	if actionLike {
+		if len(controls.GroundingAllowedSourceTypes) > 0 {
+			var allowed []string
+			for k := range controls.GroundingAllowedSourceTypes {
+				allowed = append(allowed, k)
+			}
+			sort.Strings(allowed)
+			fact.Metadata["grounding_allowed_source_types"] = allowed
+		}
+		if controls.GroundingRequireVerified {
+			fact.Metadata["grounding_require_verified"] = true
+		}
+		if controls.GroundingMaxAgeSeconds > 0 {
+			fact.Metadata["grounding_max_age_seconds"] = controls.GroundingMaxAgeSeconds
+		}
 	}
 }
 
