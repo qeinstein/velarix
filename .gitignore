@@ -29,4 +29,24 @@ sdks/typescript/node_modules/
 todo.txt
 
 # web
-web/.next/
+.next/
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js build output
+.next/
+out/
+
+# Go binaries
+velarix
+bin/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
