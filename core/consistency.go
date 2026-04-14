@@ -37,69 +37,38 @@ type claimSignature struct {
 	Contradicts []string
 }
 
-func getMapString(m map[string]interface{}, key string) string {
-	if m == nil {
-		return ""
-	}
-	if v, ok := m[key].(string); ok {
-		return strings.TrimSpace(v)
-	}
-	return ""
-}
-
-func getMapStringSlice(m map[string]interface{}, key string) []string {
-	if m == nil {
-		return nil
-	}
-	raw, ok := m[key]
-	if !ok {
-		return nil
-	}
-	switch v := raw.(type) {
-	case []string:
-		return append([]string(nil), v...)
-	case []interface{}:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
-				out = append(out, strings.TrimSpace(s))
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
 func extractClaimSignature(f *Fact) claimSignature {
 	if f == nil {
 		return claimSignature{}
 	}
 	sig := claimSignature{
-		ClaimKey:   getMapString(f.Payload, "claim_key"),
-		ClaimValue: getMapString(f.Payload, "claim_value"),
-		Subject:    getMapString(f.Payload, "subject"),
-		Predicate:  getMapString(f.Payload, "predicate"),
-		Object:     getMapString(f.Payload, "object"),
-		Polarity:   strings.ToLower(firstNonEmptyString(getMapString(f.Payload, "polarity"), getMapString(f.Metadata, "polarity"))),
+		ClaimKey:   MetadataString(f.Payload, "claim_key"),
+		ClaimValue: MetadataString(f.Payload, "claim_value"),
+		Subject:    MetadataString(f.Payload, "subject"),
+		Predicate:  MetadataString(f.Payload, "predicate"),
+		Object:     MetadataString(f.Payload, "object"),
+		Polarity: strings.ToLower(firstNonEmptyString(
+			MetadataString(f.Payload, "polarity"),
+			MetadataString(f.Metadata, "polarity"),
+		)),
 	}
 	if sig.ClaimKey == "" {
-		sig.ClaimKey = getMapString(f.Metadata, "claim_key")
+		sig.ClaimKey = MetadataString(f.Metadata, "claim_key")
 	}
 	if sig.ClaimValue == "" {
-		sig.ClaimValue = getMapString(f.Metadata, "claim_value")
+		sig.ClaimValue = MetadataString(f.Metadata, "claim_value")
 	}
 	if sig.Subject == "" {
-		sig.Subject = getMapString(f.Metadata, "subject")
+		sig.Subject = MetadataString(f.Metadata, "subject")
 	}
 	if sig.Predicate == "" {
-		sig.Predicate = getMapString(f.Metadata, "predicate")
+		sig.Predicate = MetadataString(f.Metadata, "predicate")
 	}
 	if sig.Object == "" {
-		sig.Object = getMapString(f.Metadata, "object")
+		sig.Object = MetadataString(f.Metadata, "object")
 	}
-	sig.Contradicts = append(sig.Contradicts, getMapStringSlice(f.Payload, "contradicts")...)
-	sig.Contradicts = append(sig.Contradicts, getMapStringSlice(f.Metadata, "contradicts")...)
+	sig.Contradicts = append(sig.Contradicts, mapStringSlice(f.Payload, "contradicts")...)
+	sig.Contradicts = append(sig.Contradicts, mapStringSlice(f.Metadata, "contradicts")...)
 	if sig.Polarity == "" {
 		sig.Polarity = "positive"
 	}

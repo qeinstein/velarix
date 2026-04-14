@@ -32,6 +32,10 @@ type ChangeEvent struct {
 
 const MaxFactsPerSession = 80000 // Absolute cap on number of facts to prevent OOM. In practice, performance degradation starts around 50k facts with complex justifications, so this is a safety limit. Users should archive and start a new session if they hit this limit.
 
+func justificationSetID(factID string, index int) string {
+	return fmt.Sprintf("%s_jset_%d", factID, index)
+}
+
 // Engine is the authoritative runtime for Velarix.
 type Engine struct {
 	mu sync.RWMutex
@@ -179,6 +183,45 @@ func (e *Engine) SweepExpiredFacts() []string {
 
 // propagate processes state changes using a work queue and probabilistic logic.
 // Callers MUST hold e.mu.Lock().
+func (e *Engine) computeJustificationSetParentsUnsafe(jSet *JustificationSet, childFact *Fact) (int, Status) {
+	minConfidence := Valid // Start at 1.0
+	validCount := 0
+	for _, parentID := range jSet.PositiveParentFactIDs {
+		parentFact, ok := e.Facts[parentID]
+		if !ok {
+			continue
+		}
+		parentStatus := e.effectiveStatusUnsafe(parentFact)
+		if depConf := dependencyConfidence(parentStatus, false); depConf < minConfidence {
+			minConfidence = depConf
+		}
+		if dependencySatisfied(parentFact, parentStatus, false, childFact) {
+			validCount++
+		}
+	}
+	for _, parentID := range jSet.NegativeParentFactIDs {
+		parentFact, ok := e.Facts[parentID]
+		if !ok {
+			continue
+		}
+		parentStatus := e.effectiveStatusUnsafe(parentFact)
+		if depConf := dependencyConfidence(parentStatus, true); depConf < minConfidence {
+			minConfidence = depConf
+		}
+		if dependencySatisfied(parentFact, parentStatus, true, childFact) {
+			validCount++
+		}
+	}
+	return validCount, minConfidence
+}
+
+func (e *Engine) addChildIndexUnsafe(parentFactID, jSetID string) {
+	if _, ok := e.ChildrenIndex[parentFactID]; !ok {
+		e.ChildrenIndex[parentFactID] = make(map[string]struct{})
+	}
+	e.ChildrenIndex[parentFactID][jSetID] = struct{}{}
+}
+
 func (e *Engine) propagate(queue []string) {
 	for len(queue) > 0 {
 		factID := queue[0]
@@ -199,7 +242,7 @@ func (e *Engine) propagate(queue []string) {
 			maxConf := Invalid
 			var validCount int
 			for i := range fact.JustificationSets {
-				jSetID := fmt.Sprintf("%s_jset_%d", fact.ID, i)
+				jSetID := justificationSetID(fact.ID, i)
 				jSet, ok := e.JustificationSets[jSetID]
 				if !ok {
 					continue
@@ -231,35 +274,7 @@ func (e *Engine) propagate(queue []string) {
 					continue
 				}
 
-				// JustificationSet: min(all satisfied parent conditions)
-				minConf := Valid // Start at 1.0
-				validCount := 0
-				for _, pID := range jSet.PositiveParentFactIDs {
-					pFact, ok := e.Facts[pID]
-					if !ok {
-						continue
-					}
-					pStatus := e.effectiveStatusUnsafe(pFact)
-					if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
-						minConf = depConf
-					}
-					if dependencySatisfied(pFact, pStatus, false, childFact) {
-						validCount++
-					}
-				}
-				for _, pID := range jSet.NegativeParentFactIDs {
-					pFact, ok := e.Facts[pID]
-					if !ok {
-						continue
-					}
-					pStatus := e.effectiveStatusUnsafe(pFact)
-					if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
-						minConf = depConf
-					}
-					if dependencySatisfied(pFact, pStatus, true, childFact) {
-						validCount++
-					}
-				}
+				validCount, minConf := e.computeJustificationSetParentsUnsafe(jSet, childFact)
 
 				oldValidParents := jSet.CurrentValidParents
 				oldConfidence := jSet.Confidence
@@ -297,34 +312,7 @@ func (e *Engine) recomputeChildrenForParentUnsafe(parentFactID string) []string 
 			continue
 		}
 
-		minConf := Valid // Start at 1.0
-		validCount := 0
-		for _, pID := range jSet.PositiveParentFactIDs {
-			pFact, ok := e.Facts[pID]
-			if !ok {
-				continue
-			}
-			pStatus := e.effectiveStatusUnsafe(pFact)
-			if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
-				minConf = depConf
-			}
-			if dependencySatisfied(pFact, pStatus, false, childFact) {
-				validCount++
-			}
-		}
-		for _, pID := range jSet.NegativeParentFactIDs {
-			pFact, ok := e.Facts[pID]
-			if !ok {
-				continue
-			}
-			pStatus := e.effectiveStatusUnsafe(pFact)
-			if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
-				minConf = depConf
-			}
-			if dependencySatisfied(pFact, pStatus, true, childFact) {
-				validCount++
-			}
-		}
+		validCount, minConf := e.computeJustificationSetParentsUnsafe(jSet, childFact)
 
 		oldValidParents := jSet.CurrentValidParents
 		oldConfidence := jSet.Confidence
@@ -353,8 +341,25 @@ func (e *Engine) AssertFact(f *Fact) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	noop, err := e.validateAssertFactLocked(f)
+	if err != nil {
+		return err
+	}
+	if noop {
+		return nil
+	}
+
+	e.registerFactLocked(f)
+	if f.IsRoot {
+		e.initializeRootFactLocked(f)
+		return nil
+	}
+	return e.initializeDerivedFactLocked(f)
+}
+
+func (e *Engine) validateAssertFactLocked(f *Fact) (bool, error) {
 	if len(e.Facts) >= MaxFactsPerSession {
-		return fmt.Errorf("session memory cap exceeded (%d facts). please archive and start a new session", MaxFactsPerSession)
+		return false, fmt.Errorf("session memory cap exceeded (%d facts). please archive and start a new session", MaxFactsPerSession)
 	}
 
 	if f.AssertedAt == 0 {
@@ -362,121 +367,106 @@ func (e *Engine) AssertFact(f *Fact) error {
 	}
 
 	if existing, exists := e.Facts[f.ID]; exists {
-		// Idempotency Check: if content matches, return nil
 		if existing.IsRoot == f.IsRoot &&
 			existing.ManualStatus == f.ManualStatus &&
 			reflect.DeepEqual(existing.Payload, f.Payload) &&
 			reflect.DeepEqual(existing.JustificationSets, f.JustificationSets) {
-			return nil
+			return true, nil
 		}
-		return errors.New("a fact with this ID already exists with different content")
+		return false, errors.New("a fact with this ID already exists with different content")
 	}
 
 	if !f.IsRoot && len(f.JustificationSets) == 0 {
-		return errors.New("non-root fact must have at least one justification set")
+		return false, errors.New("non-root fact must have at least one justification set")
 	}
 
 	for _, set := range f.JustificationSets {
 		if len(set) == 0 {
-			return errors.New("justification set cannot be empty")
+			return false, errors.New("justification set cannot be empty")
 		}
 		for _, token := range set {
 			parentID, err := normalizeDependencyToken(token)
 			if err != nil {
-				return err
+				return false, err
 			}
 			if _, ok := e.Facts[parentID]; !ok {
-				return errors.New("unknown parent fact: " + parentID)
+				return false, errors.New("unknown parent fact: " + parentID)
 			}
 		}
 	}
 
 	if err := e.detectCycle(f); err != nil {
-		return err
+		return false, err
 	}
 
+	return false, nil
+}
+
+func (e *Engine) registerFactLocked(f *Fact) {
 	e.Facts[f.ID] = f
 	e.DirtyDominators = true
 	e.MutationCount++
+}
 
-	// Handle Root Premise
-	if f.IsRoot {
-		f.DerivedStatus = f.ManualStatus
-		if f.ManualStatus < ConfidenceThreshold {
-			e.CollapsedRoots[f.ID] = struct{}{}
-		}
-		e.notify(f.ID, f.DerivedStatus)
-		e.propagate([]string{f.ID})
-		return nil
+func (e *Engine) initializeRootFactLocked(f *Fact) {
+	f.DerivedStatus = f.ManualStatus
+	if f.ManualStatus < ConfidenceThreshold {
+		e.CollapsedRoots[f.ID] = struct{}{}
+	}
+	e.notify(f.ID, f.DerivedStatus)
+	e.propagate([]string{f.ID})
+}
+
+func (e *Engine) newJustificationSetLocked(f *Fact, index int, set []string) (*JustificationSet, error) {
+	positiveParents, negativeParents, allParents, err := splitDependencySet(set)
+	if err != nil {
+		return nil, err
+	}
+	jSetID := justificationSetID(f.ID, index)
+	jSet := &JustificationSet{
+		ID:                    jSetID,
+		ChildFactID:           f.ID,
+		ParentFactIDs:         allParents,
+		PositiveParentFactIDs: positiveParents,
+		NegativeParentFactIDs: negativeParents,
+		TargetValidParents:    len(positiveParents) + len(negativeParents),
+		CurrentValidParents:   0,
+		Confidence:            Invalid,
 	}
 
+	for _, parentID := range positiveParents {
+		if _, ok := e.Facts[parentID]; !ok {
+			continue
+		}
+		e.addChildIndexUnsafe(parentID, jSetID)
+	}
+	for _, parentID := range negativeParents {
+		if _, ok := e.Facts[parentID]; !ok {
+			continue
+		}
+		e.addChildIndexUnsafe(parentID, jSetID)
+	}
+
+	validCount, minConf := e.computeJustificationSetParentsUnsafe(jSet, f)
+	jSet.CurrentValidParents = validCount
+	if validCount == jSet.TargetValidParents {
+		jSet.Confidence = minConf
+		f.ValidJustificationCount++
+	}
+
+	return jSet, nil
+}
+
+func (e *Engine) initializeDerivedFactLocked(f *Fact) error {
 	f.DerivedStatus = Invalid
 	f.ValidJustificationCount = 0
 
 	for i, set := range f.JustificationSets {
-		positiveParents, negativeParents, allParents, err := splitDependencySet(set)
+		jSet, err := e.newJustificationSetLocked(f, i, set)
 		if err != nil {
 			return err
 		}
-		jSetID := fmt.Sprintf("%s_jset_%d", f.ID, i)
-		jSet := &JustificationSet{
-			ID:                    jSetID,
-			ChildFactID:           f.ID,
-			ParentFactIDs:         allParents,
-			PositiveParentFactIDs: positiveParents,
-			NegativeParentFactIDs: negativeParents,
-			TargetValidParents:    len(positiveParents) + len(negativeParents),
-			CurrentValidParents:   0,
-			Confidence:            Invalid,
-		}
-
-		minConf := Valid // 1.0
-		validCount := 0
-
-		for _, parentID := range positiveParents {
-			pFact, ok := e.Facts[parentID]
-			if !ok {
-				continue
-			}
-			parentStatus := e.effectiveStatusUnsafe(pFact)
-			if depConf := dependencyConfidence(parentStatus, false); depConf < minConf {
-				minConf = depConf
-			}
-			if dependencySatisfied(pFact, parentStatus, false, f) {
-				validCount++
-			}
-
-			if _, ok := e.ChildrenIndex[parentID]; !ok {
-				e.ChildrenIndex[parentID] = make(map[string]struct{})
-			}
-			e.ChildrenIndex[parentID][jSetID] = struct{}{}
-		}
-		for _, parentID := range negativeParents {
-			pFact, ok := e.Facts[parentID]
-			if !ok {
-				continue
-			}
-			parentStatus := e.effectiveStatusUnsafe(pFact)
-			if depConf := dependencyConfidence(parentStatus, true); depConf < minConf {
-				minConf = depConf
-			}
-			if dependencySatisfied(pFact, parentStatus, true, f) {
-				validCount++
-			}
-
-			if _, ok := e.ChildrenIndex[parentID]; !ok {
-				e.ChildrenIndex[parentID] = make(map[string]struct{})
-			}
-			e.ChildrenIndex[parentID][jSetID] = struct{}{}
-		}
-
-		jSet.CurrentValidParents = validCount
-		if validCount == jSet.TargetValidParents {
-			jSet.Confidence = minConf
-			f.ValidJustificationCount++
-		}
-
-		e.JustificationSets[jSetID] = jSet
+		e.JustificationSets[jSet.ID] = jSet
 	}
 
 	e.propagate([]string{f.ID})
@@ -602,99 +592,120 @@ func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 		return nil, errors.New("fact not found")
 	}
 
-	// 1. Setup simulation state
-	// factID -> simulated DerivedStatus
-	simStatus := make(map[string]Status)
+	simStatus, simJSetConfidence := e.initImpactSimulationUnsafe()
+	impacted := e.simulateInvalidationUnsafe(factID, simStatus, simJSetConfidence)
+	return e.buildImpactReportUnsafe(impacted, factID), nil
+}
+
+func (e *Engine) initImpactSimulationUnsafe() (map[string]Status, map[string]Status) {
+	simStatus := make(map[string]Status, len(e.Facts))
 	for id, f := range e.Facts {
 		simStatus[id] = e.effectiveStatusUnsafe(f)
 	}
 
-	// jSetID -> simulated Confidence
-	simJSetConf := make(map[string]Status)
+	simJSetConfidence := make(map[string]Status, len(e.JustificationSets))
 	for id, js := range e.JustificationSets {
-		simJSetConf[id] = js.Confidence
+		simJSetConfidence[id] = js.Confidence
 	}
 
-	// 2. Simulate Invalidation
+	return simStatus, simJSetConfidence
+}
+
+func (e *Engine) simulateJustificationSetUnsafe(js *JustificationSet, simStatus map[string]Status) (int, Status) {
+	childFact := e.Facts[js.ChildFactID]
+
+	minConfidence := Valid
+	validCount := 0
+	for _, parentID := range js.PositiveParentFactIDs {
+		parentFact := e.Facts[parentID]
+		parentStatus := simStatus[parentID]
+		if depConf := dependencyConfidence(parentStatus, false); depConf < minConfidence {
+			minConfidence = depConf
+		}
+		if dependencySatisfied(parentFact, parentStatus, false, childFact) {
+			validCount++
+		}
+	}
+	for _, parentID := range js.NegativeParentFactIDs {
+		parentFact := e.Facts[parentID]
+		parentStatus := simStatus[parentID]
+		if depConf := dependencyConfidence(parentStatus, true); depConf < minConfidence {
+			minConfidence = depConf
+		}
+		if dependencySatisfied(parentFact, parentStatus, true, childFact) {
+			validCount++
+		}
+	}
+
+	return validCount, minConfidence
+}
+
+func (e *Engine) simulatedDerivedStatusUnsafe(factID string, simJSetConfidence map[string]Status) Status {
+	fact := e.Facts[factID]
+	if fact == nil {
+		return Invalid
+	}
+
+	maxConfidence := Invalid
+	for i := range fact.JustificationSets {
+		jsID := justificationSetID(factID, i)
+		confidence := simJSetConfidence[jsID]
+		if confidence > maxConfidence {
+			maxConfidence = confidence
+		}
+	}
+	return maxConfidence
+}
+
+func (e *Engine) simulateInvalidationUnsafe(factID string, simStatus map[string]Status, simJSetConfidence map[string]Status) map[string]struct{} {
 	simStatus[factID] = Invalid
 	queue := []string{factID}
 	impacted := make(map[string]struct{})
 	impacted[factID] = struct{}{}
 
-	// 3. Propagate simulation
 	for len(queue) > 0 {
 		uID := queue[0]
 		queue = queue[1:]
 
-		// For each dependent JustificationSet
 		for jSetID := range e.ChildrenIndex[uID] {
 			js := e.JustificationSets[jSetID]
+			validCount, minConfidence := e.simulateJustificationSetUnsafe(js, simStatus)
 
-			// Recalculate JSet Confidence
-			minConf := Valid
-			validCount := 0
-			for _, pID := range js.PositiveParentFactIDs {
-				pFact := e.Facts[pID]
-				pStatus := simStatus[pID]
-				if depConf := dependencyConfidence(pStatus, false); depConf < minConf {
-					minConf = depConf
-				}
-				childFact := e.Facts[js.ChildFactID]
-				if dependencySatisfied(pFact, pStatus, false, childFact) {
-					validCount++
-				}
-			}
-			for _, pID := range js.NegativeParentFactIDs {
-				pFact := e.Facts[pID]
-				pStatus := simStatus[pID]
-				if depConf := dependencyConfidence(pStatus, true); depConf < minConf {
-					minConf = depConf
-				}
-				childFact := e.Facts[js.ChildFactID]
-				if dependencySatisfied(pFact, pStatus, true, childFact) {
-					validCount++
-				}
-			}
-
-			newJSetConf := Invalid
+			newJSetConfidence := Invalid
 			if validCount == js.TargetValidParents {
-				newJSetConf = minConf
+				newJSetConfidence = minConfidence
 			}
 
-			if newJSetConf != simJSetConf[jSetID] {
-				simJSetConf[jSetID] = newJSetConf
+			if newJSetConfidence == simJSetConfidence[jSetID] {
+				continue
+			}
+			simJSetConfidence[jSetID] = newJSetConfidence
 
-				// Recalculate Child Fact Status
-				childID := js.ChildFactID
-				childFact := e.Facts[childID]
+			childID := js.ChildFactID
+			newChildStatus := e.simulatedDerivedStatusUnsafe(childID, simJSetConfidence)
+			if newChildStatus == simStatus[childID] {
+				continue
+			}
+			simStatus[childID] = newChildStatus
 
-				maxConf := Invalid
-				for i := range childFact.JustificationSets {
-					jsID := fmt.Sprintf("%s_jset_%d", childID, i)
-					conf := simJSetConf[jsID]
-					if conf > maxConf {
-						maxConf = conf
-					}
-				}
-
-				if maxConf != simStatus[childID] {
-					simStatus[childID] = maxConf
-					if maxConf < ConfidenceThreshold {
-						if _, exists := impacted[childID]; !exists {
-							impacted[childID] = struct{}{}
-							queue = append(queue, childID)
-						}
-					}
+			if newChildStatus < ConfidenceThreshold {
+				if _, exists := impacted[childID]; !exists {
+					impacted[childID] = struct{}{}
+					queue = append(queue, childID)
 				}
 			}
 		}
 	}
 
-	// 4. Build Report
+	return impacted
+}
+
+func (e *Engine) buildImpactReportUnsafe(impacted map[string]struct{}, rootFactID string) *ImpactReport {
 	report := &ImpactReport{
 		ImpactedIDs: make([]string, 0, len(impacted)),
 		TotalCount:  len(impacted),
 	}
+
 	for id := range impacted {
 		report.ImpactedIDs = append(report.ImpactedIDs, id)
 		fact, ok := e.Facts[id]
@@ -703,8 +714,7 @@ func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 		}
 		report.Loss += float64(fact.DerivedStatus)
 
-		// Direct child check (simplified for simulation)
-		if fact.IDom == factID {
+		if fact.IDom == rootFactID {
 			report.DirectCount++
 		}
 		if fact.Payload != nil && fact.Payload["type"] == "action" {
@@ -712,7 +722,7 @@ func (e *Engine) GetImpact(factID string) (*ImpactReport, error) {
 		}
 	}
 
-	return report, nil
+	return report
 }
 
 func cloneStringSlice(values []string) []string {
@@ -807,7 +817,7 @@ func buildValidationEngine(facts map[string]*Fact) (*Engine, error) {
 				if _, ok := validation.ChildrenIndex[parentID]; !ok {
 					validation.ChildrenIndex[parentID] = make(map[string]struct{})
 				}
-				jSetID := fmt.Sprintf("%s_jset_%d", fact.ID, i)
+				jSetID := justificationSetID(fact.ID, i)
 				validation.ChildrenIndex[parentID][jSetID] = struct{}{}
 				validation.JustificationSets[jSetID] = &JustificationSet{
 					ID:                    jSetID,
@@ -860,7 +870,7 @@ func (e *Engine) ToSnapshot() (*Snapshot, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	if err := enc.Encode(payload); err != nil {
-		return nil, fmt.Errorf("failed to encode engine state: %v", err)
+		return nil, fmt.Errorf("failed to encode engine state: %w", err)
 	}
 
 	data := buf.Bytes()
@@ -903,7 +913,7 @@ func (e *Engine) FromSnapshot(snap *Snapshot) error {
 	}
 
 	if err := dec.Decode(&payload); err != nil {
-		return fmt.Errorf("failed to decode snapshot data: %v", err)
+		return fmt.Errorf("failed to decode snapshot data: %w", err)
 	}
 
 	if payload.Facts == nil {
@@ -974,9 +984,7 @@ func (e *Engine) DependencyIDs(factID string, includeSelf bool) ([]string, error
 		if !ok {
 			return
 		}
-		if !includeSelf && id == factID {
-			// keep walking parents without adding the target fact itself
-		} else {
+		if includeSelf || id != factID {
 			if _, exists := seen[id]; exists {
 				return
 			}

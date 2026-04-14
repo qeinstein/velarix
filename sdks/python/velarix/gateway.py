@@ -1,4 +1,8 @@
-from typing import Any, Callable, Dict, Optional
+import logging
+from typing import Any, Callable, Dict, List, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 class VelarixGateway:
@@ -25,6 +29,7 @@ class VelarixGateway:
                 self.flush()
             self.session.record_decision(kind, payload)
         except Exception:
+            logger.exception("VelarixGateway failed to persist decision event", extra={"kind": kind})
             if self.mode != "buffered":
                 raise
             if len(self._buffer) >= self.max_buffered:
@@ -37,7 +42,7 @@ class VelarixGateway:
         input: Dict[str, Any],
         fn: Callable[[Dict[str, Any]], Any],
         trace_id: Optional[str] = None,
-        tags: Optional[list] = None,
+        tags: Optional[List[str]] = None,
     ) -> Any:
         """Record a tool call, execute it, and persist either the result or the error."""
         self._record("tool_call", {"trace_id": trace_id, "tool": tool, "input": input, "tags": tags or []})

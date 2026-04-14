@@ -21,11 +21,11 @@ const (
 
 // TruthfulQAQuestion represents a single row from the TruthfulQA CSV.
 type TruthfulQAQuestion struct {
-	Question        string
-	BestAnswer      string
-	CorrectAnswers  []string
+	Question         string
+	BestAnswer       string
+	CorrectAnswers   []string
 	IncorrectAnswers []string
-	Category        string
+	Category         string
 }
 
 // HaluEvalQuestion represents a single QA sample from the HaluEval dataset.

@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"velarix/store"
 )
 
 type timeseriesPoint struct {
@@ -129,6 +127,3 @@ func (s *Server) handleGetUsageBreakdown(w http.ResponseWriter, r *http.Request)
 		"raw":         b.Raw,
 	})
 }
-
-var _ = store.MetricPoint{}
-

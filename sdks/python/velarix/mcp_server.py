@@ -1,6 +1,6 @@
 import os
-import asyncio
 from typing import Any, Dict, List, Optional
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
@@ -10,13 +10,21 @@ mcp = FastMCP("Velarix")
 VELARIX_BASE_URL = os.getenv("VELARIX_BASE_URL", "http://localhost:8080")
 VELARIX_API_KEY = os.getenv("VELARIX_API_KEY", "")
 
+
 def _headers() -> Dict[str, str]:
     if VELARIX_API_KEY:
         return {"Authorization": f"Bearer {VELARIX_API_KEY}", "Content-Type": "application/json"}
     return {"Content-Type": "application/json"}
 
+
 @mcp.tool()
-async def assert_fact(session_id: str, fact_id: str, payload: dict, justifications: Optional[list] = None, confidence: float = 1.0) -> str:
+async def assert_fact(
+    session_id: str,
+    fact_id: str,
+    payload: Dict[str, Any],
+    justifications: Optional[List[List[str]]] = None,
+    confidence: float = 1.0,
+) -> str:
     """
     Assert a new fact into a Velarix session.
     Provide justifications as a list of lists of Fact IDs if it's derived.
@@ -34,6 +42,7 @@ async def assert_fact(session_id: str, fact_id: str, payload: dict, justificatio
         resp.raise_for_status()
         return f"Fact {fact_id} successfully asserted."
 
+
 @mcp.tool()
 async def get_fact(session_id: str, fact_id: str) -> str:
     """Retrieve a specific fact from a session."""
@@ -42,6 +51,7 @@ async def get_fact(session_id: str, fact_id: str) -> str:
         resp = await client.get(url, headers=_headers())
         resp.raise_for_status()
         return resp.text
+
 
 @mcp.tool()
 async def explain_reasoning(session_id: str, fact_id: str, counterfactual_fact_id: Optional[str] = None) -> str:
@@ -53,11 +63,12 @@ async def explain_reasoning(session_id: str, fact_id: str, counterfactual_fact_i
     params = {"fact_id": fact_id}
     if counterfactual_fact_id:
         params["counterfactual_fact_id"] = counterfactual_fact_id
-        
+
     async with httpx.AsyncClient() as client:
         resp = await client.get(url, params=params, headers=_headers())
         resp.raise_for_status()
         return resp.text
+
 
 @mcp.resource("velarix://session/{session_id}/context")
 async def get_session_context(session_id: str) -> str:
@@ -67,6 +78,7 @@ async def get_session_context(session_id: str) -> str:
         resp = await client.get(url, headers=_headers())
         resp.raise_for_status()
         return resp.text
+
 
 if __name__ == "__main__":
     mcp.run()

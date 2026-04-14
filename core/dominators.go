@@ -92,13 +92,13 @@ func (e *Engine) computeDominatorIntervals() {
 		if f, ok := e.Facts[u]; ok {
 			f.PreOrder = timer
 		}
-		// Note: JustificationSets also need intervals if we check them, 
+		// Note: JustificationSets also need intervals if we check them,
 		// but usually we only query Fact status.
-		
+
 		for _, v := range adj[u] {
 			dfs(v)
 		}
-		
+
 		timer++
 		if f, ok := e.Facts[u]; ok {
 			f.PostOrder = timer
@@ -112,9 +112,15 @@ func (e *Engine) computeDominatorIntervals() {
 
 // lca finds the Lowest Common Ancestor in the current Dominator Tree.
 func (e *Engine) lca(id1, id2 string) string {
-	if id1 == "" { return id2 }
-	if id2 == "" { return id1 }
-	if id1 == id2 { return id1 }
+	if id1 == "" {
+		return id2
+	}
+	if id2 == "" {
+		return id1
+	}
+	if id1 == id2 {
+		return id1
+	}
 
 	// Simple path climbing for LCA (can be optimized further if needed)
 	path1 := e.getDominatorPath(id1)
@@ -155,12 +161,14 @@ func (e *Engine) getDominatorPath(id string) []string {
 func (e *Engine) topologicalSort() []string {
 	visited := make(map[string]bool)
 	var order []string
-	
+
 	var visit func(string)
 	visit = func(id string) {
-		if visited[id] { return }
+		if visited[id] {
+			return
+		}
 		visited[id] = true
-		
+
 		if _, ok := e.Facts[id]; ok {
 			for jsID := range e.ChildrenIndex[id] {
 				visit(jsID)

@@ -23,16 +23,16 @@ func TestConfidenceTier(t *testing.T) {
 
 func TestExplainReasoning(t *testing.T) {
 	e := NewEngine()
-	
+
 	f1 := &Fact{
-		ID: "f1", 
-		IsRoot: true, 
+		ID:           "f1",
+		IsRoot:       true,
 		ManualStatus: Valid,
 		Metadata: map[string]interface{}{
 			"_provenance": map[string]interface{}{
-				"source_type": "user",
-				"source_ref": "ref1",
-				"payload_hash": "hash1",
+				"source_type":    "user",
+				"source_ref":     "ref1",
+				"payload_hash":   "hash1",
 				"policy_version": "v1",
 			},
 		},
@@ -40,20 +40,20 @@ func TestExplainReasoning(t *testing.T) {
 	e.AssertFact(f1)
 
 	f2 := &Fact{
-		ID: "f2",
+		ID:                "f2",
 		JustificationSets: [][]string{{"f1", "!missing"}},
 	}
 	// "missing" is unknown, AssertFact will fail
 	_ = f2
-	
+
 	f2Valid := &Fact{
-		ID: "f2",
+		ID:                "f2",
 		JustificationSets: [][]string{{"f1"}},
 	}
 	e.AssertFact(f2Valid)
 
 	f3 := &Fact{
-		ID: "f3",
+		ID:                "f3",
 		JustificationSets: [][]string{{"f2", "!f1"}},
 	}
 	e.AssertFact(f3)
@@ -75,7 +75,7 @@ func TestExplainReasoning(t *testing.T) {
 	if len(out.CausalChain) != 3 {
 		t.Errorf("expected 3 items in causal chain, got %d", len(out.CausalChain))
 	}
-	
+
 	if len(out.Sources) != 1 || out.Sources[0].SourceRef != "ref1" {
 		t.Error("expected 1 source")
 	}
@@ -83,7 +83,7 @@ func TestExplainReasoning(t *testing.T) {
 	if len(out.PolicyVersions) != 1 || out.PolicyVersions[0] != "v1" {
 		t.Error("expected 1 policy version")
 	}
-	
+
 	// Test counterfactual
 	e.recomputeDominators()
 	cf := e.computeCounterfactual("f2", "f1")

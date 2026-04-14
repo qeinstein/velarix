@@ -11,7 +11,7 @@ func TestUniqueIDs(t *testing.T) {
 
 func TestAuditReasoningChain(t *testing.T) {
 	e := NewEngine()
-	
+
 	report := e.AuditReasoningChain(nil)
 	if report.Valid {
 		t.Error("expected invalid for nil chain")
@@ -29,17 +29,17 @@ func TestAuditReasoningChain(t *testing.T) {
 		ChainID: "chain1",
 		Steps: []ReasoningStep{
 			{
-				ID: "step1",
+				ID:              "step1",
 				EvidenceFactIDs: []string{"f1"},
-				OutputFactID: "f1",
+				OutputFactID:    "f1",
 			},
 			{
-				ID: "step2",
+				ID:              "step2",
 				EvidenceFactIDs: []string{"f1"},
-				OutputFactID: "f2", // Conflict with prior output f1
+				OutputFactID:    "f2", // Conflict with prior output f1
 			},
 			{
-				ID: "step3",
+				ID:              "step3",
 				EvidenceFactIDs: []string{"f3", "missing"},
 				// NO OutputFactID here to avoid multiple missing facts
 			},

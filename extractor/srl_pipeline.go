@@ -236,6 +236,53 @@ func convertSRLFacts(srlFacts []SRLFactResult) []ExtractedFact {
 // RunHybridPipeline runs the SRL pipeline first, then falls back to LLM
 // decomposition for sentences where SRL produces no facts or low-confidence
 // facts (final_confidence < 0.5).
+func hybridFallbackSentences(text string, srlFacts []SRLFactResult) ([]string, []string) {
+	sentenceCovered := map[int]bool{}
+	for _, f := range srlFacts {
+		if f.Confidence >= 0.5 {
+			sentenceCovered[f.SourceSentenceIndex] = true
+		}
+	}
+
+	sentences := splitSentences(text)
+	fallback := make([]string, 0, len(sentences))
+	for i, s := range sentences {
+		if !sentenceCovered[i] {
+			fallback = append(fallback, s)
+		}
+	}
+	return sentences, fallback
+}
+
+func mergeHybridFacts(srlFacts []ExtractedFact, llmFacts []ExtractedFact) []ExtractedFact {
+	seenIDs := map[string]struct{}{}
+	for _, f := range srlFacts {
+		seenIDs[f.ID] = struct{}{}
+	}
+
+	merged := srlFacts
+	for _, f := range llmFacts {
+		if _, ok := seenIDs[f.ID]; ok {
+			f.ID = uniqueSlug(f.ID, seenIDs)
+		}
+		seenIDs[f.ID] = struct{}{}
+		f.SourceType = "hybrid_llm_fallback"
+		merged = append(merged, f)
+	}
+	return merged
+}
+
+func mergeHybridStats(stats ExtractionStats, llmStats ExtractionStats) ExtractionStats {
+	stats.Stage1Discarded += llmStats.Stage1Discarded
+	stats.Stage2UnresolvedRefs += llmStats.Stage2UnresolvedRefs
+	stats.Stage3EdgesProposed += llmStats.Stage3EdgesProposed
+	stats.Stage3EdgesAccepted += llmStats.Stage3EdgesAccepted
+	stats.Stage3EdgesRejected += llmStats.Stage3EdgesRejected
+	stats.Stage4MissedClaims += llmStats.Stage4MissedClaims
+	stats.Stage5Contradictions += llmStats.Stage5Contradictions
+	return stats
+}
+
 func RunHybridPipeline(ctx context.Context, llm LLMClient, text string, sessionContext string, cfg *ExtractionConfig) (*ExtractionResult, error) {
 	c := normalizeExtractionConfig(cfg)
 	client := NewSRLServiceClient(c.SRLServiceURL)
@@ -247,24 +294,7 @@ func RunHybridPipeline(ctx context.Context, llm LLMClient, text string, sessionC
 		return RunPipeline(ctx, llm, text, sessionContext, cfg)
 	}
 
-	// Identify sentences that need LLM fallback.
-	sentenceCovered := map[int]bool{}
-	for _, f := range srlResp.Facts {
-		if f.Confidence >= 0.5 {
-			sentenceCovered[f.SourceSentenceIndex] = true
-		}
-	}
-
-	// Split text into sentences and find uncovered ones.
-	sentences := splitSentences(text)
-	var fallbackSentences []string
-	for i, s := range sentences {
-		if !sentenceCovered[i] {
-			fallbackSentences = append(fallbackSentences, s)
-		}
-	}
-
-	// Convert SRL facts
+	sentences, fallbackSentences := hybridFallbackSentences(text, srlResp.Facts)
 	srlFacts := convertSRLFacts(srlResp.Facts)
 
 	stats := ExtractionStats{
@@ -298,35 +328,13 @@ func RunHybridPipeline(ctx context.Context, llm LLMClient, text string, sessionC
 		}, nil
 	}
 
-	// Merge: SRL facts first, then LLM facts (deduplicated by ID).
-	seenIDs := map[string]struct{}{}
-	for _, f := range srlFacts {
-		seenIDs[f.ID] = struct{}{}
-	}
-
-	merged := srlFacts
-	for _, f := range llmResult.Facts {
-		if _, ok := seenIDs[f.ID]; ok {
-			f.ID = uniqueSlug(f.ID, seenIDs)
-		}
-		seenIDs[f.ID] = struct{}{}
-		f.SourceType = "hybrid_llm_fallback"
-		merged = append(merged, f)
-	}
-
-	// Merge stats
-	stats.Stage1Discarded += llmResult.Stats.Stage1Discarded
-	stats.Stage2UnresolvedRefs += llmResult.Stats.Stage2UnresolvedRefs
-	stats.Stage3EdgesProposed += llmResult.Stats.Stage3EdgesProposed
-	stats.Stage3EdgesAccepted += llmResult.Stats.Stage3EdgesAccepted
-	stats.Stage3EdgesRejected += llmResult.Stats.Stage3EdgesRejected
-	stats.Stage4MissedClaims += llmResult.Stats.Stage4MissedClaims
-	stats.Stage5Contradictions += llmResult.Stats.Stage5Contradictions
+	merged := mergeHybridFacts(srlFacts, llmResult.Facts)
+	stats = mergeHybridStats(stats, llmResult.Stats)
 
 	return &ExtractionResult{
-		Facts:                    merged,
+		Facts:                      merged,
 		PreAssertionContradictions: llmResult.PreAssertionContradictions,
-		Stats:                    stats,
+		Stats:                      stats,
 	}, nil
 }
 
@@ -336,8 +344,8 @@ func RunHybridPipeline(ctx context.Context, llm LLMClient, text string, sessionC
 
 // ValidateDependencyRequest is the payload for POST /internal/validate-dependency.
 type ValidateDependencyRequest struct {
-	ParentID string                 `json:"parent_id"`
-	ChildID  string                 `json:"child_id"`
+	ParentID string                   `json:"parent_id"`
+	ChildID  string                   `json:"child_id"`
 	Facts    []ValidateDependencyFact `json:"facts"`
 }
 

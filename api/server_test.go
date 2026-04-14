@@ -83,18 +83,22 @@ func TestHandleGetOrg(t *testing.T) {
 
 func TestHandleLegal(t *testing.T) {
 	s := newTestServer(&MockStore{})
-	
+
 	t.Run("Terms", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/v1/legal/terms", nil)
 		rr := httptest.NewRecorder()
 		s.handleLegalTerms(rr, req)
-		if rr.Code != http.StatusOK { t.Errorf("got %d", rr.Code) }
+		if rr.Code != http.StatusOK {
+			t.Errorf("got %d", rr.Code)
+		}
 	})
 
 	t.Run("Privacy", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/v1/legal/privacy", nil)
 		rr := httptest.NewRecorder()
 		s.handleLegalPrivacy(rr, req)
-		if rr.Code != http.StatusOK { t.Errorf("got %d", rr.Code) }
+		if rr.Code != http.StatusOK {
+			t.Errorf("got %d", rr.Code)
+		}
 	})
 }

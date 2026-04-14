@@ -48,6 +48,8 @@ const (
 	keyLength   = 32
 )
 
+const minPasswordLength = 12
+
 func hashPassword(password string) (string, error) {
 	salt := make([]byte, saltLength)
 	if _, err := rand.Read(salt); err != nil {
@@ -298,13 +300,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(body.Password) < minPasswordLength {
+		http.Error(w, fmt.Sprintf("password must be at least %d characters", minPasswordLength), http.StatusBadRequest)
+		return
+	}
+
 	hashed, err := hashPassword(body.Password)
 	if err != nil {
 		http.Error(w, "hashing failure", http.StatusInternalServerError)
 		return
 	}
 
-	role := "admin"
+	role := "member"
 	adminEmail := os.Getenv("VELARIX_ADMIN_EMAIL")
 	if adminEmail != "" && body.Email == adminEmail {
 		role = "admin"
@@ -501,7 +508,16 @@ func (s *Server) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hashed, _ := hashPassword(body.NewPassword)
+	if len(body.NewPassword) < minPasswordLength {
+		http.Error(w, fmt.Sprintf("password must be at least %d characters", minPasswordLength), http.StatusBadRequest)
+		return
+	}
+
+	hashed, err := hashPassword(body.NewPassword)
+	if err != nil {
+		http.Error(w, "hashing failure", http.StatusInternalServerError)
+		return
+	}
 	user.HashedPassword = hashed
 	user.TokenVersion = nextUserTokenVersion(user)
 	user.Keys = revokeUserKeys(user.Keys)

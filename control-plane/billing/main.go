@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -32,22 +32,22 @@ func main() {
 	devLike := env == "dev" || env == "test"
 	if stripe.Key == "" || webhookSecret == "" {
 		if !devLike {
-			log.Fatal("STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET are required outside dev/test")
+			fatal("STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET are required outside dev/test")
 		}
-		log.Println("WARNING: Stripe keys not configured. Billing webhook verification will fail.")
+		slog.Warn("Stripe keys not configured; billing webhook verification will fail")
 	}
 	if postgresDSN == "" {
 		if !devLike {
-			log.Fatal("VELARIX_POSTGRES_DSN is required outside dev/test")
+			fatal("VELARIX_POSTGRES_DSN is required outside dev/test")
 		}
-		log.Println("WARNING: VELARIX_POSTGRES_DSN is not configured. Billing updates will be ignored.")
+		slog.Warn("VELARIX_POSTGRES_DSN is not configured; billing updates will be ignored")
 	}
 
 	var billingStore store.BillingStore
 	if postgresDSN != "" {
 		pgStore, err := postgres.Open(context.Background(), postgresDSN)
 		if err != nil {
-			log.Fatalf("failed to open postgres billing store: %v", err)
+			fatal("failed to open postgres billing store", "error", err)
 		}
 		defer pgStore.Close()
 		billingStore = pgStore
@@ -83,18 +83,18 @@ func main() {
 		switch event.Type {
 		case "customer.subscription.created", "customer.subscription.updated":
 			if err := handleSubscriptionEvent(billingStore, event, false); err != nil {
-				log.Printf("billing update failed for event %s: %v", event.Type, err)
+				slog.Error("billing update failed", "event_type", event.Type, "error", err)
 				http.Error(w, "billing update failed", http.StatusAccepted)
 				return
 			}
 		case "customer.subscription.deleted":
 			if err := handleSubscriptionEvent(billingStore, event, true); err != nil {
-				log.Printf("billing cancellation failed: %v", err)
+				slog.Error("billing cancellation failed", "error", err)
 				http.Error(w, "billing cancellation failed", http.StatusAccepted)
 				return
 			}
 		default:
-			log.Printf("Unhandled Stripe event type: %s", event.Type)
+			slog.Info("Unhandled Stripe event type", "event_type", event.Type)
 		}
 
 		w.WriteHeader(http.StatusOK)
@@ -105,7 +105,7 @@ func main() {
 		port = "8081"
 	}
 
-	log.Printf("Control Plane billing webhook server listening on port %s", port)
+	slog.Info("Control Plane billing webhook server listening", "port", port)
 	httpServer := &http.Server{
 		Addr:              ":" + port,
 		Handler:           mux,
@@ -115,7 +115,7 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
-	log.Fatal(httpServer.ListenAndServe())
+	fatalOnError(httpServer.ListenAndServe())
 }
 
 func handleSubscriptionEvent(billingStore store.BillingStore, event stripe.Event, deleted bool) error {
@@ -216,4 +216,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
+}
+
+func fatalOnError(err error) {
+	if err != nil {
+		fatal("billing webhook server stopped", "error", err)
+	}
 }

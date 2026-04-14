@@ -46,7 +46,7 @@ type verifierFinding struct {
 // verifierCallError carries a machine-readable reason so callers can
 // increment the right Prometheus label without string-matching.
 type verifierCallError struct {
-	Reason string // "timeout" | "api_error" | "parse_error"
+	Reason string // "timeout" | "http" | "api_error" | "parse_error"
 	Msg    string
 }
 

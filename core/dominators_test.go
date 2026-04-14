@@ -6,16 +6,16 @@ func TestDominatorsAndLCA(t *testing.T) {
 	e := NewEngine()
 	e.AssertFact(&Fact{ID: "r1", IsRoot: true, ManualStatus: Valid})
 	e.AssertFact(&Fact{ID: "r2", IsRoot: true, ManualStatus: Valid})
-	
+
 	e.AssertFact(&Fact{ID: "n1", JustificationSets: [][]string{{"r1", "r2"}}})
 	e.AssertFact(&Fact{ID: "n2", JustificationSets: [][]string{{"n1"}}})
-	
+
 	e.recomputeDominators()
-	
+
 	if !e.isDominatorAncestor("n1", "n2") {
 		t.Error("n1 should dominate n2")
 	}
-	
+
 	if e.isDominatorAncestor("n2", "n1") {
 		t.Error("n2 should not dominate n1")
 	}

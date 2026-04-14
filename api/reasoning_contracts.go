@@ -120,12 +120,7 @@ func (s *Server) handleRecordPerception(w http.ResponseWriter, r *http.Request) 
 	if fact.Metadata == nil {
 		fact.Metadata = map[string]interface{}{}
 	}
-	if fact.Payload != nil {
-		if p, ok := fact.Payload["_provenance"]; ok {
-			delete(fact.Payload, "_provenance")
-			fact.Metadata["_provenance"] = p
-		}
-	}
+	moveProvenanceFromPayloadToMetadata(&fact)
 	fact.Metadata["source_type"] = "perception"
 	if body.Modality != "" {
 		fact.Metadata["modality"] = body.Modality

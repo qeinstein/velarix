@@ -70,20 +70,7 @@ func (s *Store) GetSessionHistory(sessionID string) ([]store.JournalEntry, error
 		return nil, err
 	}
 	defer rows.Close()
-
-	out := []store.JournalEntry{}
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var entry store.JournalEntry
-		if err := decodeJSON(raw, &entry); err != nil {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out, rows.Err()
+	return decodeDocRows[store.JournalEntry](rows)
 }
 
 func (s *Store) GetSessionHistoryAfter(sessionID string, afterTimestamp int64) ([]store.JournalEntry, error) {
@@ -97,20 +84,7 @@ func (s *Store) GetSessionHistoryAfter(sessionID string, afterTimestamp int64) (
 		return nil, err
 	}
 	defer rows.Close()
-
-	out := []store.JournalEntry{}
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var entry store.JournalEntry
-		if err := decodeJSON(raw, &entry); err != nil {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out, rows.Err()
+	return decodeDocRows[store.JournalEntry](rows)
 }
 
 func (s *Store) GetSessionHistoryBefore(sessionID string, beforeTimestamp int64) ([]store.JournalEntry, error) {
@@ -124,20 +98,7 @@ func (s *Store) GetSessionHistoryBefore(sessionID string, beforeTimestamp int64)
 		return nil, err
 	}
 	defer rows.Close()
-
-	out := []store.JournalEntry{}
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var entry store.JournalEntry
-		if err := decodeJSON(raw, &entry); err != nil {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out, rows.Err()
+	return decodeDocRows[store.JournalEntry](rows)
 }
 
 func (s *Store) GetSessionHistoryChainHead(sessionID string) (string, error) {

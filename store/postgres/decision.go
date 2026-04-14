@@ -81,7 +81,7 @@ func (s *Store) ListSessionDecisions(sessionID string, filter store.DecisionList
 		return nil, err
 	}
 	defer rows.Close()
-	return decodeDecisionRows(rows)
+	return decodeDocRows[store.Decision](rows)
 }
 
 func (s *Store) ListOrgDecisions(orgID string, filter store.DecisionListFilter) ([]store.Decision, error) {
@@ -91,7 +91,7 @@ func (s *Store) ListOrgDecisions(orgID string, filter store.DecisionListFilter) 
 		return nil, err
 	}
 	defer rows.Close()
-	return decodeDecisionRows(rows)
+	return decodeDocRows[store.Decision](rows)
 }
 
 func buildDecisionListQuery(scopeClause string, args []interface{}, filter store.DecisionListFilter) (string, []interface{}) {
@@ -130,25 +130,6 @@ func buildDecisionListQuery(scopeClause string, args []interface{}, filter store
 	`, strings.Join(clauses, " AND "), argPos)
 	args = append(args, limit)
 	return query, args
-}
-
-func decodeDecisionRows(rows pgx.Rows) ([]store.Decision, error) {
-	out := []store.Decision{}
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var item store.Decision
-		if err := decodeJSON(raw, &item); err != nil {
-			continue
-		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (s *Store) SaveDecisionDependencies(sessionID string, decisionID string, deps []store.DecisionDependency) error {
@@ -190,19 +171,7 @@ func (s *Store) GetDecisionDependencies(sessionID string, decisionID string) ([]
 		return nil, err
 	}
 	defer rows.Close()
-	out := []store.DecisionDependency{}
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var item store.DecisionDependency
-		if err := decodeJSON(raw, &item); err != nil {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out, rows.Err()
+	return decodeDocRows[store.DecisionDependency](rows)
 }
 
 func (s *Store) SaveDecisionCheck(sessionID string, decisionID string, check *store.DecisionCheck) error {

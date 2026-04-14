@@ -835,9 +835,7 @@ func (s *Server) handleExecuteDecision(w http.ResponseWriter, r *http.Request) {
 			},
 			Timestamp: now,
 		})
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(check)
+		writeJSON(w, http.StatusConflict, check)
 		return
 	}
 	decision.Status = "executed"
