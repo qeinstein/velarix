@@ -54,3 +54,24 @@ export function getDocBySlug(slug: string): DocContent | null {
     return null;
   }
 }
+
+export interface TocHeading {
+  level: number;
+  text: string;
+  id: string;
+}
+
+export function extractHeadings(content: string): TocHeading[] {
+  const headings: TocHeading[] = [];
+  const headingRegex = /^(#{2,3})\s+(.*)$/gm;
+  let match;
+
+  while ((match = headingRegex.exec(content)) !== null) {
+    const level = match[1].length;
+    const text = match[2];
+    const id = text.toLowerCase().replace(/[^\w]+/g, '-').replace(/(^-|-$)/g, '');
+    headings.push({ level, text, id });
+  }
+
+  return headings;
+}

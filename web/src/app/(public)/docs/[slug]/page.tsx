@@ -1,9 +1,10 @@
-import { getDocBySlug, getDocsList } from "@/lib/docs";
+import { getDocBySlug, getDocsList, extractHeadings } from "@/lib/docs";
 import { notFound } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import Link from "next/link";
+import remarkSlug from "remark-slug";
 
 export async function generateStaticParams() {
   const docs = getDocsList();
@@ -24,117 +25,106 @@ export default function DocPage({ params }: { params: { slug: string } }) {
   const prevDoc = currentIndex > 0 ? docs[currentIndex - 1] : null;
   const nextDoc = currentIndex < docs.length - 1 ? docs[currentIndex + 1] : null;
 
+  const headings = extractHeadings(doc.content);
+
   return (
-    <article className="space-y-10">
-      <div>
-        <h1 className="font-display mb-4 text-4xl leading-tight tracking-[-0.05em] md:text-5xl">
-          {doc.title}
-        </h1>
-        {doc.description && (
-          <p className="copy-tone font-copy text-xl leading-8">{doc.description}</p>
-        )}
-      </div>
+    <div className="flex xl:gap-8">
+      {/* Main Content */}
+      <article className="min-w-0 flex-1 space-y-12 xl:max-w-3xl pb-24">
+        {/* Header */}
+        <header className="space-y-4">
+          <h1 className="font-display text-4xl tracking-tight text-zinc-100 sm:text-5xl">
+            {doc.title}
+          </h1>
+          {doc.description && (
+            <p className="text-xl leading-8 text-zinc-400 font-copy">
+              {doc.description}
+            </p>
+          )}
+        </header>
 
-      <div className="font-copy text-lg leading-8">
-        <ReactMarkdown
-          rehypePlugins={[rehypeHighlight]}
-          components={{
-            h1: ({ node, ...props }) => (
-              <h1
-                className="font-display mb-4 mt-10 text-3xl tracking-[-0.04em]"
-                {...props}
-              />
-            ),
-            h2: ({ node, ...props }) => (
-              <h2
-                className="font-display mb-4 mt-10 text-2xl tracking-[-0.04em]"
-                {...props}
-              />
-            ),
-            h3: ({ node, ...props }) => (
-              <h3
-                className="font-display mb-4 mt-8 text-xl tracking-[-0.04em]"
-                {...props}
-              />
-            ),
-            p: ({ node, ...props }) => <p className="mb-6" {...props} />,
-            ul: ({ node, ...props }) => (
-              <ul className="mb-6 list-disc space-y-2 pl-6" {...props} />
-            ),
-            ol: ({ node, ...props }) => (
-              <ol className="mb-6 list-decimal space-y-2 pl-6" {...props} />
-            ),
-            li: ({ node, ...props }) => <li className="" {...props} />,
-            a: ({ node, ...props }) => (
-              <a
-                className="text-link no-underline hover:border-foreground"
-                {...props}
-              />
-            ),
-            code: ({
-              node,
-              inline,
-              className,
-              children,
-              ...props
-            }: any) => {
-              if (inline) {
-                return (
-                  <code
-                    className="rounded bg-[var(--panel)] px-1.5 py-0.5 font-mono text-[0.88em]"
-                    {...props}
-                  >
-                    {children}
-                  </code>
-                );
-              }
-              return (
-                <code className={className} {...props}>
-                  {children}
-                </code>
-              );
-            },
-            pre: ({ node, ...props }) => (
-              <pre
-                className="mb-6 overflow-x-auto rounded-xl border border-[var(--line)] bg-[var(--code-bg)] p-4 font-mono text-[0.88em]"
-                {...props}
-              />
-            ),
-          }}
-        >
-          {doc.content}
-        </ReactMarkdown>
-      </div>
-
-      <div className="section-rule mt-16 flex flex-col items-center justify-between gap-6 sm:flex-row">
-        {prevDoc ? (
-          <Link
-            href={`/docs/${prevDoc.slug}`}
-            className="surface group w-full rounded-lg p-5 transition-all hover:border-foreground sm:w-[48%]"
+        {/* Prose Markdown Wrapper */}
+        <div className="prose prose-invert prose-zinc max-w-none 
+          prose-headings:font-display prose-headings:tracking-tight prose-headings:text-zinc-100
+          prose-a:text-indigo-400 prose-a:no-underline hover:prose-a:underline hover:prose-a:text-indigo-300
+          prose-p:text-zinc-400 prose-p:leading-8
+          prose-strong:text-zinc-200
+          prose-li:text-zinc-400
+          prose-code:text-zinc-300 prose-code:bg-white/5 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:font-mono prose-code:text-sm prose-code:before:content-none prose-code:after:content-none
+          prose-pre:bg-[#0d0d0d] prose-pre:border prose-pre:border-white/10 prose-pre:rounded-xl prose-pre:shadow-2xl prose-pre:max-w-[calc(100vw-2rem)]
+          sm:prose-pre:max-w-none
+          font-copy text-lg
+        ">
+          <ReactMarkdown
+            rehypePlugins={[rehypeHighlight]}
+            components={{
+              h2: ({ node, children, ...props }) => {
+                const id = String(children).toLowerCase().replace(/[^\w]+/g, '-').replace(/(^-|-$)/g, '');
+                return <h2 id={id} {...props}>{children}</h2>;
+              },
+              h3: ({ node, children, ...props }) => {
+                const id = String(children).toLowerCase().replace(/[^\w]+/g, '-').replace(/(^-|-$)/g, '');
+                return <h3 id={id} {...props}>{children}</h3>;
+              },
+            }}
           >
-            <span className="eyebrow mb-2 block">Previous</span>
-            <span className="font-copy text-xl transition-colors group-hover:text-foreground">
-              {prevDoc.title}
-            </span>
-          </Link>
-        ) : (
-          <div className="w-full sm:w-[48%]" />
-        )}
+            {doc.content}
+          </ReactMarkdown>
+        </div>
 
-        {nextDoc ? (
-          <Link
-            href={`/docs/${nextDoc.slug}`}
-            className="surface group w-full rounded-lg p-5 text-right transition-all hover:border-foreground sm:w-[48%]"
-          >
-            <span className="eyebrow mb-2 block">Next</span>
-            <span className="font-copy text-xl transition-colors group-hover:text-foreground">
-              {nextDoc.title}
-            </span>
-          </Link>
-        ) : (
-          <div className="w-full sm:w-[48%]" />
-        )}
-      </div>
-    </article>
+        {/* Navigation Footer */}
+        <div className="mt-16 flex flex-col items-center justify-between gap-4 border-t border-white/10 pt-10 sm:flex-row">
+          {prevDoc ? (
+            <Link
+              href={`/docs/${prevDoc.slug}`}
+              className="group flex w-full flex-col justify-center rounded-xl border border-white/5 bg-white/5 p-6 transition-all hover:bg-white/10 hover:border-white/20 sm:w-[48%]"
+            >
+              <span className="text-xs uppercase tracking-wider text-zinc-500 mb-2 font-semibold transition-colors group-hover:text-zinc-400">Previous</span>
+              <span className="font-copy text-lg font-medium text-zinc-300 transition-colors group-hover:text-zinc-100">
+                {prevDoc.title}
+              </span>
+            </Link>
+          ) : (
+            <div className="w-full sm:w-[48%]" />
+          )}
+
+          {nextDoc ? (
+            <Link
+              href={`/docs/${nextDoc.slug}`}
+              className="group flex w-full flex-col justify-center text-right rounded-xl border border-white/5 bg-white/5 p-6 transition-all hover:bg-white/10 hover:border-white/20 sm:w-[48%]"
+            >
+              <span className="text-xs uppercase tracking-wider text-zinc-500 mb-2 font-semibold transition-colors group-hover:text-zinc-400">Next</span>
+              <span className="font-copy text-lg font-medium text-zinc-300 transition-colors group-hover:text-zinc-100">
+                {nextDoc.title}
+              </span>
+            </Link>
+          ) : (
+            <div className="w-full sm:w-[48%]" />
+          )}
+        </div>
+      </article>
+
+      {/* Right Sidebar TOC */}
+      {headings.length > 0 && (
+        <aside className="hidden xl:block xl:w-64 flex-shrink-0">
+          <div className="sticky top-24">
+            <h4 className="text-sm font-semibold tracking-wider text-zinc-100 uppercase mb-4">On this page</h4>
+            <nav className="flex flex-col gap-2.5">
+              {headings.map((heading, i) => (
+                <a
+                  key={i}
+                  href={`#${heading.id}`}
+                  className={`text-sm tracking-tight transition-colors hover:text-zinc-100 ${
+                    heading.level === 3 ? "ml-4 text-zinc-500" : "text-zinc-400 font-medium"
+                  }`}
+                >
+                  {heading.text}
+                </a>
+              ))}
+            </nav>
+          </div>
+        </aside>
+      )}
+    </div>
   );
 }

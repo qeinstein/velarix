@@ -18,6 +18,7 @@
     "react-force-graph-3d": "^1.29.1",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
+    "remark-slug": "^7.0.1",
     "three": "^0.160.1"
   },
   "devDependencies": {

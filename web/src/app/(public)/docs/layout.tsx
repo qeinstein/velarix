@@ -1,5 +1,6 @@
 import { getDocsList } from "@/lib/docs";
 import Link from "next/link";
+import { DocsSidebar } from "@/components/DocsSidebar";
 
 export default function DocsLayout({
   children,
@@ -13,18 +14,10 @@ export default function DocsLayout({
       <aside className="w-full flex-shrink-0 md:w-64">
         <div className="sticky top-24 space-y-6">
           <div>
-            <p className="eyebrow mb-4">Documentation</p>
-            <nav className="flex flex-col gap-2">
-              {docs.map((doc) => (
-                <Link
-                  key={doc.slug}
-                  href={`/docs/${doc.slug}`}
-                  className="docs-sidebar-link font-copy text-[1.05rem]"
-                >
-                  {doc.title}
-                </Link>
-              ))}
-            </nav>
+            <p className="eyebrow mb-4 pl-3 font-semibold text-zinc-100">
+              Documentation
+            </p>
+            <DocsSidebar docs={docs} />
           </div>
         </div>
       </aside>
