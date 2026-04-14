@@ -352,6 +352,7 @@ else:
 
 
 def epistemic_check_node(state: Dict[str, Any], *, client: Optional[VelarixClient] = None, base_url: str = "http://localhost:8080", api_key: Optional[str] = None) -> Dict[str, Any]:
+    """Mark the graph state for replanning when the current plan fact is no longer resolved."""
     session_id = state.get("velarix_session_id")
     fact_id = state.get("current_plan_fact_id")
     if not session_id or not fact_id:
