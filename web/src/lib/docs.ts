@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 
-const docsDirectory = path.join(process.cwd(), 'docs');
+const docsDirectory = path.join(process.cwd(), '..', 'docs');
 
 export interface DocMetadata {
   slug: string;
@@ -21,9 +21,9 @@ export function getDocsList(): DocMetadata[] {
   if (!fs.existsSync(docsDirectory)) return [];
   const fileNames = fs.readdirSync(docsDirectory);
   const allDocsData = fileNames
-    .filter(fileName => fileName.endsWith('.md'))
+    .filter(fileName => fileName.endsWith('.mdx'))
     .map(fileName => {
-      const slug = fileName.replace(/\.md$/, '');
+      const slug = fileName.replace(/\.mdx$/, '');
       const fullPath = path.join(docsDirectory, fileName);
       const fileContents = fs.readFileSync(fullPath, 'utf8');
       const matterResult = matter(fileContents);
@@ -47,7 +47,7 @@ export function getDocsList(): DocMetadata[] {
 
 export function getDocBySlug(slug: string): DocContent | null {
   try {
-    const fullPath = path.join(docsDirectory, `${slug}.md`);
+    const fullPath = path.join(docsDirectory, `${slug}.mdx`);
     const fileContents = fs.readFileSync(fullPath, 'utf8');
     const matterResult = matter(fileContents);
 
