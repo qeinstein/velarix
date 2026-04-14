@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"velarix/core"
+	"velarix/extractor"
 	"velarix/store"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -1914,6 +1915,26 @@ func (s *Server) handleGetExplanations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, records)
 }
 
+// handleValidateDependency validates a proposed dependency edge against a
+// temporary in-memory TMS engine instance. This is an internal-only endpoint
+// called by the SRL extraction service during Tier 1/2 extraction. It is NOT
+// exposed to external callers.
+func (s *Server) handleValidateDependency(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
+	var req extractor.ValidateDependencyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ParentID == "" || req.ChildID == "" {
+		http.Error(w, "parent_id and child_id are required", http.StatusBadRequest)
+		return
+	}
+
+	resp := extractor.ValidateDependency(req)
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -1923,6 +1944,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /health/full", s.handleFullHealth)
+
+	// Internal-only endpoints (called by SRL extraction service, not exposed externally)
+	mux.HandleFunc("POST /internal/validate-dependency", s.handleValidateDependency)
 
 	// Admin Management Routes
 	mux.HandleFunc("GET /v1/org/backup", s.handleBackup)

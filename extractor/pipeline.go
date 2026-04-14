@@ -16,16 +16,53 @@ import (
 	"velarix/core"
 )
 
-// ExtractionConfig configures the five-stage extraction pipeline.
+// ExtractionTier selects which extraction pipeline to use.
+type ExtractionTier int
+
+const (
+	// TierSRL uses the classical NLP pipeline (spaCy + AllenNLP SRL). Fast,
+	// deterministic, zero marginal cost. This is the default tier.
+	TierSRL ExtractionTier = 1
+	// TierHybrid runs the SRL pipeline first and falls back to a single LLM
+	// decomposition call for sentences where SRL produces no facts or facts
+	// with final_confidence < 0.5.
+	TierHybrid ExtractionTier = 2
+	// TierFullLLM uses the existing five-stage LLM pipeline.
+	TierFullLLM ExtractionTier = 3
+)
+
+// ExtractionConfig configures the extraction pipeline.
+//
+// The Tier field selects the extraction strategy:
+//   - TierSRL (1): classical NLP pipeline — default
+//   - TierHybrid (2): SRL with LLM fallback for low-confidence sentences
+//   - TierFullLLM (3): existing five-stage LLM pipeline
+//
+// When Tier is TierFullLLM (or when all optional stages are disabled), the
+// five-stage pipeline runs as before:
+//   1) Sentence selection (verifiable|hedged|discard)
+//   2) Coreference resolution + decontextualisation
+//   3) Atomic decomposition + TMS-constrained dependency inference
+//   4) Coverage verification (missed-claim recovery)
+//   5) Consistency pre-check
 //
 // Defaults:
-// - Stage 1/2/4/5 enabled
-// - DependencyConfidenceThreshold: 0.65
-// - DecontextualisationConfidenceThreshold: 0.7
-// - CoverageConfidenceThreshold: 0.7
-// - MaxDependencyCheckConcurrency: 10
-// - SelectionModel / ExtractionModel: VELARIX_EXTRACTOR_MODEL (fallback gpt-4o-mini)
+//   - Tier: TierSRL
+//   - Stage 1/2/4/5 enabled (for LLM tiers)
+//   - DependencyConfidenceThreshold: 0.65
+//   - DecontextualisationConfidenceThreshold: 0.7
+//   - CoverageConfidenceThreshold: 0.7
+//   - MaxDependencyCheckConcurrency: 10
+//   - SelectionModel / ExtractionModel: VELARIX_EXTRACTOR_MODEL (fallback gpt-4o-mini)
 type ExtractionConfig struct {
+	// Tier selects the extraction pipeline. Default is TierSRL.
+	Tier ExtractionTier
+
+	// SRLServiceURL is the base URL of the Python SRL extraction service.
+	// Only used when Tier is TierSRL or TierHybrid.
+	// Defaults to VELARIX_SRL_SERVICE_URL env or http://localhost:8090.
+	SRLServiceURL string
+
 	EnableSelection            bool
 	EnableDecontextualisation  bool
 	EnableCoverageVerification bool
@@ -44,7 +81,17 @@ func DefaultExtractionConfig() ExtractionConfig {
 	if model == "" {
 		model = "gpt-4o-mini"
 	}
+	tierEnv := strings.TrimSpace(os.Getenv("VELARIX_EXTRACTION_TIER"))
+	defaultTier := TierSRL
+	switch tierEnv {
+	case "2":
+		defaultTier = TierHybrid
+	case "3":
+		defaultTier = TierFullLLM
+	}
+
 	return ExtractionConfig{
+		Tier:                       defaultTier,
 		EnableSelection:            true,
 		EnableDecontextualisation:  true,
 		EnableCoverageVerification: true,
@@ -64,6 +111,13 @@ func normalizeExtractionConfig(cfg *ExtractionConfig) ExtractionConfig {
 	if cfg == nil {
 		return out
 	}
+	if cfg.Tier > 0 {
+		out.Tier = cfg.Tier
+	}
+	if strings.TrimSpace(cfg.SRLServiceURL) != "" {
+		out.SRLServiceURL = strings.TrimSpace(cfg.SRLServiceURL)
+	}
+
 	out.EnableSelection = cfg.EnableSelection
 	out.EnableDecontextualisation = cfg.EnableDecontextualisation
 	out.EnableCoverageVerification = cfg.EnableCoverageVerification
