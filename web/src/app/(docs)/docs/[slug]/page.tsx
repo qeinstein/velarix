@@ -13,26 +13,25 @@ export async function generateStaticParams() {
 
 export default function DocPage({ params }: { params: { slug: string } }) {
   const doc = getDocBySlug(params.slug);
-
   if (!doc) notFound();
 
   const docs = getDocsList();
   const currentIndex = docs.findIndex((d) => d.slug === params.slug);
   const prevDoc = currentIndex > 0 ? docs[currentIndex - 1] : null;
-  const nextDoc = currentIndex < docs.length - 1 ? docs[currentIndex + 1] : null;
+  const nextDoc =
+    currentIndex < docs.length - 1 ? docs[currentIndex + 1] : null;
 
   return (
-    <article className="space-y-10">
-      <div>
-        <h1 className="font-display mb-4 text-4xl leading-tight tracking-[-0.05em] md:text-5xl">
-          {doc.title}
-        </h1>
+    <article className="doc-article">
+      <header className="doc-header">
+        <p className="doc-section-label">{doc.section}</p>
+        <h1 className="doc-title">{doc.title}</h1>
         {doc.description && (
-          <p className="copy-tone font-copy text-xl leading-8">{doc.description}</p>
+          <p className="doc-description">{doc.description}</p>
         )}
-      </div>
+      </header>
 
-      <div className="font-copy text-lg leading-8">
+      <div className="doc-body">
         <MDXRemote
           source={doc.content}
           components={mdxComponents}
@@ -44,35 +43,30 @@ export default function DocPage({ params }: { params: { slug: string } }) {
         />
       </div>
 
-      <div className="section-rule mt-16 flex flex-col items-center justify-between gap-6 sm:flex-row">
+      <nav className="doc-pagination">
         {prevDoc ? (
           <Link
             href={`/docs/${prevDoc.slug}`}
-            className="surface group w-full rounded-lg p-5 transition-all hover:border-foreground sm:w-[48%]"
+            className="doc-pagination-item is-prev"
           >
-            <span className="eyebrow mb-2 block">Previous</span>
-            <span className="font-copy text-xl transition-colors group-hover:text-foreground">
-              {prevDoc.title}
-            </span>
+            <span className="doc-pagination-label">Previous</span>
+            <span className="doc-pagination-title">{prevDoc.title}</span>
           </Link>
         ) : (
-          <div className="w-full sm:w-[48%]" />
+          <div />
         )}
-
         {nextDoc ? (
           <Link
             href={`/docs/${nextDoc.slug}`}
-            className="surface group w-full rounded-lg p-5 text-right transition-all hover:border-foreground sm:w-[48%]"
+            className="doc-pagination-item is-next"
           >
-            <span className="eyebrow mb-2 block">Next</span>
-            <span className="font-copy text-xl transition-colors group-hover:text-foreground">
-              {nextDoc.title}
-            </span>
+            <span className="doc-pagination-label">Next</span>
+            <span className="doc-pagination-title">{nextDoc.title}</span>
           </Link>
         ) : (
-          <div className="w-full sm:w-[48%]" />
+          <div />
         )}
-      </div>
+      </nav>
     </article>
   );
 }
