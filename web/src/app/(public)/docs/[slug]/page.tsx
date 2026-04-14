@@ -1,23 +1,20 @@
 import { getDocBySlug, getDocsList } from "@/lib/docs";
 import { notFound } from "next/navigation";
-import ReactMarkdown from "react-markdown";
+import { MDXRemote } from "next-mdx-remote/rsc";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import Link from "next/link";
+import { mdxComponents } from "@/components/mdx";
 
 export async function generateStaticParams() {
   const docs = getDocsList();
-  return docs.map((doc) => ({
-    slug: doc.slug,
-  }));
+  return docs.map((doc) => ({ slug: doc.slug }));
 }
 
 export default function DocPage({ params }: { params: { slug: string } }) {
   const doc = getDocBySlug(params.slug);
 
-  if (!doc) {
-    notFound();
-  }
+  if (!doc) notFound();
 
   const docs = getDocsList();
   const currentIndex = docs.findIndex((d) => d.slug === params.slug);
@@ -36,74 +33,15 @@ export default function DocPage({ params }: { params: { slug: string } }) {
       </div>
 
       <div className="font-copy text-lg leading-8">
-        <ReactMarkdown
-          rehypePlugins={[rehypeHighlight]}
-          components={{
-            h1: ({ node, ...props }) => (
-              <h1
-                className="font-display mb-4 mt-10 text-3xl tracking-[-0.04em]"
-                {...props}
-              />
-            ),
-            h2: ({ node, ...props }) => (
-              <h2
-                className="font-display mb-4 mt-10 text-2xl tracking-[-0.04em]"
-                {...props}
-              />
-            ),
-            h3: ({ node, ...props }) => (
-              <h3
-                className="font-display mb-4 mt-8 text-xl tracking-[-0.04em]"
-                {...props}
-              />
-            ),
-            p: ({ node, ...props }) => <p className="mb-6" {...props} />,
-            ul: ({ node, ...props }) => (
-              <ul className="mb-6 list-disc space-y-2 pl-6" {...props} />
-            ),
-            ol: ({ node, ...props }) => (
-              <ol className="mb-6 list-decimal space-y-2 pl-6" {...props} />
-            ),
-            li: ({ node, ...props }) => <li className="" {...props} />,
-            a: ({ node, ...props }) => (
-              <a
-                className="text-link no-underline hover:border-foreground"
-                {...props}
-              />
-            ),
-            code: ({
-              node,
-              inline,
-              className,
-              children,
-              ...props
-            }: any) => {
-              if (inline) {
-                return (
-                  <code
-                    className="rounded bg-[var(--panel)] px-1.5 py-0.5 font-mono text-[0.88em]"
-                    {...props}
-                  >
-                    {children}
-                  </code>
-                );
-              }
-              return (
-                <code className={className} {...props}>
-                  {children}
-                </code>
-              );
+        <MDXRemote
+          source={doc.content}
+          components={mdxComponents}
+          options={{
+            mdxOptions: {
+              rehypePlugins: [rehypeHighlight],
             },
-            pre: ({ node, ...props }) => (
-              <pre
-                className="mb-6 overflow-x-auto rounded-xl border border-[var(--line)] bg-[var(--code-bg)] p-4 font-mono text-[0.88em]"
-                {...props}
-              />
-            ),
           }}
-        >
-          {doc.content}
-        </ReactMarkdown>
+        />
       </div>
 
       <div className="section-rule mt-16 flex flex-col items-center justify-between gap-6 sm:flex-row">
