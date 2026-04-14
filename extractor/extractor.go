@@ -1,12 +1,22 @@
 // Package extractor converts raw LLM text output into structured atomic facts
 // suitable for assertion into the Velarix truth-maintenance engine.
 //
-// Extraction runs as a configurable five-stage pipeline (see ExtractionConfig):
-//  1) Sentence selection (verifiable|hedged|discard)
-//  2) Coreference resolution + decontextualisation
-//  3) Atomic decomposition + TMS-constrained dependency inference
-//  4) Coverage verification (missed-claim recovery)
-//  5) Consistency pre-check (returns contradictions without suppressing facts)
+// Extraction supports three tiers selected via ExtractionConfig.Tier:
+//
+//   - Tier 1 (TierSRL): Classical NLP pipeline using spaCy and AllenNLP SRL.
+//     Fast, deterministic, zero marginal cost. Runs via a local Python
+//     microservice (extractor/srl_service). This is the default tier.
+//
+//   - Tier 2 (TierHybrid): Runs the SRL pipeline first, then falls back to a
+//     single LLM decomposition call for sentences where SRL produces no facts
+//     or facts with final_confidence < 0.5.
+//
+//   - Tier 3 (TierFullLLM): The existing configurable five-stage LLM pipeline:
+//     1) Sentence selection (verifiable|hedged|discard)
+//     2) Coreference resolution + decontextualisation
+//     3) Atomic decomposition + TMS-constrained dependency inference
+//     4) Coverage verification (missed-claim recovery)
+//     5) Consistency pre-check (returns contradictions without suppressing facts)
 //
 // The baseline configuration (all optional stages disabled) preserves the
 // prior single-pass V-Logic compiler behavior for benchmarking.
@@ -145,29 +155,65 @@ CRITICAL RULES:
    - fictional: claim in a clearly fictional/creative/story context
 `
 
-// Extract runs the configurable five-stage extraction pipeline and returns
-// extracted facts plus optional pre-assertion contradictions.
+// Extract runs the configurable extraction pipeline and returns extracted facts
+// plus optional pre-assertion contradictions.
 //
-// If cfg is nil, defaults are used. If cfg disables all optional stages, the
-// legacy single-pass V-Logic compiler is used (baseline mode).
+// The tier determines which pipeline is used:
+//   - TierSRL (default): classical NLP pipeline via local Python service
+//   - TierHybrid: SRL + LLM fallback for low-confidence sentences
+//   - TierFullLLM: existing five-stage LLM pipeline
+//
+// If cfg is nil, defaults are used. For TierFullLLM, if cfg disables all
+// optional stages, the legacy single-pass V-Logic compiler is used (baseline mode).
 func Extract(ctx context.Context, llmOutput string, sessionContext string, cfg *ExtractionConfig) (*ExtractionResult, error) {
-	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-	if apiKey == "" {
-		return nil, &ExtractionError{Cause: "configuration", Detail: "OPENAI_API_KEY is not set"}
-	}
-	baseURL := strings.TrimSpace(os.Getenv("VELARIX_OPENAI_BASE_URL"))
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	c := normalizeExtractionConfig(cfg)
 
-	client := &openAIClient{
-		apiKey:     apiKey,
-		baseURL:    baseURL,
-		httpClient: &http.Client{},
-	}
+	// Route by tier.
+	switch c.Tier {
+	case TierSRL:
+		return RunSRLPipeline(ctx, llmOutput, sessionContext, cfg)
 
-	return RunPipeline(ctx, client, llmOutput, sessionContext, cfg)
+	case TierHybrid:
+		// Hybrid needs both the SRL service and an LLM client for fallback.
+		apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+		if apiKey == "" {
+			// Without an LLM key, hybrid degrades to SRL-only.
+			return RunSRLPipeline(ctx, llmOutput, sessionContext, cfg)
+		}
+		baseURL := strings.TrimSpace(os.Getenv("VELARIX_OPENAI_BASE_URL"))
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		baseURL = strings.TrimRight(baseURL, "/")
+		client := &openAIClient{
+			apiKey:     apiKey,
+			baseURL:    baseURL,
+			httpClient: &http.Client{},
+		}
+		return RunHybridPipeline(ctx, client, llmOutput, sessionContext, cfg)
+
+	case TierFullLLM:
+		// Full LLM pipeline — requires API key.
+		apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+		if apiKey == "" {
+			return nil, &ExtractionError{Cause: "configuration", Detail: "OPENAI_API_KEY is not set"}
+		}
+		baseURL := strings.TrimSpace(os.Getenv("VELARIX_OPENAI_BASE_URL"))
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		baseURL = strings.TrimRight(baseURL, "/")
+		client := &openAIClient{
+			apiKey:     apiKey,
+			baseURL:    baseURL,
+			httpClient: &http.Client{},
+		}
+		return RunPipeline(ctx, client, llmOutput, sessionContext, cfg)
+
+	default:
+		// Unrecognised tier — default to SRL.
+		return RunSRLPipeline(ctx, llmOutput, sessionContext, cfg)
+	}
 }
 
 type openAIClient struct {

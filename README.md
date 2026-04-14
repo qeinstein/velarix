@@ -90,6 +90,31 @@ Example request body:
 }
 ```
 
+### Tiered Extraction Architecture
+
+Velarix supports three extraction tiers, selectable via `VELARIX_EXTRACTION_TIER` or the `extraction_config.Tier` field:
+
+| Tier | Name | Pipeline | Cost | Latency |
+|------|------|----------|------|---------|
+| 1 | SRL (default) | spaCy + AllenNLP SRL via local Python service | Zero | ~50ms |
+| 2 | Hybrid | SRL first, LLM fallback for low-confidence sentences | Low | ~200ms |
+| 3 | Full LLM | Five-stage LLM pipeline (selection → decomposition → coverage → consistency) | Standard | ~3s |
+
+```json
+{
+  "extraction_config": {
+    "Tier": 1,
+    "SRLServiceURL": "http://localhost:8090"
+  }
+}
+```
+
+The SRL service runs as a sidecar (`extractor/srl_service/`). Start it with:
+
+```bash
+cd extractor/srl_service && pip install -r requirements.txt && python main.py
+```
+
 ## Integration Surfaces
 
 - Python SDK: session, fact, slice, and decision APIs

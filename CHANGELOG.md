@@ -5,6 +5,13 @@ All notable changes to Velarix will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Extractor**: Introduced tiered extraction architecture (Tier 1: SRL, Tier 2: Hybrid, Tier 3: Full LLM) via `ExtractionConfig.Tier` and `VELARIX_EXTRACTION_TIER`.
+- **Extractor**: Added Tier 1 classical NLP pipeline using spaCy and AllenNLP SRL for zero-cost, deterministic extraction (`extractor/srl_pipeline.go`).
+- **Extractor**: Added Python SRL microservice (`extractor/srl_service/`) with 5 extraction stages: clause simplification, coreference resolution, NER, SRL, and discourse relation classification.
+- **Extractor**: Added Tier 2 hybrid mode that runs SRL first and falls back to LLM for low-confidence sentences.
+- **API**: Added internal `POST /internal/validate-dependency` endpoint for TMS-constrained dependency validation during SRL extraction.
+- **Metrics**: Added SRL-specific Prometheus metrics: `velarix_srl_extraction_latency_ms`, `velarix_srl_facts_extracted_total`, `velarix_srl_edges_{proposed,accepted,rejected}_total`, `velarix_srl_fallback_total`, `velarix_srl_ambiguous_total`.
+- **Benchmark**: Added `tier1_srl`, `tier2_hybrid`, `tier3_llm` benchmark variants for cross-tier comparison.
 - **Extractor**: Introduced the `extractor` package to convert raw LLM text into atomic factual assertions. Supports compound claim decomposition and dependency tracking.
 - **Extractor**: Replaced the single-pass extraction flow with a configurable five-stage pipeline (selection, decontextualisation, atomic decomposition, TMS-constrained dependency inference, coverage verification, consistency pre-check).
 - **Extractor**: Added `VELARIX_EXTRACTOR_MODEL` to configure extraction calls separately from `VELARIX_VERIFIER_MODEL`.
