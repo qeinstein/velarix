@@ -199,25 +199,46 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 
 	velarixConfigs := map[string]*extractor.ExtractionConfig{
 		"baseline": {
+			Tier:                       extractor.TierFullLLM,
 			EnableSelection:            false,
 			EnableDecontextualisation:  false,
 			EnableCoverageVerification: false,
 			EnableConsistencyPrecheck:  false,
 		},
 		"standard": {
+			Tier:                       extractor.TierFullLLM,
 			EnableSelection:            true,
 			EnableDecontextualisation:  true,
 			EnableCoverageVerification: false,
 			EnableConsistencyPrecheck:  true,
 		},
 		"full": {
+			Tier:                       extractor.TierFullLLM,
+			EnableSelection:            true,
+			EnableDecontextualisation:  true,
+			EnableCoverageVerification: true,
+			EnableConsistencyPrecheck:  true,
+		},
+		// Tiered extraction variants
+		"tier1_srl": {
+			Tier: extractor.TierSRL,
+		},
+		"tier2_hybrid": {
+			Tier:                       extractor.TierHybrid,
+			EnableSelection:            true,
+			EnableDecontextualisation:  true,
+			EnableCoverageVerification: false,
+			EnableConsistencyPrecheck:  true,
+		},
+		"tier3_llm": {
+			Tier:                       extractor.TierFullLLM,
 			EnableSelection:            true,
 			EnableDecontextualisation:  true,
 			EnableCoverageVerification: true,
 			EnableConsistencyPrecheck:  true,
 		},
 	}
-	velarixVariants := []string{"baseline", "standard", "full"}
+	velarixVariants := []string{"baseline", "standard", "full", "tier1_srl", "tier2_hybrid", "tier3_llm"}
 
 	processQuestion := func(qID, dataset, question string, scorer func(response string) float64) QuestionScore {
 		qs := QuestionScore{

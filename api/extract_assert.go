@@ -84,6 +84,20 @@ func (s *Server) handleExtractAndAssert(w http.ResponseWriter, r *http.Request) 
 		ExtractionStage3EdgesRejectedTotal.Add(float64(extractionResult.Stats.Stage3EdgesRejected))
 		ExtractionStage4MissedClaimsTotal.Add(float64(extractionResult.Stats.Stage4MissedClaims))
 		ExtractionStage5ContradictionsTotal.Add(float64(extractionResult.Stats.Stage5Contradictions))
+
+		// SRL pipeline metrics (Tier 1 / Tier 2)
+		cfg := body.ExtractionConfig
+		if cfg == nil {
+			defaultCfg := extractor.DefaultExtractionConfig()
+			cfg = &defaultCfg
+		}
+		if cfg.Tier == extractor.TierSRL || cfg.Tier == extractor.TierHybrid {
+			SRLExtractionLatency.Observe(float64(time.Since(extractStart).Milliseconds()))
+			SRLFactsExtractedTotal.Add(float64(len(extracted)))
+			SRLEdgesProposedTotal.Add(float64(extractionResult.Stats.Stage3EdgesProposed))
+			SRLEdgesAcceptedTotal.Add(float64(extractionResult.Stats.Stage3EdgesAccepted))
+			SRLEdgesRejectedTotal.Add(float64(extractionResult.Stats.Stage3EdgesRejected))
+		}
 	}
 
 	// Topological sort: ensure all dependencies are asserted before derived facts.
