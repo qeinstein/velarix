@@ -2055,13 +2055,7 @@ func (s *BadgerStore) ReplayAll(engines map[string]*core.Engine, configs map[str
 }
 
 func containsHistoryTag(key string) bool {
-	// Simple check for :h: in the key
-	for i := 0; i < len(key)-3; i++ {
-		if key[i:i+3] == ":h:" {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(key, ":h:")
 }
 
 // --- Explanation Persistence ---

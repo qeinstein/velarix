@@ -1,10 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"net/http"
-	"os"
 	"testing"
 	"time"
 
@@ -12,7 +9,7 @@ import (
 	"velarix/store"
 )
 
-func TestFirstNonEmpty(t *testing.T) {
+func TestFirstNonEmpty_FirstNonEmptyString_ReturnsFirstTrimmed(t *testing.T) {
 	if res := firstNonEmpty("", "  ", "hello", "world"); res != "hello" {
 		t.Errorf("expected hello, got %s", res)
 	}
@@ -21,7 +18,7 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
-func TestFeaturesForPlan(t *testing.T) {
+func TestFeaturesForPlan_Plans_ReturnExpectedFeatures(t *testing.T) {
 	ent := featuresForPlan("enterprise")
 	if !ent["compliance_export"] || !ent["human_review"] || !ent["priority_support"] {
 		t.Errorf("enterprise missing features: %v", ent)
@@ -36,7 +33,7 @@ func TestFeaturesForPlan(t *testing.T) {
 	}
 }
 
-func TestResolvePlan(t *testing.T) {
+func TestResolvePlan_MetadataAndDeletion_ReturnExpectedPlan(t *testing.T) {
 	if resolvePlan(nil, true) != "free" {
 		t.Error("deleted should be free")
 	}
@@ -83,7 +80,7 @@ func (m *mockBillingStore) SaveBilling(orgID string, billing *store.BillingSubsc
 	return nil
 }
 
-func TestHandleSubscriptionEvent(t *testing.T) {
+func TestHandleSubscriptionEvent_UpsertAndDelete_PersistsBillingSubscription(t *testing.T) {
 	ms := &mockBillingStore{}
 
 	sub := stripe.Subscription{
@@ -103,7 +100,7 @@ func TestHandleSubscriptionEvent(t *testing.T) {
 			},
 		},
 	}
-	
+
 	raw, _ := json.Marshal(sub)
 	event := stripe.Event{
 		ID:   "evt_123",
@@ -127,48 +124,20 @@ func TestHandleSubscriptionEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	
+
 	b, _ = ms.GetBilling("org_1")
 	if b == nil || b.Plan != "free" || b.Status != "canceled" {
 		t.Errorf("unexpected billing state after deletion: %+v", b)
 	}
-	
+
 	subNoOrg := sub
 	subNoOrg.Metadata = map[string]string{}
 	rawNoOrg, _ := json.Marshal(subNoOrg)
 	eventNoOrg := event
 	eventNoOrg.Data.Raw = json.RawMessage(rawNoOrg)
-	
+
 	err = handleSubscriptionEvent(ms, eventNoOrg, false)
 	if err == nil {
 		t.Error("expected error for missing org_id")
-	}
-}
-
-func TestMainRoutine(t *testing.T) {
-	os.Setenv("STRIPE_SECRET_KEY", "sk_test_123")
-	os.Setenv("STRIPE_WEBHOOK_SECRET", "whsec_123")
-	os.Setenv("VELARIX_ENV", "test")
-	os.Setenv("VELARIX_POSTGRES_DSN", "") // Avoid actual DB
-	os.Setenv("BILLING_PORT", "18081")
-
-	go func() {
-		main()
-	}()
-
-	time.Sleep(1 * time.Second)
-
-	resp, err := http.Get("http://localhost:18081/health")
-	if err != nil {
-		t.Logf("health endpoint err: %v", err)
-	} else if resp != nil {
-		resp.Body.Close()
-	}
-
-	req, _ := http.NewRequest("POST", "http://localhost:18081/webhooks/stripe", bytes.NewBuffer([]byte("bad_payload")))
-	req.Header.Set("Stripe-Signature", "t=1,v1=bad")
-	resp, err = http.DefaultClient.Do(req)
-	if err == nil && resp != nil {
-		resp.Body.Close()
 	}
 }

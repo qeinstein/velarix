@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"velarix/core"
 	"velarix/store"
 )
 
@@ -758,9 +757,6 @@ func (s *Server) handleGetSessionSummary(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// Ensure compiler uses core import (avoid unused when building without graph handlers in some configs).
-var _ = core.ConfidenceThreshold
-
 func (s *Server) handleGetOrgSettings(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
 	org, err := s.Store.GetOrganization(orgID)
@@ -1091,7 +1087,7 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if body.Token == "" || len(body.Password) < 8 {
+	if body.Token == "" || len(body.Password) < minPasswordLength {
 		http.Error(w, "token and password required", http.StatusBadRequest)
 		return
 	}

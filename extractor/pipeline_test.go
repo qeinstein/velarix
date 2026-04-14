@@ -13,11 +13,11 @@ import (
 type mockLLM struct {
 	mu sync.Mutex
 
-	stage1Response string
-	stage2Response string
+	stage1Response    string
+	stage2Response    string
 	stage3ABySentence map[string]string
 	stage3BResponder  func(parentClaim, childClaim string) (dependencyCheckResponse, bool)
-	stage4Response string
+	stage4Response    string
 }
 
 func (m *mockLLM) Chat(_ context.Context, _ string, messages []ChatMessage) (string, error) {
@@ -328,11 +328,11 @@ func TestFullPipelineEndToEnd(t *testing.T) {
 			{"sentence_index":4,"original":"Therefore, Marie Curie won the Nobel Prize.","decontextualised":"Marie Curie won the Nobel Prize.","unresolved_references":[],"confidence":0.95}
 		]`,
 		stage3ABySentence: map[string]string{
-			"Marie Curie was a scientist.": `[{"id":"curie-scientist","subject":"Marie Curie","predicate":"was","object":"scientist","claim":"Marie Curie was a scientist.","assertion_kind":"empirical","confidence":0.9}]`,
-			"Marie Curie won a prize.": `[{"id":"curie-won-prize","subject":"Marie Curie","predicate":"won_prize","object":"a prize","claim":"Marie Curie won a prize.","assertion_kind":"empirical","confidence":0.9}]`,
+			"Marie Curie was a scientist.":                   `[{"id":"curie-scientist","subject":"Marie Curie","predicate":"was","object":"scientist","claim":"Marie Curie was a scientist.","assertion_kind":"empirical","confidence":0.9}]`,
+			"Marie Curie won a prize.":                       `[{"id":"curie-won-prize","subject":"Marie Curie","predicate":"won_prize","object":"a prize","claim":"Marie Curie won a prize.","assertion_kind":"empirical","confidence":0.9}]`,
 			"The prize Marie Curie won was the Nobel Prize.": `[{"id":"curie-prize-nobel","subject":"the prize Marie Curie won","predicate":"was","object":"the Nobel Prize","claim":"The prize Marie Curie won was the Nobel Prize.","assertion_kind":"empirical","confidence":0.9}]`,
-			"The Nobel Prize is awarded in Stockholm.": `[{"id":"nobel-stockholm","subject":"the Nobel Prize","predicate":"is_awarded_in","object":"Stockholm","claim":"The Nobel Prize is awarded in Stockholm.","assertion_kind":"empirical","confidence":0.9}]`,
-			"Marie Curie won the Nobel Prize.": `[{"id":"curie-won-nobel","subject":"Marie Curie","predicate":"won","object":"the Nobel Prize","claim":"Marie Curie won the Nobel Prize.","assertion_kind":"empirical","confidence":0.9}]`,
+			"The Nobel Prize is awarded in Stockholm.":       `[{"id":"nobel-stockholm","subject":"the Nobel Prize","predicate":"is_awarded_in","object":"Stockholm","claim":"The Nobel Prize is awarded in Stockholm.","assertion_kind":"empirical","confidence":0.9}]`,
+			"Marie Curie won the Nobel Prize.":               `[{"id":"curie-won-nobel","subject":"Marie Curie","predicate":"won","object":"the Nobel Prize","claim":"Marie Curie won the Nobel Prize.","assertion_kind":"empirical","confidence":0.9}]`,
 		},
 		stage3BResponder: func(parentClaim, childClaim string) (dependencyCheckResponse, bool) {
 			if parentClaim == "Marie Curie won a prize." && childClaim == "The prize Marie Curie won was the Nobel Prize." {

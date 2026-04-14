@@ -95,7 +95,7 @@ var (
 
 	VerifierFailures = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "velarix_verifier_failures_total",
-		Help: "Total OpenAI consistency-verifier call failures by reason. Reasons: timeout, api_error, parse_error.",
+		Help: "Total OpenAI consistency-verifier call failures by reason. Reasons: timeout, http, api_error, parse_error.",
 	}, []string{"reason"})
 
 	AutoRetractionsTotal = promauto.NewCounter(prometheus.CounterOpts{

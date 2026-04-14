@@ -471,15 +471,7 @@ func (s *Server) handleAssertFact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if fact.Payload != nil {
-		if p, ok := fact.Payload["_provenance"]; ok {
-			delete(fact.Payload, "_provenance")
-			if fact.Metadata == nil {
-				fact.Metadata = make(map[string]interface{})
-			}
-			fact.Metadata["_provenance"] = p
-		}
-	}
+	moveProvenanceFromPayloadToMetadata(&fact)
 	applyFactGovernance(&fact, s.loadPolicyControls(orgID))
 
 	if config.Schema != "" {
@@ -501,10 +493,7 @@ func (s *Server) handleAssertFact(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	traceID := ""
-	if tid := r.Context().Value(contextKey("trace_id")); tid != nil {
-		traceID = tid.(string)
-	}
+	traceID := traceIDFromRequest(r)
 	if err := engine.AssertFact(&fact); err != nil {
 		slog.Warn("Fact assertion failed", "session_id", sessionID, "org_id", orgID, "trace_id", traceID, "error", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -579,10 +568,7 @@ func (s *Server) handleInvalidateRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.Store.AppendOrgActivity(orgID, entry)
 
-	traceID := ""
-	if tid := r.Context().Value(contextKey("trace_id")); tid != nil {
-		traceID = tid.(string)
-	}
+	traceID := traceIDFromRequest(r)
 
 	if err := engine.InvalidateRoot(id); err != nil {
 		slog.Warn("Invalidation failed", "session_id", sessionID, "fact_id", id, "actor_id", actorID, "trace_id", traceID, "error", err)
@@ -1389,13 +1375,6 @@ func authorizeRequest(r *http.Request, requiredScope string, scopes []string, ro
 	return hasScope(scopes, requiredScope)
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (s *Server) PerformEvictionSweep() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1571,20 +1550,25 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	buf := &bytes.Buffer{}
-	if _, err := s.Store.Backup(buf); err != nil {
-		slog.Error("Backup failed", "error", err)
+	orgID := getOrgID(r)
+	if orgID == "" {
+		http.Error(w, "forbidden: org context required", http.StatusForbidden)
+		return
+	}
+	payload, err := s.buildOrgBackup(orgID)
+	if err != nil {
+		slog.Error("Backup failed", "org_id", orgID, "error", err)
 		http.Error(w, "backup failed", http.StatusInternalServerError)
 		return
 	}
-	hash := sha256.Sum256(buf.Bytes())
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", "attachment; filename=velarix_backup.bak")
-	if _, err := w.Write(buf.Bytes()); err != nil {
-		slog.Error("Backup write failed", "error", err)
+	hash := sha256.Sum256(payload)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=velarix_backup_%s.json", orgID))
+	if _, err := w.Write(payload); err != nil {
+		slog.Error("Backup write failed", "org_id", orgID, "error", err)
 		return
 	}
-	s.auditAdmin("admin", getActorID(r), "backup", map[string]interface{}{"hash": fmt.Sprintf("%x", hash[:])})
+	s.auditAdmin(orgID, getActorID(r), "backup", map[string]interface{}{"hash": fmt.Sprintf("%x", hash[:])})
 }
 
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {

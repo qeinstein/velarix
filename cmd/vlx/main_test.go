@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestStatusCommandHitsHealthEndpoint(t *testing.T) {
+func TestCLI_RunStatus_HitsHealthEndpoint(t *testing.T) {
 	var hitPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hitPath = r.URL.Path
@@ -38,7 +38,7 @@ func TestStatusCommandHitsHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestSliceCommandBuildsQueryParameters(t *testing.T) {
+func TestCLI_RunSlice_BuildsQueryParameters(t *testing.T) {
 	var query string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		query = r.URL.RawQuery
@@ -81,7 +81,7 @@ func TestSliceCommandBuildsQueryParameters(t *testing.T) {
 	}
 }
 
-func TestReviewCommandPostsJSON(t *testing.T) {
+func TestCLI_RunReview_PostsJSON(t *testing.T) {
 	var authHeader string
 	var payload map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

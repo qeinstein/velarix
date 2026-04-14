@@ -36,13 +36,13 @@ type Config struct {
 	VelarixURL                string  `json:"velarix_url"`
 	BenchmarkDatasetPath      string  `json:"benchmark_dataset_path"`
 	OutputPath                string  `json:"output_path"`
-	Temperature               float64 `json:"temperature"`                 // must be 0.0 for all runs
+	Temperature               float64 `json:"temperature"` // must be 0.0 for all runs
 	MaxTokens                 int     `json:"max_tokens"`
 	AutoRetractContradictions bool    `json:"auto_retract_contradictions"`
-	RunsPerQuestion           int     `json:"runs_per_question"`           // minimum 2
+	RunsPerQuestion           int     `json:"runs_per_question"` // minimum 2
 	HedgeString               string  `json:"hedge_string"`
-	OpenAIAPIKey              string  `json:"openai_api_key,omitempty"`    // falls back to OPENAI_API_KEY env
-	OpenAIBaseURL             string  `json:"openai_base_url,omitempty"`   // falls back to VELARIX_OPENAI_BASE_URL env
+	OpenAIAPIKey              string  `json:"openai_api_key,omitempty"`  // falls back to OPENAI_API_KEY env
+	OpenAIBaseURL             string  `json:"openai_base_url,omitempty"` // falls back to VELARIX_OPENAI_BASE_URL env
 }
 
 func (c *Config) apiKey() string {
@@ -71,12 +71,12 @@ func (c *Config) hedgeString() string {
 
 // QuestionScore holds all individual run scores for one question on one path.
 type QuestionScore struct {
-	QuestionID       string    `json:"question_id"`
-	Dataset          string    `json:"dataset"`
-	Question         string    `json:"question"`
-	BaselineScores   []float64 `json:"baseline_scores"`
-	BaselineMean     float64   `json:"baseline_mean"`
-	BaselineStdDev   float64   `json:"baseline_std_dev"`
+	QuestionID            string    `json:"question_id"`
+	Dataset               string    `json:"dataset"`
+	Question              string    `json:"question"`
+	BaselineScores        []float64 `json:"baseline_scores"`
+	BaselineMean          float64   `json:"baseline_mean"`
+	BaselineStdDev        float64   `json:"baseline_std_dev"`
 	VelarixBaselineScores []float64 `json:"velarix_baseline_scores"`
 	VelarixBaselineMean   float64   `json:"velarix_baseline_mean"`
 	VelarixBaselineStdDev float64   `json:"velarix_baseline_std_dev"`
@@ -89,8 +89,8 @@ type QuestionScore struct {
 	VelarixFullMean   float64   `json:"velarix_full_mean"`
 	VelarixFullStdDev float64   `json:"velarix_full_std_dev"`
 
-	Flagged          bool      `json:"flagged_high_variance"` // std_dev >= 0.05
-	BaselineLatencyP50Ms int64 `json:"baseline_latency_p50_ms"`
+	Flagged                     bool  `json:"flagged_high_variance"` // std_dev >= 0.05
+	BaselineLatencyP50Ms        int64 `json:"baseline_latency_p50_ms"`
 	VelarixBaselineLatencyP50Ms int64 `json:"velarix_baseline_latency_p50_ms"`
 	VelarixStandardLatencyP50Ms int64 `json:"velarix_standard_latency_p50_ms"`
 	VelarixFullLatencyP50Ms     int64 `json:"velarix_full_latency_p50_ms"`
@@ -98,27 +98,27 @@ type QuestionScore struct {
 
 // AggregateStats summarises across all questions.
 type AggregateStats struct {
-	TotalQuestions           int     `json:"total_questions"`
-	BaselineMean             float64 `json:"baseline_mean"`
-	VelarixBaselineMean      float64 `json:"velarix_baseline_mean"`
-	VelarixStandardMean      float64 `json:"velarix_standard_mean"`
-	VelarixFullMean          float64 `json:"velarix_full_mean"`
-	ImprovementBaselineAbsolute float64 `json:"improvement_baseline_absolute"`
-	ImprovementBaselineRelative float64 `json:"improvement_baseline_relative_pct"`
-	ImprovementStandardAbsolute float64 `json:"improvement_standard_absolute"`
-	ImprovementStandardRelative float64 `json:"improvement_standard_relative_pct"`
-	ImprovementFullAbsolute     float64 `json:"improvement_full_absolute"`
-	ImprovementFullRelative     float64 `json:"improvement_full_relative_pct"`
-	FlaggedHighVariance      int     `json:"flagged_high_variance"`
-	ContradictionsDetectedBaseline int `json:"contradictions_detected_baseline"`
-	ContradictionsDetectedStandard int `json:"contradictions_detected_standard"`
-	ContradictionsDetectedFull     int `json:"contradictions_detected_full"`
-	AutoRetractionsBaseline        int `json:"auto_retractions_baseline"`
-	AutoRetractionsStandard        int `json:"auto_retractions_standard"`
-	AutoRetractionsFull            int `json:"auto_retractions_full"`
-	ExtractionFailuresBaseline     int `json:"extraction_failures_baseline"`
-	ExtractionFailuresStandard     int `json:"extraction_failures_standard"`
-	ExtractionFailuresFull         int `json:"extraction_failures_full"`
+	TotalQuestions                 int     `json:"total_questions"`
+	BaselineMean                   float64 `json:"baseline_mean"`
+	VelarixBaselineMean            float64 `json:"velarix_baseline_mean"`
+	VelarixStandardMean            float64 `json:"velarix_standard_mean"`
+	VelarixFullMean                float64 `json:"velarix_full_mean"`
+	ImprovementBaselineAbsolute    float64 `json:"improvement_baseline_absolute"`
+	ImprovementBaselineRelative    float64 `json:"improvement_baseline_relative_pct"`
+	ImprovementStandardAbsolute    float64 `json:"improvement_standard_absolute"`
+	ImprovementStandardRelative    float64 `json:"improvement_standard_relative_pct"`
+	ImprovementFullAbsolute        float64 `json:"improvement_full_absolute"`
+	ImprovementFullRelative        float64 `json:"improvement_full_relative_pct"`
+	FlaggedHighVariance            int     `json:"flagged_high_variance"`
+	ContradictionsDetectedBaseline int     `json:"contradictions_detected_baseline"`
+	ContradictionsDetectedStandard int     `json:"contradictions_detected_standard"`
+	ContradictionsDetectedFull     int     `json:"contradictions_detected_full"`
+	AutoRetractionsBaseline        int     `json:"auto_retractions_baseline"`
+	AutoRetractionsStandard        int     `json:"auto_retractions_standard"`
+	AutoRetractionsFull            int     `json:"auto_retractions_full"`
+	ExtractionFailuresBaseline     int     `json:"extraction_failures_baseline"`
+	ExtractionFailuresStandard     int     `json:"extraction_failures_standard"`
+	ExtractionFailuresFull         int     `json:"extraction_failures_full"`
 }
 
 // LatencyStats holds p50/p95/p99 in milliseconds.
@@ -130,26 +130,26 @@ type LatencyStats struct {
 
 // MethodologyBlock records reproducibility metadata.
 type MethodologyBlock struct {
-	Model         string `json:"model"`
-	Temperature   float64 `json:"temperature"`
-	Date          string `json:"date"`
-	Hardware      string `json:"hardware"`
-	VelarixVersion string `json:"velarix_version"`
-	GoVersion     string `json:"go_version"`
-	GOOS          string `json:"goos"`
-	GOARCH        string `json:"goarch"`
+	Model          string  `json:"model"`
+	Temperature    float64 `json:"temperature"`
+	Date           string  `json:"date"`
+	Hardware       string  `json:"hardware"`
+	VelarixVersion string  `json:"velarix_version"`
+	GoVersion      string  `json:"go_version"`
+	GOOS           string  `json:"goos"`
+	GOARCH         string  `json:"goarch"`
 }
 
 // Report is the full structured JSON output.
 type Report struct {
-	Methodology      MethodologyBlock `json:"methodology"`
-	Questions        []QuestionScore  `json:"questions"`
-	Aggregate        AggregateStats   `json:"aggregate"`
-	BaselineLatency  LatencyStats     `json:"baseline_latency"`
-	VelarixBaselineLatency LatencyStats `json:"velarix_baseline_latency"`
-	VelarixStandardLatency LatencyStats `json:"velarix_standard_latency"`
-	VelarixFullLatency     LatencyStats `json:"velarix_full_latency"`
-	GeneratedAt      string           `json:"generated_at"`
+	Methodology            MethodologyBlock `json:"methodology"`
+	Questions              []QuestionScore  `json:"questions"`
+	Aggregate              AggregateStats   `json:"aggregate"`
+	BaselineLatency        LatencyStats     `json:"baseline_latency"`
+	VelarixBaselineLatency LatencyStats     `json:"velarix_baseline_latency"`
+	VelarixStandardLatency LatencyStats     `json:"velarix_standard_latency"`
+	VelarixFullLatency     LatencyStats     `json:"velarix_full_latency"`
+	GeneratedAt            string           `json:"generated_at"`
 }
 
 // LoadConfig reads a JSON config file.
@@ -171,32 +171,21 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Run executes the full benchmark and returns a Report.
-func Run(ctx context.Context, cfg *Config) (*Report, error) {
-	slog.Info("Starting benchmark", "model", cfg.BaselineModel, "runs_per_question", cfg.RunsPerQuestion)
+type benchmarkRunner struct {
+	cfg *Config
+	agg *AggregateStats
 
-	truthfulQA, err := LoadTruthfulQA(filepath.Join(cfg.BenchmarkDatasetPath, "truthfulqa.csv"))
-	if err != nil {
-		return nil, fmt.Errorf("load TruthfulQA: %w", err)
-	}
-	haluEval, err := LoadHaluEval(filepath.Join(cfg.BenchmarkDatasetPath, "halueval_qa.json"))
-	if err != nil {
-		return nil, fmt.Errorf("load HaluEval: %w", err)
-	}
-	slog.Info("Datasets loaded", "truthfulqa", len(truthfulQA), "halueval", len(haluEval))
+	baselineLatencies        []int64
+	velarixBaselineLatencies []int64
+	velarixStandardLatencies []int64
+	velarixFullLatencies     []int64
 
-	report := &Report{
-		Methodology: buildMethodologyBlock(cfg),
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-	}
+	judgeCache      map[string]bool
+	velarixConfigs  map[string]*extractor.ExtractionConfig
+	velarixVariants []string
+}
 
-	agg := AggregateStats{}
-	var baselineLatencies []int64
-	var velarixBaselineLatencies []int64
-	var velarixStandardLatencies []int64
-	var velarixFullLatencies []int64
-	judgeCache := map[string]bool{}
-
+func newBenchmarkRunner(cfg *Config, agg *AggregateStats) *benchmarkRunner {
 	velarixConfigs := map[string]*extractor.ExtractionConfig{
 		"baseline": {
 			Tier:                       extractor.TierFullLLM,
@@ -238,138 +227,159 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 			EnableConsistencyPrecheck:  true,
 		},
 	}
-	velarixVariants := []string{"baseline", "standard", "full", "tier1_srl", "tier2_hybrid", "tier3_llm"}
-
-	processQuestion := func(qID, dataset, question string, scorer func(response string) float64) QuestionScore {
-		qs := QuestionScore{
-			QuestionID: qID,
-			Dataset:    dataset,
-			Question:   question,
-		}
-		var baselineQuestionLatencies []int64
-		var velarixBaselineQuestionLatencies []int64
-		var velarixStandardQuestionLatencies []int64
-		var velarixFullQuestionLatencies []int64
-
-		for run := 0; run < cfg.RunsPerQuestion; run++ {
-			// Baseline path.
-			bStart := time.Now()
-			bResp, bErr := callLLM(ctx, cfg, question)
-			bLatMs := time.Since(bStart).Milliseconds()
-			baselineLatencies = append(baselineLatencies, bLatMs)
-			baselineQuestionLatencies = append(baselineQuestionLatencies, bLatMs)
-
-			bScore := 0.0
-			if bErr == nil {
-				bScore = scorer(bResp)
-			} else {
-				slog.Warn("Baseline LLM call failed", "question_id", qID, "error", bErr)
-			}
-			qs.BaselineScores = append(qs.BaselineScores, bScore)
-
-			// Velarix path variants.
-			for _, name := range velarixVariants {
-				exCfg := velarixConfigs[name]
-				vStart := time.Now()
-				vResp, contradictions, retractions, extractErr := velarixPath(ctx, cfg, qID, run, name, bResp, exCfg)
-				vLatMs := time.Since(vStart).Milliseconds()
-
-				switch name {
-				case "baseline":
-					velarixBaselineLatencies = append(velarixBaselineLatencies, vLatMs)
-					velarixBaselineQuestionLatencies = append(velarixBaselineQuestionLatencies, vLatMs)
-				case "standard":
-					velarixStandardLatencies = append(velarixStandardLatencies, vLatMs)
-					velarixStandardQuestionLatencies = append(velarixStandardQuestionLatencies, vLatMs)
-				case "full":
-					velarixFullLatencies = append(velarixFullLatencies, vLatMs)
-					velarixFullQuestionLatencies = append(velarixFullQuestionLatencies, vLatMs)
-				}
-
-				scoreOrFallback := bScore
-				if extractErr != nil {
-					slog.Warn("Velarix path failed", "variant", name, "question_id", qID, "error", extractErr)
-					switch name {
-					case "baseline":
-						agg.ExtractionFailuresBaseline++
-					case "standard":
-						agg.ExtractionFailuresStandard++
-					case "full":
-						agg.ExtractionFailuresFull++
-					}
-				} else {
-					scoreOrFallback = scorer(vResp)
-				}
-
-				switch name {
-				case "baseline":
-					qs.VelarixBaselineScores = append(qs.VelarixBaselineScores, scoreOrFallback)
-					agg.ContradictionsDetectedBaseline += contradictions
-					agg.AutoRetractionsBaseline += retractions
-				case "standard":
-					qs.VelarixStandardScores = append(qs.VelarixStandardScores, scoreOrFallback)
-					agg.ContradictionsDetectedStandard += contradictions
-					agg.AutoRetractionsStandard += retractions
-				case "full":
-					qs.VelarixFullScores = append(qs.VelarixFullScores, scoreOrFallback)
-					agg.ContradictionsDetectedFull += contradictions
-					agg.AutoRetractionsFull += retractions
-				}
-			}
-		}
-
-		// Special handling for HaluEval: use judge for scoring.
-		if dataset == "halueval" {
-			for i, resp := range qs.BaselineScores {
-				_ = resp // already scored above
-				_ = i
-			}
-		}
-
-		qs.BaselineMean = mean(qs.BaselineScores)
-		qs.BaselineStdDev = stdDev(qs.BaselineScores)
-		qs.VelarixBaselineMean = mean(qs.VelarixBaselineScores)
-		qs.VelarixBaselineStdDev = stdDev(qs.VelarixBaselineScores)
-		qs.VelarixStandardMean = mean(qs.VelarixStandardScores)
-		qs.VelarixStandardStdDev = stdDev(qs.VelarixStandardScores)
-		qs.VelarixFullMean = mean(qs.VelarixFullScores)
-		qs.VelarixFullStdDev = stdDev(qs.VelarixFullScores)
-		qs.Flagged = qs.BaselineStdDev >= 0.05 ||
-			qs.VelarixBaselineStdDev >= 0.05 ||
-			qs.VelarixStandardStdDev >= 0.05 ||
-			qs.VelarixFullStdDev >= 0.05
-
-		if qs.Flagged {
-			slog.Warn("High-variance result — flagged for review",
-				"question_id", qID,
-				"baseline_std", qs.BaselineStdDev,
-				"velarix_baseline_std", qs.VelarixBaselineStdDev,
-				"velarix_standard_std", qs.VelarixStandardStdDev,
-				"velarix_full_std", qs.VelarixFullStdDev,
-			)
-			agg.FlaggedHighVariance++
-		}
-
-		qs.BaselineLatencyP50Ms = percentileFromLatencies(baselineQuestionLatencies, 50)
-		qs.VelarixBaselineLatencyP50Ms = percentileFromLatencies(velarixBaselineQuestionLatencies, 50)
-		qs.VelarixStandardLatencyP50Ms = percentileFromLatencies(velarixStandardQuestionLatencies, 50)
-		qs.VelarixFullLatencyP50Ms = percentileFromLatencies(velarixFullQuestionLatencies, 50)
-
-		return qs
+	return &benchmarkRunner{
+		cfg:             cfg,
+		agg:             agg,
+		judgeCache:      map[string]bool{},
+		velarixConfigs:  velarixConfigs,
+		velarixVariants: []string{"baseline", "standard", "full", "tier1_srl", "tier2_hybrid", "tier3_llm"},
 	}
+}
+
+func (r *benchmarkRunner) processQuestion(ctx context.Context, qID, dataset, question string, scorer func(response string) float64) QuestionScore {
+	qs := QuestionScore{
+		QuestionID: qID,
+		Dataset:    dataset,
+		Question:   question,
+	}
+	var baselineQuestionLatencies []int64
+	var velarixBaselineQuestionLatencies []int64
+	var velarixStandardQuestionLatencies []int64
+	var velarixFullQuestionLatencies []int64
+
+	for run := 0; run < r.cfg.RunsPerQuestion; run++ {
+		// Baseline path.
+		bStart := time.Now()
+		bResp, bErr := callLLM(ctx, r.cfg, question)
+		bLatMs := time.Since(bStart).Milliseconds()
+		r.baselineLatencies = append(r.baselineLatencies, bLatMs)
+		baselineQuestionLatencies = append(baselineQuestionLatencies, bLatMs)
+
+		bScore := 0.0
+		if bErr == nil {
+			bScore = scorer(bResp)
+		} else {
+			slog.Warn("Baseline LLM call failed", "question_id", qID, "error", bErr)
+		}
+		qs.BaselineScores = append(qs.BaselineScores, bScore)
+
+		// Velarix path variants.
+		for _, name := range r.velarixVariants {
+			exCfg := r.velarixConfigs[name]
+			vStart := time.Now()
+			vResp, contradictions, retractions, extractErr := velarixPath(ctx, r.cfg, qID, run, name, bResp, exCfg)
+			vLatMs := time.Since(vStart).Milliseconds()
+
+			switch name {
+			case "baseline":
+				r.velarixBaselineLatencies = append(r.velarixBaselineLatencies, vLatMs)
+				velarixBaselineQuestionLatencies = append(velarixBaselineQuestionLatencies, vLatMs)
+			case "standard":
+				r.velarixStandardLatencies = append(r.velarixStandardLatencies, vLatMs)
+				velarixStandardQuestionLatencies = append(velarixStandardQuestionLatencies, vLatMs)
+			case "full":
+				r.velarixFullLatencies = append(r.velarixFullLatencies, vLatMs)
+				velarixFullQuestionLatencies = append(velarixFullQuestionLatencies, vLatMs)
+			}
+
+			scoreOrFallback := bScore
+			if extractErr != nil {
+				slog.Warn("Velarix path failed", "variant", name, "question_id", qID, "error", extractErr)
+				switch name {
+				case "baseline":
+					r.agg.ExtractionFailuresBaseline++
+				case "standard":
+					r.agg.ExtractionFailuresStandard++
+				case "full":
+					r.agg.ExtractionFailuresFull++
+				}
+			} else {
+				scoreOrFallback = scorer(vResp)
+			}
+
+			switch name {
+			case "baseline":
+				qs.VelarixBaselineScores = append(qs.VelarixBaselineScores, scoreOrFallback)
+				r.agg.ContradictionsDetectedBaseline += contradictions
+				r.agg.AutoRetractionsBaseline += retractions
+			case "standard":
+				qs.VelarixStandardScores = append(qs.VelarixStandardScores, scoreOrFallback)
+				r.agg.ContradictionsDetectedStandard += contradictions
+				r.agg.AutoRetractionsStandard += retractions
+			case "full":
+				qs.VelarixFullScores = append(qs.VelarixFullScores, scoreOrFallback)
+				r.agg.ContradictionsDetectedFull += contradictions
+				r.agg.AutoRetractionsFull += retractions
+			}
+		}
+	}
+
+	qs.BaselineMean = mean(qs.BaselineScores)
+	qs.BaselineStdDev = stdDev(qs.BaselineScores)
+	qs.VelarixBaselineMean = mean(qs.VelarixBaselineScores)
+	qs.VelarixBaselineStdDev = stdDev(qs.VelarixBaselineScores)
+	qs.VelarixStandardMean = mean(qs.VelarixStandardScores)
+	qs.VelarixStandardStdDev = stdDev(qs.VelarixStandardScores)
+	qs.VelarixFullMean = mean(qs.VelarixFullScores)
+	qs.VelarixFullStdDev = stdDev(qs.VelarixFullScores)
+	qs.Flagged = qs.BaselineStdDev >= 0.05 ||
+		qs.VelarixBaselineStdDev >= 0.05 ||
+		qs.VelarixStandardStdDev >= 0.05 ||
+		qs.VelarixFullStdDev >= 0.05
+
+	if qs.Flagged {
+		slog.Warn("High-variance result — flagged for review",
+			"question_id", qID,
+			"baseline_std", qs.BaselineStdDev,
+			"velarix_baseline_std", qs.VelarixBaselineStdDev,
+			"velarix_standard_std", qs.VelarixStandardStdDev,
+			"velarix_full_std", qs.VelarixFullStdDev,
+		)
+		r.agg.FlaggedHighVariance++
+	}
+
+	qs.BaselineLatencyP50Ms = percentileFromLatencies(baselineQuestionLatencies, 50)
+	qs.VelarixBaselineLatencyP50Ms = percentileFromLatencies(velarixBaselineQuestionLatencies, 50)
+	qs.VelarixStandardLatencyP50Ms = percentileFromLatencies(velarixStandardQuestionLatencies, 50)
+	qs.VelarixFullLatencyP50Ms = percentileFromLatencies(velarixFullQuestionLatencies, 50)
+
+	return qs
+}
+
+// Run executes the full benchmark and returns a Report.
+func Run(ctx context.Context, cfg *Config) (*Report, error) {
+	slog.Info("Starting benchmark", "model", cfg.BaselineModel, "runs_per_question", cfg.RunsPerQuestion)
+
+	truthfulQA, err := LoadTruthfulQA(filepath.Join(cfg.BenchmarkDatasetPath, "truthfulqa.csv"))
+	if err != nil {
+		return nil, fmt.Errorf("load TruthfulQA: %w", err)
+	}
+	haluEval, err := LoadHaluEval(filepath.Join(cfg.BenchmarkDatasetPath, "halueval_qa.json"))
+	if err != nil {
+		return nil, fmt.Errorf("load HaluEval: %w", err)
+	}
+	slog.Info("Datasets loaded", "truthfulqa", len(truthfulQA), "halueval", len(haluEval))
+
+	report := &Report{
+		Methodology: buildMethodologyBlock(cfg),
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	agg := AggregateStats{}
+	runner := newBenchmarkRunner(cfg, &agg)
 
 	for i, q := range truthfulQA {
 		qID := fmt.Sprintf("tqa_%d", i)
 		scorer := truthfulQAScorer(q)
-		qs := processQuestion(qID, "truthfulqa", q.Question, scorer)
+		qs := runner.processQuestion(ctx, qID, "truthfulqa", q.Question, scorer)
 		report.Questions = append(report.Questions, qs)
 		slog.Info("TruthfulQA progress", "done", i+1, "total", len(truthfulQA))
 	}
 
 	for i, q := range haluEval {
 		qID := fmt.Sprintf("halu_%d", i)
-		scorer := haluEvalScorer(ctx, cfg, q, judgeCache)
-		qs := processQuestion(qID, "halueval", q.Question, scorer)
+		scorer := haluEvalScorer(ctx, cfg, q, runner.judgeCache)
+		qs := runner.processQuestion(ctx, qID, "halueval", q.Question, scorer)
 		report.Questions = append(report.Questions, qs)
 		slog.Info("HaluEval progress", "done", i+1, "total", len(haluEval))
 	}
@@ -409,10 +419,10 @@ func Run(ctx context.Context, cfg *Config) (*Report, error) {
 		agg.ImprovementFullAbsolute = agg.VelarixFullMean - agg.BaselineMean
 	}
 	report.Aggregate = agg
-	report.BaselineLatency = percentileStats(baselineLatencies)
-	report.VelarixBaselineLatency = percentileStats(velarixBaselineLatencies)
-	report.VelarixStandardLatency = percentileStats(velarixStandardLatencies)
-	report.VelarixFullLatency = percentileStats(velarixFullLatencies)
+	report.BaselineLatency = percentileStats(runner.baselineLatencies)
+	report.VelarixBaselineLatency = percentileStats(runner.velarixBaselineLatencies)
+	report.VelarixStandardLatency = percentileStats(runner.velarixStandardLatencies)
+	report.VelarixFullLatency = percentileStats(runner.velarixFullLatencies)
 
 	return report, nil
 }
@@ -459,7 +469,7 @@ func velarixPath(ctx context.Context, cfg *Config, questionID string, run int, v
 			Embedding      []float64              `json:"embedding"`
 			Payload        map[string]interface{} `json:"payload"`
 		} `json:"facts"`
-		ContradictionsFound    []string `json:"contradictions_found"`
+		ContradictionsFound     []string `json:"contradictions_found"`
 		ContradictionsRetracted []string `json:"contradictions_retracted"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -626,7 +636,7 @@ func haluEvalScorer(ctx context.Context, cfg *Config, q HaluEvalQuestion, cache 
 			return 1.0
 		}
 
-		judgPrompt := fmt.Sprintf(
+		judgePrompt := fmt.Sprintf(
 			`You are a hallucination judge. Given a question and an answer, decide if the answer contains hallucinations (factual claims not supported by the question or common knowledge).
 
 Question: %s
@@ -637,7 +647,7 @@ Respond ONLY with valid JSON: {"hallucinated": true} or {"hallucinated": false}`
 		judgeBody := map[string]interface{}{
 			"model":       cfg.BaselineModel,
 			"temperature": 0,
-			"messages":    []map[string]string{{"role": "user", "content": judgPrompt}},
+			"messages":    []map[string]string{{"role": "user", "content": judgePrompt}},
 			"max_tokens":  20,
 		}
 		payload, _ := json.Marshal(judgeBody)

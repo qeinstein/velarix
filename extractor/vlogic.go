@@ -16,101 +16,140 @@ var (
 	kindRegex   = regexp.MustCompile(`(?i)\bassertion_kind\s*:\s*(empirical|uncertain|hypothetical|fictional)\b`)
 )
 
+func parseVLogicConfidence(args string) float64 {
+	confidence := 0.9
+	match := confRegex.FindStringSubmatch(args)
+	if match == nil {
+		return confidence
+	}
+	parsed, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return confidence
+	}
+	return parsed
+}
+
+func parseVLogicAssertionKind(args string) string {
+	kind := "empirical"
+	match := kindRegex.FindStringSubmatch(args)
+	if match == nil {
+		return kind
+	}
+	return strings.ToLower(strings.TrimSpace(match[1]))
+}
+
+func parseCommaSeparatedList(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func validateUniqueID(id string, lineNumber int, seenIDs map[string]struct{}) error {
+	if _, ok := seenIDs[id]; ok {
+		return fmt.Errorf("line %d: duplicate ID '%s'", lineNumber, id)
+	}
+	seenIDs[id] = struct{}{}
+	return nil
+}
+
+func parseVLogicFactLine(line string, lineNumber int, seenIDs map[string]struct{}) (ExtractedFact, bool, error) {
+	match := factRegex.FindStringSubmatch(line)
+	if match == nil {
+		return ExtractedFact{}, false, nil
+	}
+
+	id := match[1]
+	if err := validateUniqueID(id, lineNumber, seenIDs); err != nil {
+		return ExtractedFact{}, true, err
+	}
+
+	claim := match[2]
+	args := match[3]
+
+	return ExtractedFact{
+		ID:            id,
+		Claim:         claim,
+		IsRoot:        true,
+		Confidence:    parseVLogicConfidence(args),
+		AssertionKind: parseVLogicAssertionKind(args),
+		SourceType:    "v-logic",
+		Polarity:      "positive",
+	}, true, nil
+}
+
+func parseVLogicDeriveLine(line string, lineNumber int, seenIDs map[string]struct{}) (ExtractedFact, bool, error) {
+	match := deriveRegex.FindStringSubmatch(line)
+	if match == nil {
+		return ExtractedFact{}, false, nil
+	}
+
+	id := match[1]
+	if err := validateUniqueID(id, lineNumber, seenIDs); err != nil {
+		return ExtractedFact{}, true, err
+	}
+
+	claim := match[2]
+	args := match[3]
+
+	var dependsOn []string
+	if reqMatch := reqRegex.FindStringSubmatch(line); reqMatch != nil {
+		dependsOn = append(dependsOn, parseCommaSeparatedList(reqMatch[1])...)
+	}
+	if rejMatch := rejRegex.FindStringSubmatch(line); rejMatch != nil {
+		for _, rej := range parseCommaSeparatedList(rejMatch[1]) {
+			dependsOn = append(dependsOn, "!"+rej)
+		}
+	}
+
+	return ExtractedFact{
+		ID:            id,
+		Claim:         claim,
+		IsRoot:        false,
+		Confidence:    0.9,
+		DependsOn:     dependsOn,
+		AssertionKind: parseVLogicAssertionKind(args),
+		SourceType:    "v-logic",
+		Polarity:      "positive",
+	}, true, nil
+}
+
 // ParseVLogic parses a V-Logic DSL script into ExtractedFacts.
 func ParseVLogic(script string) ([]ExtractedFact, error) {
 	lines := strings.Split(script, "\n")
 	var facts []ExtractedFact
-	seenIDs := make(map[string]bool)
+	seenIDs := make(map[string]struct{})
 
 	for i, line := range lines {
+		lineNumber := i + 1
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "//") {
 			continue
 		}
 
-		if match := factRegex.FindStringSubmatch(line); match != nil {
-			id := match[1]
-			claim := match[2]
-			args := match[3]
-
-			if seenIDs[id] {
-				return nil, fmt.Errorf("line %d: duplicate ID '%s'", i+1, id)
+		if fact, ok, err := parseVLogicFactLine(line, lineNumber, seenIDs); ok {
+			if err != nil {
+				return nil, err
 			}
-			seenIDs[id] = true
-
-			conf := 0.9
-			if m := confRegex.FindStringSubmatch(args); m != nil {
-				if c, err := strconv.ParseFloat(m[1], 64); err == nil {
-					conf = c
-				}
-			}
-			kind := "empirical"
-			if m := kindRegex.FindStringSubmatch(args); m != nil {
-				kind = strings.ToLower(strings.TrimSpace(m[1]))
-			}
-
-			facts = append(facts, ExtractedFact{
-				ID:            id,
-				Claim:         claim,
-				IsRoot:        true,
-				Confidence:    conf,
-				AssertionKind: kind,
-				SourceType:    "v-logic",
-				Polarity:      "positive",
-			})
+			facts = append(facts, fact)
 			continue
 		}
 
-		if match := deriveRegex.FindStringSubmatch(line); match != nil {
-			id := match[1]
-			claim := match[2]
-			args := match[3]
-
-			if seenIDs[id] {
-				return nil, fmt.Errorf("line %d: duplicate ID '%s'", i+1, id)
+		if fact, ok, err := parseVLogicDeriveLine(line, lineNumber, seenIDs); ok {
+			if err != nil {
+				return nil, err
 			}
-			seenIDs[id] = true
-
-			var dependsOn []string
-			if reqMatch := reqRegex.FindStringSubmatch(line); reqMatch != nil {
-				reqs := strings.Split(reqMatch[1], ",")
-				for _, req := range reqs {
-					req = strings.TrimSpace(req)
-					if req != "" {
-						dependsOn = append(dependsOn, req)
-					}
-				}
-			}
-
-			if rejMatch := rejRegex.FindStringSubmatch(line); rejMatch != nil {
-				rejs := strings.Split(rejMatch[1], ",")
-				for _, rej := range rejs {
-					rej = strings.TrimSpace(rej)
-					if rej != "" {
-						dependsOn = append(dependsOn, "!"+rej)
-					}
-				}
-			}
-
-			facts = append(facts, ExtractedFact{
-				ID:         id,
-				Claim:      claim,
-				IsRoot:     false,
-				Confidence: 0.9,
-				DependsOn:  dependsOn,
-				AssertionKind: func() string {
-					if m := kindRegex.FindStringSubmatch(args); m != nil {
-						return strings.ToLower(strings.TrimSpace(m[1]))
-					}
-					return "empirical"
-				}(),
-				SourceType: "v-logic",
-				Polarity:   "positive",
-			})
+			facts = append(facts, fact)
 			continue
 		}
 
-		return nil, fmt.Errorf("line %d: syntax error: %s", i+1, line)
+		return nil, fmt.Errorf("line %d: syntax error: %s", lineNumber, line)
 	}
 
 	return facts, nil

@@ -59,6 +59,75 @@ func uniqueIDs(values ...[]string) []string {
 	return uniqueSortedFactIDs(merged)
 }
 
+func (e *Engine) validateFactRefsUnsafe(factIDs []string) (missing []string, invalid []string) {
+	for _, factID := range factIDs {
+		fact, ok := e.Facts[factID]
+		if !ok {
+			missing = append(missing, factID)
+			continue
+		}
+		if e.effectiveStatusUnsafe(fact) < ConfidenceThreshold {
+			invalid = append(invalid, factID)
+		}
+	}
+	return missing, invalid
+}
+
+func addRetractCandidatesFromIssues(issues []ConsistencyIssue, outputFactID string, retractCandidates map[string]struct{}) {
+	for _, issue := range issues {
+		for _, factID := range issue.FactIDs {
+			if factID == outputFactID {
+				continue
+			}
+			retractCandidates[factID] = struct{}{}
+		}
+	}
+}
+
+func (e *Engine) auditReasoningStepUnsafe(step ReasoningStep, priorOutputIDs []string, retractCandidates map[string]struct{}) ReasoningStepAudit {
+	stepAudit := ReasoningStepAudit{
+		StepID:       step.ID,
+		Valid:        true,
+		OutputFactID: step.OutputFactID,
+	}
+
+	refIDs := uniqueIDs(step.EvidenceFactIDs, step.JustificationFactIDs, step.ContradictsFactIDs)
+	stepAudit.MissingFactIDs, stepAudit.InvalidFactIDs = e.validateFactRefsUnsafe(refIDs)
+	if len(stepAudit.MissingFactIDs) > 0 || len(stepAudit.InvalidFactIDs) > 0 {
+		stepAudit.Valid = false
+	}
+
+	if step.OutputFactID != "" {
+		missing, invalid := e.validateFactRefsUnsafe([]string{step.OutputFactID})
+		if len(missing) > 0 {
+			stepAudit.Valid = false
+			stepAudit.MissingFactIDs = append(stepAudit.MissingFactIDs, missing...)
+		}
+		if len(invalid) > 0 {
+			stepAudit.Valid = false
+			stepAudit.InvalidFactIDs = append(stepAudit.InvalidFactIDs, invalid...)
+		}
+
+		candidateIDs := append([]string{step.OutputFactID}, priorOutputIDs...)
+		issues := e.consistencyIssuesForIDsUnsafe(candidateIDs, false)
+		if len(issues) > 0 {
+			stepAudit.Valid = false
+			stepAudit.ConsistencyFindings = append(stepAudit.ConsistencyFindings, issues...)
+			addRetractCandidatesFromIssues(issues, step.OutputFactID, retractCandidates)
+		}
+
+		for _, contradictedID := range step.ContradictsFactIDs {
+			if _, ok := e.Facts[contradictedID]; ok {
+				retractCandidates[contradictedID] = struct{}{}
+			}
+		}
+	}
+
+	sort.Strings(stepAudit.MissingFactIDs)
+	sort.Strings(stepAudit.InvalidFactIDs)
+	return stepAudit
+}
+
 func (e *Engine) AuditReasoningChain(chain *ReasoningChain) *ReasoningAuditReport {
 	report := &ReasoningAuditReport{
 		ChainID:    "",
@@ -82,65 +151,15 @@ func (e *Engine) AuditReasoningChain(chain *ReasoningChain) *ReasoningAuditRepor
 	retractCandidates := map[string]struct{}{}
 
 	for _, step := range chain.Steps {
-		stepAudit := ReasoningStepAudit{
-			StepID:       step.ID,
-			Valid:        true,
-			OutputFactID: step.OutputFactID,
-		}
-
-		refIDs := uniqueIDs(step.EvidenceFactIDs, step.JustificationFactIDs, step.ContradictsFactIDs)
-		for _, factID := range refIDs {
-			fact, ok := e.Facts[factID]
-			if !ok {
-				stepAudit.Valid = false
-				stepAudit.MissingFactIDs = append(stepAudit.MissingFactIDs, factID)
-				continue
-			}
-			if e.effectiveStatusUnsafe(fact) < ConfidenceThreshold {
-				stepAudit.Valid = false
-				stepAudit.InvalidFactIDs = append(stepAudit.InvalidFactIDs, factID)
-			}
-		}
-
-		if step.OutputFactID != "" {
-			outputFact, ok := e.Facts[step.OutputFactID]
-			if !ok {
-				stepAudit.Valid = false
-				stepAudit.MissingFactIDs = append(stepAudit.MissingFactIDs, step.OutputFactID)
-			} else if e.effectiveStatusUnsafe(outputFact) < ConfidenceThreshold {
-				stepAudit.Valid = false
-				stepAudit.InvalidFactIDs = append(stepAudit.InvalidFactIDs, step.OutputFactID)
-			}
-
-			candidateIDs := append([]string{step.OutputFactID}, priorOutputIDs...)
-			issues := e.consistencyIssuesForIDsUnsafe(candidateIDs, false)
-			if len(issues) > 0 {
-				stepAudit.Valid = false
-				stepAudit.ConsistencyFindings = append(stepAudit.ConsistencyFindings, issues...)
-				report.Issues = append(report.Issues, issues...)
-				for _, issue := range issues {
-					for _, factID := range issue.FactIDs {
-						if factID != step.OutputFactID {
-							retractCandidates[factID] = struct{}{}
-						}
-					}
-				}
-			}
-
-			for _, contradictedID := range step.ContradictsFactIDs {
-				if _, ok := e.Facts[contradictedID]; ok {
-					retractCandidates[contradictedID] = struct{}{}
-				}
-			}
-			priorOutputIDs = append(priorOutputIDs, step.OutputFactID)
-		}
-
-		sort.Strings(stepAudit.MissingFactIDs)
-		sort.Strings(stepAudit.InvalidFactIDs)
+		stepAudit := e.auditReasoningStepUnsafe(step, priorOutputIDs, retractCandidates)
 		if !stepAudit.Valid {
 			report.Valid = false
 		}
 		report.StepAudits = append(report.StepAudits, stepAudit)
+		if step.OutputFactID != "" {
+			priorOutputIDs = append(priorOutputIDs, step.OutputFactID)
+			report.Issues = append(report.Issues, stepAudit.ConsistencyFindings...)
+		}
 	}
 
 	for factID := range retractCandidates {

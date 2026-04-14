@@ -40,11 +40,11 @@ const (
 //
 // When Tier is TierFullLLM (or when all optional stages are disabled), the
 // five-stage pipeline runs as before:
-//   1) Sentence selection (verifiable|hedged|discard)
-//   2) Coreference resolution + decontextualisation
-//   3) Atomic decomposition + TMS-constrained dependency inference
-//   4) Coverage verification (missed-claim recovery)
-//   5) Consistency pre-check
+//  1. Sentence selection (verifiable|hedged|discard)
+//  2. Coreference resolution + decontextualisation
+//  3. Atomic decomposition + TMS-constrained dependency inference
+//  4. Coverage verification (missed-claim recovery)
+//  5. Consistency pre-check
 //
 // Defaults:
 //   - Tier: TierSRL
@@ -68,12 +68,12 @@ type ExtractionConfig struct {
 	EnableCoverageVerification bool
 	EnableConsistencyPrecheck  bool
 
-	DependencyConfidenceThreshold           float64
-	DecontextualisationConfidenceThreshold  float64
-	CoverageConfidenceThreshold             float64
-	MaxDependencyCheckConcurrency           int
-	SelectionModel                          string
-	ExtractionModel                         string
+	DependencyConfidenceThreshold          float64
+	DecontextualisationConfidenceThreshold float64
+	CoverageConfidenceThreshold            float64
+	MaxDependencyCheckConcurrency          int
+	SelectionModel                         string
+	ExtractionModel                        string
 }
 
 func DefaultExtractionConfig() ExtractionConfig {
@@ -152,14 +152,14 @@ type ExtractionStats struct {
 	Stage3EdgesAccepted int `json:"stage3_edges_accepted"`
 	Stage3EdgesRejected int `json:"stage3_edges_rejected"`
 
-	Stage4MissedClaims int `json:"stage4_missed_claims"`
+	Stage4MissedClaims   int `json:"stage4_missed_claims"`
 	Stage5Contradictions int `json:"stage5_contradictions"`
 }
 
 type ExtractionResult struct {
-	Facts                    []ExtractedFact          `json:"facts"`
+	Facts                      []ExtractedFact         `json:"facts"`
 	PreAssertionContradictions []core.ConsistencyIssue `json:"pre_assertion_contradictions,omitempty"`
-	Stats                    ExtractionStats          `json:"stats"`
+	Stats                      ExtractionStats         `json:"stats"`
 }
 
 // LLMClient abstracts LLM calls so stages can be unit-tested with mocks.
@@ -246,9 +246,9 @@ func RunPipeline(ctx context.Context, llm LLMClient, llmOutput string, sessionCo
 	}
 
 	return &ExtractionResult{
-		Facts:                    facts,
+		Facts:                      facts,
 		PreAssertionContradictions: contradictions,
-		Stats:                    stats,
+		Stats:                      stats,
 	}, nil
 }
 
@@ -274,8 +274,101 @@ type SelectedSentence struct {
 }
 
 type Stage1Result struct {
-	Selected   []SelectedSentence
-	Discarded  []Stage1SelectionItem
+	Selected  []SelectedSentence
+	Discarded []Stage1SelectionItem
+}
+
+type stage1InputSentence struct {
+	SentenceIndex int    `json:"sentence_index"`
+	Sentence      string `json:"sentence"`
+}
+
+func stage1BuildInput(sentences []string) ([]stage1InputSentence, []byte) {
+	input := make([]stage1InputSentence, 0, len(sentences))
+	for i, s := range sentences {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		input = append(input, stage1InputSentence{SentenceIndex: i, Sentence: s})
+	}
+	inputJSON, _ := json.Marshal(input)
+	return input, inputJSON
+}
+
+func stage1BuildUserPrompt(sessionContext, llmOutput string, inputJSON []byte) string {
+	user := strings.Builder{}
+	if strings.TrimSpace(sessionContext) != "" {
+		user.WriteString("SESSION CONTEXT:\n")
+		user.WriteString(sessionContext)
+		user.WriteString("\n\n")
+	}
+	user.WriteString("FULL LLM OUTPUT:\n")
+	user.WriteString(llmOutput)
+	user.WriteString("\n\nSENTENCES (JSON):\n")
+	user.Write(inputJSON)
+	user.WriteString("\n\nClassify each sentence as:\n- verifiable\n- hedged\n- discard\n\nReturn ONLY a JSON array. Each element MUST have: sentence_index (int), sentence (string), category (string), reason (string).\nIf the sentence is clearly hypothetical or fictional, include assertion_kind as one of: hypothetical|fictional.\n")
+	return user.String()
+}
+
+func stage1KeepAllInput(input []stage1InputSentence, reason string) *Stage1Result {
+	out := make([]SelectedSentence, 0, len(input))
+	for _, s := range input {
+		out = append(out, SelectedSentence{
+			SentenceIndex:    s.SentenceIndex,
+			OriginalSentence: s.Sentence,
+			Category:         "verifiable",
+			Reason:           reason,
+		})
+	}
+	return &Stage1Result{Selected: out}
+}
+
+func stage1ResultFromItems(items []Stage1SelectionItem, input []stage1InputSentence) *Stage1Result {
+	byIndex := map[int]Stage1SelectionItem{}
+	for _, item := range items {
+		byIndex[item.SentenceIndex] = item
+	}
+
+	selected := []SelectedSentence{}
+	discarded := []Stage1SelectionItem{}
+	for _, s := range input {
+		item, ok := byIndex[s.SentenceIndex]
+		if !ok {
+			selected = append(selected, SelectedSentence{
+				SentenceIndex:    s.SentenceIndex,
+				OriginalSentence: s.Sentence,
+				Category:         "verifiable",
+				Reason:           "missing from stage1 output",
+			})
+			continue
+		}
+
+		category := strings.ToLower(strings.TrimSpace(item.Category))
+		kindHint := normalizeAssertionKind(item.AssertionKind)
+		if kindHint == "" {
+			kindHint = assertionKindHintFromText(item.Reason + " " + item.Sentence)
+		}
+
+		switch category {
+		case "verifiable", "hedged":
+			if category == "hedged" && kindHint == "" {
+				kindHint = core.AssertionKindUncertain
+			}
+			selected = append(selected, SelectedSentence{
+				SentenceIndex:     item.SentenceIndex,
+				OriginalSentence:  strings.TrimSpace(item.Sentence),
+				Category:          category,
+				Reason:            strings.TrimSpace(item.Reason),
+				AssertionKindHint: kindHint,
+			})
+		default:
+			discarded = append(discarded, item)
+			slog.Debug("stage1 discarded sentence", "sentence_index", item.SentenceIndex, "reason", item.Reason)
+		}
+	}
+
+	return &Stage1Result{Selected: selected, Discarded: discarded}
 }
 
 func Stage1SentenceSelection(ctx context.Context, llm LLMClient, llmOutput string, sessionContext string, cfg ExtractionConfig) (*Stage1Result, error) {
@@ -298,37 +391,14 @@ func Stage1SentenceSelection(ctx context.Context, llm LLMClient, llmOutput strin
 		return &Stage1Result{Selected: out}, nil
 	}
 
-	type inputSentence struct {
-		SentenceIndex int    `json:"sentence_index"`
-		Sentence      string `json:"sentence"`
-	}
-	input := make([]inputSentence, 0, len(sentences))
-	for i, s := range sentences {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		input = append(input, inputSentence{SentenceIndex: i, Sentence: s})
-	}
-	inputJSON, _ := json.Marshal(input)
-
-	user := strings.Builder{}
-	if strings.TrimSpace(sessionContext) != "" {
-		user.WriteString("SESSION CONTEXT:\n")
-		user.WriteString(sessionContext)
-		user.WriteString("\n\n")
-	}
-	user.WriteString("FULL LLM OUTPUT:\n")
-	user.WriteString(llmOutput)
-	user.WriteString("\n\nSENTENCES (JSON):\n")
-	user.Write(inputJSON)
-	user.WriteString("\n\nClassify each sentence as:\n- verifiable\n- hedged\n- discard\n\nReturn ONLY a JSON array. Each element MUST have: sentence_index (int), sentence (string), category (string), reason (string).\nIf the sentence is clearly hypothetical or fictional, include assertion_kind as one of: hypothetical|fictional.\n")
+	input, inputJSON := stage1BuildInput(sentences)
+	user := stage1BuildUserPrompt(sessionContext, llmOutput, inputJSON)
 
 	system := "STAGE 1 — Sentence Selection. Classify sentences for factual extraction."
 
 	raw, err := llm.Chat(ctx, cfg.SelectionModel, []ChatMessage{
 		{Role: "system", Content: system},
-		{Role: "user", Content: user.String()},
+		{Role: "user", Content: user},
 	})
 	if err != nil {
 		return nil, err
@@ -336,66 +406,10 @@ func Stage1SentenceSelection(ctx context.Context, llm LLMClient, llmOutput strin
 
 	var items []Stage1SelectionItem
 	if err := unmarshalLLMJSON(raw, &items); err != nil {
-		// Fallback: keep all sentences.
 		slog.Warn("stage1 selection parse failed; falling back to keep-all", "error", err)
-		out := make([]SelectedSentence, 0, len(input))
-		for _, s := range input {
-			out = append(out, SelectedSentence{
-				SentenceIndex:    s.SentenceIndex,
-				OriginalSentence: s.Sentence,
-				Category:         "verifiable",
-				Reason:           "fallback keep-all on parse failure",
-			})
-		}
-		return &Stage1Result{Selected: out}, nil
+		return stage1KeepAllInput(input, "fallback keep-all on parse failure"), nil
 	}
-
-	byIndex := map[int]Stage1SelectionItem{}
-	for _, item := range items {
-		byIndex[item.SentenceIndex] = item
-	}
-
-	selected := []SelectedSentence{}
-	discarded := []Stage1SelectionItem{}
-	for _, s := range input {
-		item, ok := byIndex[s.SentenceIndex]
-		if !ok {
-			// Missing entries are treated as verifiable.
-			selected = append(selected, SelectedSentence{
-				SentenceIndex:    s.SentenceIndex,
-				OriginalSentence: s.Sentence,
-				Category:         "verifiable",
-				Reason:           "missing from stage1 output",
-			})
-			continue
-		}
-
-		cat := strings.ToLower(strings.TrimSpace(item.Category))
-		kindHint := normalizeAssertionKind(item.AssertionKind)
-		// Best-effort parsing from reason if assertion_kind omitted.
-		if kindHint == "" {
-			kindHint = assertionKindHintFromText(item.Reason + " " + item.Sentence)
-		}
-
-		switch cat {
-		case "verifiable", "hedged":
-			if cat == "hedged" && kindHint == "" {
-				kindHint = core.AssertionKindUncertain
-			}
-			selected = append(selected, SelectedSentence{
-				SentenceIndex:     item.SentenceIndex,
-				OriginalSentence:  strings.TrimSpace(item.Sentence),
-				Category:          cat,
-				Reason:            strings.TrimSpace(item.Reason),
-				AssertionKindHint: kindHint,
-			})
-		default:
-			discarded = append(discarded, item)
-			slog.Debug("stage1 discarded sentence", "sentence_index", item.SentenceIndex, "reason", item.Reason)
-		}
-	}
-
-	return &Stage1Result{Selected: selected, Discarded: discarded}, nil
+	return stage1ResultFromItems(items, input), nil
 }
 
 func normalizeAssertionKind(kind string) string {
@@ -432,11 +446,11 @@ type Stage2Item struct {
 }
 
 type DecontextualisedSentence struct {
-	SentenceIndex         int
-	Original              string
-	Decontextualised      string
-	ForceUncertain        bool
-	AssertionKindHint     string
+	SentenceIndex     int
+	Original          string
+	Decontextualised  string
+	ForceUncertain    bool
+	AssertionKindHint string
 }
 
 type Stage2Result struct {
@@ -444,33 +458,29 @@ type Stage2Result struct {
 	UnresolvedRefs int
 }
 
-func Stage2Decontextualise(ctx context.Context, llm LLMClient, fullOutput string, selected []SelectedSentence, cfg ExtractionConfig) (*Stage2Result, error) {
-	if len(selected) == 0 {
-		return &Stage2Result{}, nil
-	}
+type stage2RewriteInput struct {
+	SentenceIndex int    `json:"sentence_index"`
+	Sentence      string `json:"sentence"`
+}
 
-	// If decontextualisation is disabled, pass through verbatim with high confidence.
-	if !cfg.EnableDecontextualisation {
-		out := make([]DecontextualisedSentence, 0, len(selected))
-		for _, s := range selected {
-			out = append(out, DecontextualisedSentence{
-				SentenceIndex:     s.SentenceIndex,
-				Original:          s.OriginalSentence,
-				Decontextualised:  s.OriginalSentence,
-				ForceUncertain:    false,
-				AssertionKindHint: s.AssertionKindHint,
-			})
-		}
-		return &Stage2Result{Sentences: out}, nil
-	}
-
-	type toRewrite struct {
-		SentenceIndex int    `json:"sentence_index"`
-		Sentence      string `json:"sentence"`
-	}
-	in := make([]toRewrite, 0, len(selected))
+func stage2Passthrough(selected []SelectedSentence, forceUncertain bool) *Stage2Result {
+	out := make([]DecontextualisedSentence, 0, len(selected))
 	for _, s := range selected {
-		in = append(in, toRewrite{SentenceIndex: s.SentenceIndex, Sentence: s.OriginalSentence})
+		out = append(out, DecontextualisedSentence{
+			SentenceIndex:     s.SentenceIndex,
+			Original:          s.OriginalSentence,
+			Decontextualised:  s.OriginalSentence,
+			ForceUncertain:    forceUncertain,
+			AssertionKindHint: s.AssertionKindHint,
+		})
+	}
+	return &Stage2Result{Sentences: out}
+}
+
+func stage2BuildUserPrompt(fullOutput string, selected []SelectedSentence) string {
+	in := make([]stage2RewriteInput, 0, len(selected))
+	for _, s := range selected {
+		in = append(in, stage2RewriteInput{SentenceIndex: s.SentenceIndex, Sentence: s.OriginalSentence})
 	}
 	inJSON, _ := json.Marshal(in)
 
@@ -480,34 +490,10 @@ func Stage2Decontextualise(ctx context.Context, llm LLMClient, fullOutput string
 	user.WriteString("\n\nSENTENCES TO DECONTEXTUALISE (JSON):\n")
 	user.Write(inJSON)
 	user.WriteString("\n\nRewrite each sentence so it is fully self-contained.\n- Resolve pronouns and implicit references using the full document context.\n- Preserve meaning exactly.\n- If a reference cannot be confidently resolved, list it in unresolved_references.\nReturn ONLY a JSON array with: sentence_index, original, decontextualised, unresolved_references (array), confidence (0.0-1.0).\n")
+	return user.String()
+}
 
-	system := "STAGE 2 — Coreference Resolution and Decontextualisation."
-
-	raw, err := llm.Chat(ctx, cfg.ExtractionModel, []ChatMessage{
-		{Role: "system", Content: system},
-		{Role: "user", Content: user.String()},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var items []Stage2Item
-	if err := unmarshalLLMJSON(raw, &items); err != nil {
-		// Fallback: pass through and force uncertain (since we failed to resolve).
-		slog.Warn("stage2 parse failed; falling back to passthrough uncertain", "error", err)
-		out := make([]DecontextualisedSentence, 0, len(selected))
-		for _, s := range selected {
-			out = append(out, DecontextualisedSentence{
-				SentenceIndex:     s.SentenceIndex,
-				Original:          s.OriginalSentence,
-				Decontextualised:  s.OriginalSentence,
-				ForceUncertain:    true,
-				AssertionKindHint: s.AssertionKindHint,
-			})
-		}
-		return &Stage2Result{Sentences: out}, nil
-	}
-
+func stage2ResultFromItems(items []Stage2Item, selected []SelectedSentence, cfg ExtractionConfig) *Stage2Result {
 	byIndex := map[int]Stage2Item{}
 	for _, item := range items {
 		byIndex[item.SentenceIndex] = item
@@ -538,7 +524,39 @@ func Stage2Decontextualise(ctx context.Context, llm LLMClient, fullOutput string
 		})
 	}
 
-	return &Stage2Result{Sentences: out, UnresolvedRefs: unresolvedCount}, nil
+	return &Stage2Result{Sentences: out, UnresolvedRefs: unresolvedCount}
+}
+
+func Stage2Decontextualise(ctx context.Context, llm LLMClient, fullOutput string, selected []SelectedSentence, cfg ExtractionConfig) (*Stage2Result, error) {
+	if len(selected) == 0 {
+		return &Stage2Result{}, nil
+	}
+
+	// If decontextualisation is disabled, pass through verbatim with high confidence.
+	if !cfg.EnableDecontextualisation {
+		return stage2Passthrough(selected, false), nil
+	}
+
+	user := stage2BuildUserPrompt(fullOutput, selected)
+
+	system := "STAGE 2 — Coreference Resolution and Decontextualisation."
+
+	raw, err := llm.Chat(ctx, cfg.ExtractionModel, []ChatMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: user},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var items []Stage2Item
+	if err := unmarshalLLMJSON(raw, &items); err != nil {
+		// Fallback: pass through and force uncertain (since we failed to resolve).
+		slog.Warn("stage2 parse failed; falling back to passthrough uncertain", "error", err)
+		return stage2Passthrough(selected, true), nil
+	}
+
+	return stage2ResultFromItems(items, selected, cfg), nil
 }
 
 // -------------------------------------------------------------
@@ -625,10 +643,10 @@ func Stage3AAtomicDecompose(ctx context.Context, llm LLMClient, sentences []Deco
 			}
 
 			out = append(out, AtomicFact{
-				ExtractedFact:        ef,
-				SourceSentenceIndex:  s.SentenceIndex,
-				ForceUncertain:       s.ForceUncertain,
-				AssertionKindHint:    s.AssertionKindHint,
+				ExtractedFact:       ef,
+				SourceSentenceIndex: s.SentenceIndex,
+				ForceUncertain:      s.ForceUncertain,
+				AssertionKindHint:   s.AssertionKindHint,
 			})
 		}
 	}
@@ -641,9 +659,9 @@ func Stage3AAtomicDecompose(ctx context.Context, llm LLMClient, sentences []Deco
 // ------------------------------------------------------------------
 
 type DependencyProposal struct {
-	ParentID     string
-	ChildID      string
-	Confidence   float64
+	ParentID      string
+	ChildID       string
+	Confidence    float64
 	Justification string
 }
 
@@ -654,36 +672,34 @@ type Stage3BStats struct {
 }
 
 type dependencyCheckResponse struct {
-	Depends      string  `json:"depends"`
-	Confidence   float64 `json:"confidence"`
-	Justification string `json:"justification"`
+	Depends       string  `json:"depends"`
+	Confidence    float64 `json:"confidence"`
+	Justification string  `json:"justification"`
 }
 
-func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interface{}, cfg ExtractionConfig) ([]ExtractedFact, Stage3BStats, error) {
+type dependencyCandidatePair struct {
+	Parent AtomicFact
+	Child  AtomicFact
+}
+
+func stage3BAtomicFactsFromInput(factsIn interface{}) ([]AtomicFact, error) {
 	// factsIn is []AtomicFact (from 3A) or []ExtractedFact (from stage 4 append)
-	var atomic []AtomicFact
 	switch v := factsIn.(type) {
 	case []AtomicFact:
-		atomic = v
+		return v, nil
 	case []ExtractedFact:
-		atomic = make([]AtomicFact, 0, len(v))
+		atomic := make([]AtomicFact, 0, len(v))
 		for _, f := range v {
 			atomic = append(atomic, AtomicFact{ExtractedFact: f})
 		}
+		return atomic, nil
 	default:
-		return nil, Stage3BStats{}, fmt.Errorf("stage3b: unsupported input type %T", factsIn)
+		return nil, fmt.Errorf("stage3b: unsupported input type %T", factsIn)
 	}
+}
 
-	if len(atomic) == 0 {
-		return nil, Stage3BStats{}, nil
-	}
-
-	// Candidate pruning by lexical overlap.
-	type pair struct {
-		Parent AtomicFact
-		Child  AtomicFact
-	}
-	pairs := make([]pair, 0, len(atomic)*2)
+func stage3BCandidatePairs(atomic []AtomicFact) []dependencyCandidatePair {
+	pairs := make([]dependencyCandidatePair, 0, len(atomic)*2)
 	for i := range atomic {
 		for j := range atomic {
 			if i == j {
@@ -694,10 +710,13 @@ func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interf
 			if !shouldCheckDependency(parent, child) {
 				continue
 			}
-			pairs = append(pairs, pair{Parent: parent, Child: child})
+			pairs = append(pairs, dependencyCandidatePair{Parent: parent, Child: child})
 		}
 	}
+	return pairs
+}
 
+func stage3BProposeDependencies(ctx context.Context, llm LLMClient, pairs []dependencyCandidatePair, cfg ExtractionConfig) ([]DependencyProposal, Stage3BStats, error) {
 	sem := make(chan struct{}, cfg.MaxDependencyCheckConcurrency)
 	var mu sync.Mutex
 	var proposals []DependencyProposal
@@ -710,7 +729,7 @@ func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interf
 			break
 		}
 		wg.Add(1)
-		go func(p pair) {
+		go func(p dependencyCandidatePair) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -748,9 +767,9 @@ func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interf
 
 			if strings.EqualFold(strings.TrimSpace(resp.Depends), "yes") && resp.Confidence >= cfg.DependencyConfidenceThreshold {
 				prop := DependencyProposal{
-					ParentID:     p.Parent.ID,
-					ChildID:      p.Child.ID,
-					Confidence:   resp.Confidence,
+					ParentID:      p.Parent.ID,
+					ChildID:       p.Child.ID,
+					Confidence:    resp.Confidence,
 					Justification: strings.TrimSpace(resp.Justification),
 				}
 				mu.Lock()
@@ -760,28 +779,21 @@ func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interf
 			}
 		}(p)
 	}
+
 	wg.Wait()
 	if firstErr != nil {
 		return nil, Stage3BStats{}, firstErr
 	}
+	return proposals, stats, nil
+}
 
-	// Sort proposals: highest confidence first for deterministic acceptance.
-	sort.Slice(proposals, func(i, j int) bool {
-		if proposals[i].Confidence == proposals[j].Confidence {
-			if proposals[i].ParentID == proposals[j].ParentID {
-				return proposals[i].ChildID < proposals[j].ChildID
-			}
-			return proposals[i].ParentID < proposals[j].ParentID
-		}
-		return proposals[i].Confidence > proposals[j].Confidence
-	})
-
-	// Validate edges via symbolic constraints (acyclic + assertable) using Engine.
+func stage3BAcceptProposals(atomic []AtomicFact, proposals []DependencyProposal) (map[string][]string, Stage3BStats) {
 	acceptedParents := map[string][]string{}
 	for _, f := range atomic {
 		acceptedParents[f.ID] = nil
 	}
 
+	var stats Stage3BStats
 	for _, prop := range proposals {
 		if prop.ParentID == prop.ChildID {
 			stats.Rejected++
@@ -800,7 +812,10 @@ func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interf
 		stats.Accepted++
 	}
 
-	// Build final extracted facts with depends_on/is_root.
+	return acceptedParents, stats
+}
+
+func stage3BBuildExtractedFacts(atomic []AtomicFact, acceptedParents map[string][]string) []ExtractedFact {
 	out := make([]ExtractedFact, 0, len(atomic))
 	for _, f := range atomic {
 		ef := f.ExtractedFact
@@ -809,12 +824,10 @@ func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interf
 		ef.IsRoot = len(parents) == 0
 		ef.SourceType = firstNonEmpty(ef.SourceType, "pipeline_stage3")
 
-		// Propagate assertion_kind from stage hints.
 		ak := normalizeAssertionKind(ef.AssertionKind)
 		if f.ForceUncertain {
 			ak = core.AssertionKindUncertain
 		} else if hint := normalizeAssertionKind(f.AssertionKindHint); hint != "" {
-			// Only override into hypothetical/fictional/uncertain scopes.
 			if hint == core.AssertionKindHypothetical || hint == core.AssertionKindFictional || hint == core.AssertionKindUncertain {
 				ak = hint
 			}
@@ -827,7 +840,6 @@ func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interf
 		out = append(out, ef)
 	}
 
-	// Stable ordering: roots first, then derived; within each, by ID.
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].IsRoot != out[j].IsRoot {
 			return out[i].IsRoot && !out[j].IsRoot
@@ -835,7 +847,42 @@ func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interf
 		return out[i].ID < out[j].ID
 	})
 
-	return out, stats, nil
+	return out
+}
+
+func Stage3BInferDependencies(ctx context.Context, llm LLMClient, factsIn interface{}, cfg ExtractionConfig) ([]ExtractedFact, Stage3BStats, error) {
+	atomic, err := stage3BAtomicFactsFromInput(factsIn)
+	if err != nil {
+		return nil, Stage3BStats{}, err
+	}
+
+	if len(atomic) == 0 {
+		return nil, Stage3BStats{}, nil
+	}
+
+	// Candidate pruning by lexical overlap.
+	pairs := stage3BCandidatePairs(atomic)
+	proposals, stats, err := stage3BProposeDependencies(ctx, llm, pairs, cfg)
+	if err != nil {
+		return nil, Stage3BStats{}, err
+	}
+
+	// Sort proposals: highest confidence first for deterministic acceptance.
+	sort.Slice(proposals, func(i, j int) bool {
+		if proposals[i].Confidence == proposals[j].Confidence {
+			if proposals[i].ParentID == proposals[j].ParentID {
+				return proposals[i].ChildID < proposals[j].ChildID
+			}
+			return proposals[i].ParentID < proposals[j].ParentID
+		}
+		return proposals[i].Confidence > proposals[j].Confidence
+	})
+
+	// Validate edges via symbolic constraints (acyclic + assertable) using Engine.
+	acceptedParents, acceptStats := stage3BAcceptProposals(atomic, proposals)
+	stats.Accepted += acceptStats.Accepted
+	stats.Rejected += acceptStats.Rejected
+	return stage3BBuildExtractedFacts(atomic, acceptedParents), stats, nil
 }
 
 func validateDependencyGraphWithEngine(facts []AtomicFact, parents map[string][]string) error {
@@ -953,32 +1000,28 @@ func shouldCheckDependency(parent AtomicFact, child AtomicFact) bool {
 // ---------------------------------------
 
 type coverageMiss struct {
-	MissedClaim   string      `json:"missed_claim"`
+	MissedClaim   string       `json:"missed_claim"`
 	SuggestedFact Atomic5Tuple `json:"suggested_fact"`
-	Confidence    float64     `json:"confidence"`
+	Confidence    float64      `json:"confidence"`
 }
 
 type Stage4Stats struct {
 	MissedClaims int
 }
 
-func Stage4CoverageVerification(ctx context.Context, llm LLMClient, originalOutput string, facts []ExtractedFact, cfg ExtractionConfig) ([]ExtractedFact, Stage4Stats, error) {
-	if !cfg.EnableCoverageVerification {
-		return facts, Stage4Stats{}, nil
-	}
-	if strings.TrimSpace(originalOutput) == "" {
-		return facts, Stage4Stats{}, nil
-	}
-
-	var factSummaries []string
+func stage4FactSummaries(facts []ExtractedFact) []string {
+	out := make([]string, 0, len(facts))
 	for _, f := range facts {
 		if strings.TrimSpace(f.Claim) != "" {
-			factSummaries = append(factSummaries, fmt.Sprintf("- %s (%s)", strings.TrimSpace(f.Claim), f.ID))
+			out = append(out, fmt.Sprintf("- %s (%s)", strings.TrimSpace(f.Claim), f.ID))
 			continue
 		}
-		factSummaries = append(factSummaries, fmt.Sprintf("- %s/%s/%s (%s)", f.Subject, f.Predicate, f.Object, f.ID))
+		out = append(out, fmt.Sprintf("- %s/%s/%s (%s)", f.Subject, f.Predicate, f.Object, f.ID))
 	}
+	return out
+}
 
+func stage4UserPrompt(originalOutput string, factSummaries []string) string {
 	user := strings.Builder{}
 	user.WriteString("Find any verifiable claim in the ORIGINAL text that is NOT covered by the extracted facts summary.\n")
 	user.WriteString("Return ONLY a JSON array. Each element MUST have:\n")
@@ -987,22 +1030,10 @@ func Stage4CoverageVerification(ctx context.Context, llm LLMClient, originalOutp
 	user.WriteString(originalOutput)
 	user.WriteString("\n\nEXTRACTED FACTS SUMMARY:\n")
 	user.WriteString(strings.Join(factSummaries, "\n"))
+	return user.String()
+}
 
-	raw, err := llm.Chat(ctx, cfg.ExtractionModel, []ChatMessage{
-		{Role: "system", Content: "STAGE 4 — Coverage Verification Pass."},
-		{Role: "user", Content: user.String()},
-	})
-	if err != nil {
-		return nil, Stage4Stats{}, err
-	}
-
-	var missed []coverageMiss
-	if err := unmarshalLLMJSON(raw, &missed); err != nil {
-		// Coverage is best-effort; parse failures should not fail extraction.
-		slog.Warn("stage4 parse failed; skipping coverage append", "error", err)
-		return facts, Stage4Stats{}, nil
-	}
-
+func stage4AppendCoverageMisses(facts []ExtractedFact, missed []coverageMiss, cfg ExtractionConfig) ([]ExtractedFact, Stage4Stats) {
 	existingIDs := map[string]struct{}{}
 	for _, f := range facts {
 		existingIDs[f.ID] = struct{}{}
@@ -1040,7 +1071,36 @@ func Stage4CoverageVerification(ctx context.Context, llm LLMClient, originalOutp
 		})
 	}
 
-	return facts, stats, nil
+	return facts, stats
+}
+
+func Stage4CoverageVerification(ctx context.Context, llm LLMClient, originalOutput string, facts []ExtractedFact, cfg ExtractionConfig) ([]ExtractedFact, Stage4Stats, error) {
+	if !cfg.EnableCoverageVerification {
+		return facts, Stage4Stats{}, nil
+	}
+	if strings.TrimSpace(originalOutput) == "" {
+		return facts, Stage4Stats{}, nil
+	}
+
+	factSummaries := stage4FactSummaries(facts)
+	user := stage4UserPrompt(originalOutput, factSummaries)
+
+	raw, err := llm.Chat(ctx, cfg.ExtractionModel, []ChatMessage{
+		{Role: "system", Content: "STAGE 4 — Coverage Verification Pass."},
+		{Role: "user", Content: user},
+	})
+	if err != nil {
+		return nil, Stage4Stats{}, err
+	}
+
+	var missed []coverageMiss
+	if err := unmarshalLLMJSON(raw, &missed); err != nil {
+		// Coverage is best-effort; parse failures should not fail extraction.
+		slog.Warn("stage4 parse failed; skipping coverage append", "error", err)
+		return facts, Stage4Stats{}, nil
+	}
+	updated, stats := stage4AppendCoverageMisses(facts, missed, cfg)
+	return updated, stats, nil
 }
 
 // ---------------------------------

@@ -102,7 +102,7 @@ func TestEngine_SearchSimilarFacts(t *testing.T) {
 	e := NewEngine()
 	e.AssertFact(&Fact{ID: "f1", IsRoot: true, ManualStatus: Valid, Payload: map[string]interface{}{"text": "apple banana"}})
 	e.AssertFact(&Fact{ID: "f2", IsRoot: true, ManualStatus: Invalid, Payload: map[string]interface{}{"text": "apple cherry"}})
-	
+
 	matches := e.SearchSimilarFacts("apple", 0, false)
 	if len(matches) != 2 {
 		t.Errorf("expected 2 matches, got %d", len(matches))

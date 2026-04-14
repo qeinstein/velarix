@@ -1,7 +1,8 @@
-import json
 import os
 import sys
 from unittest.mock import MagicMock
+
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -44,8 +45,7 @@ class FakeToolCapableModel:
 
 def test_langchain_wrapper_injects_runtime_and_persists():
     if AIMessage is None or HumanMessage is None:
-        print("SKIP: LangChain dependencies not installed")
-        return
+        pytest.skip("LangChain dependencies not installed")
 
     mock_session = MagicMock(spec=VelarixSession)
     mock_session.get_slice.return_value = "## Fact: LC1\n```json\n{}\n```"
@@ -72,9 +72,3 @@ def test_langchain_wrapper_injects_runtime_and_persists():
     assert observe_args[1]["_provenance"]["source"] == "langchain_adapter"
     assert observe_kwargs.get("confidence", observe_args[2] if len(observe_args) > 2 else None) == 0.75
     assert mock_session.append_history.call_args.kwargs["fact_id"] == "lc_obs"
-
-    print("PASS: test_langchain_wrapper_injects_runtime_and_persists")
-
-
-if __name__ == "__main__":
-    test_langchain_wrapper_injects_runtime_and_persists()

@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestSplitSentences(t *testing.T) {
+func TestSplitSentences_ThreeSentences_SplitsAsExpected(t *testing.T) {
 	input := "Hello world. How are you? I am fine!"
 	sentences := splitSentences(input)
 	if len(sentences) != 3 {
@@ -21,7 +21,7 @@ func TestSplitSentences(t *testing.T) {
 	}
 }
 
-func TestMean(t *testing.T) {
+func TestMean_Inputs_ReturnExpectedValues(t *testing.T) {
 	scores := []float64{1.0, 2.0, 3.0}
 	if mean(scores) != 2.0 {
 		t.Error("expected 2.0")
@@ -31,17 +31,20 @@ func TestMean(t *testing.T) {
 	}
 }
 
-func TestStdDev(t *testing.T) {
+func TestStdDev_Sample_ReturnsNonZero(t *testing.T) {
 	scores := []float64{2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0}
 	if stdDev(scores) == 0.0 {
 		t.Error("expected non-zero stdDev")
 	}
+}
+
+func TestStdDev_SingleValue_ReturnsZero(t *testing.T) {
 	if stdDev([]float64{1.0}) != 0.0 {
 		t.Error("expected 0.0 for single item")
 	}
 }
 
-func TestPercentile(t *testing.T) {
+func TestPercentile_P50_ReturnsMedian(t *testing.T) {
 	latencies := []int64{10, 20, 30, 40, 50}
 	p := percentile(latencies, 50)
 	if p != 30 {

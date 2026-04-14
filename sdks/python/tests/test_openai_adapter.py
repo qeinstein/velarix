@@ -1,50 +1,64 @@
-import sys
-import os
 import json
+import os
+import sys
 from unittest.mock import MagicMock, patch
 
 # Add the SDK path to sys.path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from velarix.adapters.openai import OpenAI
 from velarix.client import VelarixSession
 
-def test_openai_interceptor_parallel_calls():
-    # Mock Velarix Session
+
+def _make_mock_session() -> MagicMock:
     mock_session = MagicMock(spec=VelarixSession)
     mock_session.get_slice.return_value = "## Fact: F1\n```json\n{}\n```"
     mock_session.observe.return_value = {}
     mock_session.derive.return_value = {}
     mock_session.append_history.return_value = {}
     mock_session.consistency_check.return_value = {"issue_count": 0, "issues": []}
-    
-    # Mock Velarix Client
+    return mock_session
+
+
+def _make_mock_client(session: MagicMock) -> MagicMock:
     mock_client = MagicMock()
-    mock_client.session.return_value = mock_session
+    mock_client.session.return_value = session
     mock_client.headers = {}
-    
-    with patch('openai.resources.chat.completions.Completions.create') as mock_create:
-        # 1. Setup Mocked OpenAI Response with 2 parallel tool calls
-        mock_response = MagicMock()
-        mock_tool_call_1 = MagicMock()
-        mock_tool_call_1.id = "call_1"
-        mock_tool_call_1.function.name = "record_observation"
-        mock_tool_call_1.function.arguments = json.dumps({"id": "obs_1", "payload": {"data": "A"}})
-        
-        mock_tool_call_2 = MagicMock()
-        mock_tool_call_2.id = "call_2"
-        mock_tool_call_2.function.name = "record_observation"
-        mock_tool_call_2.function.arguments = json.dumps({
-            "id": "obs_2", 
-            "payload": {"data": "B"},
-            "justifications": [["obs_1"]]
-        })
-        
-        mock_response.model = "gpt-4o"
-        mock_response.created = 123
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.tool_calls = [mock_tool_call_1, mock_tool_call_2]
-        mock_create.return_value = mock_response
+    return mock_client
+
+
+def _make_tool_call(call_id: str, name: str, args: dict) -> MagicMock:
+    tool_call = MagicMock()
+    tool_call.id = call_id
+    tool_call.function.name = name
+    tool_call.function.arguments = json.dumps(args)
+    return tool_call
+
+
+def _make_openai_response(tool_calls: list) -> MagicMock:
+    response = MagicMock()
+    response.model = "gpt-4o"
+    response.created = 123
+    response.choices = [MagicMock()]
+    response.choices[0].message.tool_calls = tool_calls
+    return response
+
+
+def test_openai_interceptor_parallel_calls_injects_protocol_and_persists_tool_calls():
+    mock_session = _make_mock_session()
+    mock_client = _make_mock_client(mock_session)
+
+    with patch("openai.resources.chat.completions.Completions.create") as mock_create:
+        mock_create.return_value = _make_openai_response(
+            [
+                _make_tool_call("call_1", "record_observation", {"id": "obs_1", "payload": {"data": "A"}}),
+                _make_tool_call(
+                    "call_2",
+                    "record_observation",
+                    {"id": "obs_2", "payload": {"data": "B"}, "justifications": [["obs_1"]]},
+                ),
+            ]
+        )
 
         # 2. Execute Intercepted Call
         client = OpenAI(api_key="sk-test", velarix_api_key="vx-test", velarix_session_id="test-session")
@@ -75,9 +89,9 @@ def test_openai_interceptor_parallel_calls():
         assert derive_args[0] == "obs_2"
         assert derive_args[1] == [["obs_1"]]
 
-        print("PASS: test_openai_interceptor_parallel_calls")
 
-def test_openai_overconfidence_downgrade():
+
+def test_openai_overconfidence_downgrade_writes_confidence_adjusted_history():
     # Mock Velarix Session
     mock_session = MagicMock(spec=VelarixSession)
     mock_session.observe.return_value = {}
@@ -122,9 +136,9 @@ def test_openai_overconfidence_downgrade():
         assert history_args[1]["original"] == 0.99
         assert history_kwargs["fact_id"] == "too_confident"
 
-        print("PASS: test_openai_overconfidence_downgrade")
 
-def test_openai_provenance_injection():
+
+def test_openai_provenance_injection_adds_provenance_to_observed_payload():
     # Mock Session
     mock_session = MagicMock(spec=VelarixSession)
     mock_session.get_slice.return_value = "## Fact: F1\n```json\n{}\n```"
@@ -170,9 +184,9 @@ def test_openai_provenance_injection():
         assert payload["city"] == "New York"
         assert mock_session.append_history.call_args.kwargs["fact_id"] == "prov_test"
 
-        print("PASS: test_openai_provenance_injection")
 
-def test_openai_verify_revise_loop():
+
+def test_openai_verify_revise_loop_retries_until_verification_passes_or_rounds_exhaust():
     mock_session = MagicMock(spec=VelarixSession)
     mock_session.get_slice.return_value = "## Fact: F1\n```json\n{}\n```"
     mock_session.observe.return_value = {}
@@ -214,7 +228,6 @@ def test_openai_verify_revise_loop():
         _, second_kwargs = mock_create.call_args_list[1]
         assert any("Velarix verification failed" in msg["content"] for msg in second_kwargs["messages"] if msg["role"] == "user")
 
-        print("PASS: test_openai_verify_revise_loop")
 
 if __name__ == "__main__":
     test_openai_interceptor_parallel_calls()

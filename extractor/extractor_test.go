@@ -43,13 +43,13 @@ func newJSONServer(t *testing.T, status int, body []byte) *httptest.Server {
 func TestExtract_CorrectVLogicParsing(t *testing.T) {
 	vlogic := `fact paris-capital: "Paris is the capital of France" (confidence: 0.95)
 fact france-europe: "France is located in Europe" (confidence: 0.90)`
-	
+
 	srv := newJSONServer(t, http.StatusOK, chatCompletionBody(vlogic))
 
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	cfg := &extractor.ExtractionConfig{Tier: extractor.TierFullLLM, EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
 	res, err := extractor.Extract(context.Background(),
 		"Paris is the capital of France and is located in Europe.", "", cfg)
 	if err != nil {
@@ -59,7 +59,7 @@ fact france-europe: "France is located in Europe" (confidence: 0.90)`
 	if len(got) != 2 {
 		t.Fatalf("expected 2 facts, got %d", len(got))
 	}
-	
+
 	// Topological sort preserves order if independent, but we just verify they exist
 	if got[0].ID != "paris-capital" && got[1].ID != "paris-capital" {
 		t.Errorf("missing paris-capital fact")
@@ -77,7 +77,7 @@ func TestExtract_CorrectVLogicParsing_MarkdownFences(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	cfg := &extractor.ExtractionConfig{Tier: extractor.TierFullLLM, EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
 	res, err := extractor.Extract(context.Background(), "The sky is blue.", "", cfg)
 	if err != nil {
 		t.Fatalf("expected fences to be stripped; got error: %v", err)
@@ -198,7 +198,7 @@ func TestExtract_TimeoutError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	cfg := &extractor.ExtractionConfig{Tier: extractor.TierFullLLM, EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
 	_, err := extractor.Extract(ctx, "some text", "", cfg)
 	if err == nil {
 		t.Fatal("expected error on cancelled context, got nil")
@@ -229,7 +229,7 @@ func TestExtract_Non200Response(t *testing.T) {
 			t.Setenv("OPENAI_API_KEY", "test-key")
 			t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-			cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+			cfg := &extractor.ExtractionConfig{Tier: extractor.TierFullLLM, EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
 			_, err := extractor.Extract(context.Background(), "some text", "", cfg)
 			if err == nil {
 				t.Fatalf("expected error for HTTP %d, got nil", tc.status)
@@ -255,7 +255,7 @@ fact water-is-h2o: "Water is composed of H2O" (confidence: 0.99)`
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	cfg := &extractor.ExtractionConfig{Tier: extractor.TierFullLLM, EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
 	res, err := extractor.Extract(context.Background(),
 		"Water boils at 100 degrees Celsius, freezes at 0 degrees Celsius, and is composed of H2O.",
 		"", cfg)
@@ -271,7 +271,7 @@ fact water-is-h2o: "Water is composed of H2O" (confidence: 0.99)`
 func TestExtract_MissingAPIKey(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 
-	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	cfg := &extractor.ExtractionConfig{Tier: extractor.TierFullLLM, EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
 	_, err := extractor.Extract(context.Background(), "any text", "", cfg)
 	if err == nil {
 		t.Fatal("expected error when API key is missing, got nil")
@@ -310,7 +310,7 @@ func TestExtract_SessionContextPrefixed(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
-	cfg := &extractor.ExtractionConfig{EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
+	cfg := &extractor.ExtractionConfig{Tier: extractor.TierFullLLM, EnableSelection: false, EnableDecontextualisation: false, EnableCoverageVerification: false, EnableConsistencyPrecheck: false}
 	_, _ = extractor.Extract(context.Background(), "the llm output text", "domain: medical", cfg)
 
 	if !strings.Contains(capturedUserMsg, "domain: medical") {

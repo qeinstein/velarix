@@ -80,6 +80,91 @@ func dependencyConfidence(status Status, negated bool) Status {
 	return Valid - status
 }
 
+func effectiveAssertionKind(f *Fact) string {
+	if f == nil {
+		return AssertionKindEmpirical
+	}
+	kind := strings.TrimSpace(f.AssertionKind)
+	if kind == "" {
+		return AssertionKindEmpirical
+	}
+	return kind
+}
+
+func dependencyScopeSatisfied(parent *Fact, childScope string) bool {
+	if parent == nil {
+		return true
+	}
+	parentScope := effectiveAssertionKind(parent)
+	if (parentScope == AssertionKindFictional || parentScope == AssertionKindHypothetical) &&
+		(childScope == AssertionKindEmpirical || childScope == AssertionKindUncertain) {
+		return false
+	}
+	return true
+}
+
+func int64FromMetadata(m map[string]interface{}, key string) int64 {
+	if m == nil {
+		return 0
+	}
+	raw, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch v := raw.(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return 0
+		}
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func dependencyGroundingSatisfied(parent *Fact, child *Fact) bool {
+	if child == nil || child.Metadata == nil {
+		return true
+	}
+
+	allowedSourceTypes := mapStringSlice(child.Metadata, "grounding_allowed_source_types")
+	if len(allowedSourceTypes) > 0 && parent != nil {
+		sourceType := FactSourceType(parent)
+		allowed := false
+		for _, candidate := range allowedSourceTypes {
+			if strings.EqualFold(candidate, sourceType) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+
+	if MetadataBool(child.Metadata, "grounding_require_verified") && parent != nil {
+		if FactVerificationStatus(parent) != VerificationVerified {
+			return false
+		}
+	}
+
+	maxAgeSeconds := int64FromMetadata(child.Metadata, "grounding_max_age_seconds")
+	if maxAgeSeconds > 0 && parent != nil && parent.AssertedAt > 0 {
+		if time.Now().UnixMilli()-parent.AssertedAt > maxAgeSeconds*1000 {
+			return false
+		}
+	}
+
+	return true
+}
+
 // dependencySatisfied resolves whether a dependency is satisfied,
 // taking into account AssertionKind scoping rules.
 //
@@ -93,77 +178,15 @@ func dependencySatisfied(parent *Fact, parentStatus Status, negated bool, child 
 		return parentStatus < ConfidenceThreshold
 	}
 
-	// Treat "" as empirical scope.
-	childScope := AssertionKindEmpirical
-	if child != nil && strings.TrimSpace(child.AssertionKind) != "" {
-		childScope = strings.TrimSpace(child.AssertionKind)
-	}
-
-	if parent != nil {
-		parentScope := strings.TrimSpace(parent.AssertionKind)
-		if parentScope == "" {
-			parentScope = AssertionKindEmpirical
-		}
-		if (parentScope == AssertionKindFictional || parentScope == AssertionKindHypothetical) &&
-			(childScope == AssertionKindEmpirical || childScope == AssertionKindUncertain) {
-			return false
-		}
+	childScope := effectiveAssertionKind(child)
+	if !dependencyScopeSatisfied(parent, childScope) {
+		return false
 	}
 
 	// Grounding policy: execution-critical / action facts can enforce stronger
 	// provenance+verification requirements on their dependencies.
-	if child != nil && child.Metadata != nil {
-		allowed, _ := child.Metadata["grounding_allowed_source_types"].([]string)
-		if len(allowed) == 0 {
-			// Handle []interface{} from JSON decode.
-			if raw, ok := child.Metadata["grounding_allowed_source_types"].([]interface{}); ok {
-				for _, item := range raw {
-					if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
-						allowed = append(allowed, strings.TrimSpace(s))
-					}
-				}
-			}
-		}
-		if len(allowed) > 0 && parent != nil {
-			st := FactSourceType(parent)
-			ok := false
-			for _, a := range allowed {
-				if strings.EqualFold(strings.TrimSpace(a), st) {
-					ok = true
-					break
-				}
-			}
-			if !ok {
-				return false
-			}
-		}
-
-		if MetadataBool(child.Metadata, "grounding_require_verified") && parent != nil {
-			if FactVerificationStatus(parent) != VerificationVerified {
-				return false
-			}
-		}
-
-		maxAgeSeconds := int64(0)
-		if raw, ok := child.Metadata["grounding_max_age_seconds"]; ok {
-			switch v := raw.(type) {
-			case float64:
-				maxAgeSeconds = int64(v)
-			case int64:
-				maxAgeSeconds = v
-			case int:
-				maxAgeSeconds = int64(v)
-			case string:
-				if parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
-					maxAgeSeconds = parsed
-				}
-			}
-		}
-		if maxAgeSeconds > 0 && parent != nil && parent.AssertedAt > 0 {
-			if time.Now().UnixMilli()-parent.AssertedAt > maxAgeSeconds*1000 {
-				return false
-			}
-		}
+	if !dependencyGroundingSatisfied(parent, child) {
+		return false
 	}
 
 	return parentStatus >= ConfidenceThreshold

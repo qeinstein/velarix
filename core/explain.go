@@ -9,15 +9,15 @@ import (
 
 // BeliefExplanation represents a single fact in a causal explanation chain.
 type BeliefExplanation struct {
-	FactID     string                 `json:"fact_id"`
-	Confidence float64                `json:"confidence"`
+	FactID     string  `json:"fact_id"`
+	Confidence float64 `json:"confidence"`
 	// Tier is one of "certain" (>0.9), "probable" (0.6–0.9), "uncertain" (<0.6).
 	// For facts with AssertionKind "uncertain", the tier is capped at "probable"
 	// regardless of the numeric confidence, reflecting epistemic hedging.
-	Tier          string                 `json:"tier"`
-	AssertionKind string                 `json:"assertion_kind,omitempty"`
-	Provenance    map[string]interface{} `json:"provenance,omitempty"`
-	Payload       map[string]interface{} `json:"payload,omitempty"`
+	Tier           string                 `json:"tier"`
+	AssertionKind  string                 `json:"assertion_kind,omitempty"`
+	Provenance     map[string]interface{} `json:"provenance,omitempty"`
+	Payload        map[string]interface{} `json:"payload,omitempty"`
 	IsRoot         bool                   `json:"is_root"`
 	Parents        []string               `json:"parents,omitempty"`
 	NegatedParents []string               `json:"negated_parents,omitempty"`
@@ -198,7 +198,7 @@ func (e *Engine) buildCausalChain(fact *Fact, visited map[string]struct{}) []Bel
 			for _, parentID := range set {
 				isNegated := strings.HasPrefix(parentID, "!")
 				cleanID := strings.TrimPrefix(parentID, "!")
-				
+
 				if isNegated {
 					belief.NegatedParents = append(belief.NegatedParents, cleanID)
 				} else {
@@ -226,13 +226,13 @@ func (e *Engine) computeCounterfactual(targetFactID, counterfactualFactID string
 	}
 
 	// Check if target fact is in the impact zone of the counterfactual fact
-	targetInImpact := false
+	isTargetImpacted := false
 
 	for id, f := range e.Facts {
 		if id == counterfactualFactID {
 			continue
 		}
-		if e.isDominatorAncestorUnsafe(counterfactualFactID, id) {
+		if e.isDominatorAncestor(counterfactualFactID, id) {
 			report.ImpactedFacts = append(report.ImpactedFacts, id)
 			report.TotalCount++
 			report.EpistemicLoss += float64(f.DerivedStatus)
@@ -241,34 +241,16 @@ func (e *Engine) computeCounterfactual(targetFactID, counterfactualFactID string
 				report.DirectCount++
 			}
 			if id == targetFactID {
-				targetInImpact = true
+				isTargetImpacted = true
 			}
 		}
 	}
 
-	cfFact, _ := e.Facts[counterfactualFactID]
-	targetFact, _ := e.Facts[targetFactID]
-
-	if targetInImpact {
+	if isTargetImpacted {
 		report.Narrative = "If '" + counterfactualFactID + "' had not existed, '" + targetFactID + "' would have been invalidated because it depends on this fact through the causal chain."
 	} else {
 		report.Narrative = "If '" + counterfactualFactID + "' had not existed, '" + targetFactID + "' would remain unaffected because it does not depend on this fact."
 	}
 
-	_ = cfFact
-	_ = targetFact
-
 	return report
 }
-
-// isDominatorAncestorUnsafe checks dominator ancestry without taking locks.
-// Caller MUST hold at least e.mu.RLock().
-func (e *Engine) isDominatorAncestorUnsafe(uID, vID string) bool {
-	u, okU := e.Facts[uID]
-	v, okV := e.Facts[vID]
-	if !okU || !okV {
-		return false
-	}
-	return u.PreOrder <= v.PreOrder && u.PostOrder >= v.PostOrder
-}
-

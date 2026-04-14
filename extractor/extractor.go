@@ -284,28 +284,101 @@ func (c *openAIClient) Chat(ctx context.Context, model string, messages []ChatMe
 	return strings.TrimSpace(chatResp.Choices[0].Message.Content), nil
 }
 
+func legacyCompilerUserContent(llmOutput, sessionContext string) string {
+	if strings.TrimSpace(sessionContext) == "" {
+		return llmOutput
+	}
+	return fmt.Sprintf("SESSION CONTEXT: %s\n\nLLM OUTPUT TO EXTRACT FROM:\n%s", sessionContext, llmOutput)
+}
+
+func legacyVLogicMessages(userContent, lastCompilerError string) []ChatMessage {
+	messages := []ChatMessage{
+		{Role: "system", Content: vLogicSystemPrompt},
+		{Role: "user", Content: userContent},
+	}
+	if lastCompilerError == "" {
+		return messages
+	}
+	return append(messages, ChatMessage{
+		Role: "user",
+		Content: fmt.Sprintf(
+			"COMPILER ERROR from your previous attempt:\n%s\nPlease rewrite the V-Logic script to fix this error.",
+			lastCompilerError,
+		),
+	})
+}
+
+func topoSortVLogicFacts(facts []ExtractedFact) ([]ExtractedFact, string) {
+	visited := map[string]bool{}
+	inStack := map[string]bool{}
+	factMap := map[string]ExtractedFact{}
+	for _, ef := range facts {
+		factMap[ef.ID] = ef
+	}
+
+	var cycleErr string
+	var sorted []ExtractedFact
+	var visit func(ef ExtractedFact)
+
+	visit = func(ef ExtractedFact) {
+		if cycleErr != "" {
+			return
+		}
+		if inStack[ef.ID] {
+			cycleErr = "Circular dependency detected involving " + ef.ID
+			return
+		}
+		if visited[ef.ID] {
+			return
+		}
+		inStack[ef.ID] = true
+		for _, dep := range ef.DependsOn {
+			cleanDep := strings.TrimPrefix(dep, "!")
+			if depFact, exists := factMap[cleanDep]; exists {
+				visit(depFact)
+			}
+		}
+		inStack[ef.ID] = false
+		visited[ef.ID] = true
+		sorted = append(sorted, ef)
+	}
+
+	for _, ef := range facts {
+		visit(ef)
+	}
+
+	return sorted, cycleErr
+}
+
+func normalizeLegacyFacts(facts []ExtractedFact) {
+	for i := range facts {
+		if facts[i].ID == "" {
+			facts[i].ID = fmt.Sprintf("fact-%d", i)
+		}
+		if facts[i].SourceType == "" {
+			facts[i].SourceType = "v-logic"
+		}
+		if facts[i].Polarity == "" {
+			facts[i].Polarity = "positive"
+		}
+		if facts[i].Confidence <= 0 || facts[i].Confidence > 1 {
+			facts[i].Confidence = 0.75
+		}
+		if strings.TrimSpace(facts[i].AssertionKind) == "" {
+			facts[i].AssertionKind = core.AssertionKindEmpirical
+		}
+	}
+}
+
 // extractLegacyVLogic preserves the prior single-pass V-Logic compiler behavior
 // but runs through the LLMClient abstraction so it can be benchmarked and tested.
 func extractLegacyVLogic(ctx context.Context, llm LLMClient, llmOutput string, sessionContext string, model string) ([]ExtractedFact, error) {
-	userContent := llmOutput
-	if strings.TrimSpace(sessionContext) != "" {
-		userContent = fmt.Sprintf("SESSION CONTEXT: %s\n\nLLM OUTPUT TO EXTRACT FROM:\n%s", sessionContext, llmOutput)
-	}
+	userContent := legacyCompilerUserContent(llmOutput, sessionContext)
 
 	var lastCompilerError string
-	var finalFacts []ExtractedFact
 
 	for attempt := 1; attempt <= 3; attempt++ {
-		messages := []ChatMessage{
-			{Role: "system", Content: vLogicSystemPrompt},
-			{Role: "user", Content: userContent},
-		}
-		if lastCompilerError != "" {
-			messages = append(messages, ChatMessage{
-				Role: "user",
-				Content: fmt.Sprintf("COMPILER ERROR from your previous attempt:\n%s\nPlease rewrite the V-Logic script to fix this error.", lastCompilerError),
-			})
-		}
+		messages := legacyVLogicMessages(userContent, lastCompilerError)
 
 		raw, err := llm.Chat(ctx, model, messages)
 		if err != nil {
@@ -319,77 +392,17 @@ func extractLegacyVLogic(ctx context.Context, llm LLMClient, llmOutput string, s
 			continue
 		}
 
-		// Topological sort & cycle detection (Dry Run Compilation Phase)
-		visited := map[string]bool{}
-		var visit func(ef ExtractedFact)
-
-		factMap := map[string]ExtractedFact{}
-		for _, ef := range facts {
-			factMap[ef.ID] = ef
-		}
-
-		var cycleErr string
-		var inStack = map[string]bool{}
-		var sorted []ExtractedFact
-
-		visit = func(ef ExtractedFact) {
-			if cycleErr != "" {
-				return
-			}
-			if inStack[ef.ID] {
-				cycleErr = "Circular dependency detected involving " + ef.ID
-				return
-			}
-			if visited[ef.ID] {
-				return
-			}
-			inStack[ef.ID] = true
-			for _, dep := range ef.DependsOn {
-				cleanDep := strings.TrimPrefix(dep, "!")
-				if depFact, exists := factMap[cleanDep]; exists {
-					visit(depFact)
-				}
-			}
-			inStack[ef.ID] = false
-			visited[ef.ID] = true
-			sorted = append(sorted, ef)
-		}
-
-		for _, ef := range facts {
-			visit(ef)
-		}
-
+		sorted, cycleErr := topoSortVLogicFacts(facts)
 		if cycleErr != "" {
 			lastCompilerError = cycleErr
 			continue
 		}
 
-		for i := range sorted {
-			if sorted[i].ID == "" {
-				sorted[i].ID = fmt.Sprintf("fact-%d", i)
-			}
-			if sorted[i].SourceType == "" {
-				sorted[i].SourceType = "v-logic"
-			}
-			if sorted[i].Polarity == "" {
-				sorted[i].Polarity = "positive"
-			}
-			if sorted[i].Confidence <= 0 || sorted[i].Confidence > 1 {
-				sorted[i].Confidence = 0.75
-			}
-			if strings.TrimSpace(sorted[i].AssertionKind) == "" {
-				sorted[i].AssertionKind = core.AssertionKindEmpirical
-			}
-		}
-
-		finalFacts = sorted
-		break
+		normalizeLegacyFacts(sorted)
+		return sorted, nil
 	}
 
-	if finalFacts == nil {
-		return nil, &ExtractionError{Cause: "compiler_error", Detail: "failed to compile V-Logic after 3 attempts. Last error: " + lastCompilerError}
-	}
-	return finalFacts, nil
+	return nil, &ExtractionError{Cause: "compiler_error", Detail: "failed to compile V-Logic after 3 attempts. Last error: " + lastCompilerError}
 }
 
 // stripMarkdownFences removes wrappers in case the model ignores the no-markdown-fences instruction.

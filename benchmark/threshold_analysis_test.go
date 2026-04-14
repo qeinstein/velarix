@@ -20,9 +20,9 @@ import (
 )
 
 type thresholdCase struct {
-	label     string
-	category  string // true_positive | true_negative | edge_case
-	sentence  string // sentence from hypothetical LLM response
+	label    string
+	category string // true_positive | true_negative | edge_case
+	sentence string // sentence from hypothetical LLM response
 	// factPayloadValues mirrors what reconstructGroundedResponse builds:
 	// all values from fact.Payload joined — includes claim (full sentence),
 	// claim_key, claim_value, subject, predicate, object, polarity, source_type.
@@ -42,7 +42,7 @@ func realisticPayload(claim, claimKey, claimValue, subject, predicate, object st
 	// Mirrors what ToCoreFact stores and how reconstructGroundedResponse reads it:
 	// values in random map order — we join them all.
 	return strings.Join([]string{
-		claim,      // full sentence (dominates similarity)
+		claim, // full sentence (dominates similarity)
 		claimKey, claimValue,
 		subject, predicate, object,
 		"positive", "llm_output",

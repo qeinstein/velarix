@@ -79,7 +79,7 @@ func TestHandleGetSessionSummary(t *testing.T) {
 	s := newTestServer(m)
 	s.Engines["s1"] = core.NewEngine()
 	s.Configs["s1"] = &store.SessionConfig{EnforcementMode: "strict"}
-	
+
 	req, _ := http.NewRequest("GET", "/v1/s/s1/summary", nil)
 	req.SetPathValue("session_id", "s1")
 	ctx := context.WithValue(req.Context(), orgIDKey, "org1")
@@ -137,14 +137,14 @@ func TestHandleExtractAndAssert(t *testing.T) {
 	t.Setenv("VELARIX_OPENAI_BASE_URL", srv.URL)
 
 	m := &MockStore{
-		GetConfigFunc: func(id string) (*store.SessionConfig, error) { return &store.SessionConfig{}, nil },
+		GetConfigFunc:              func(id string) (*store.SessionConfig, error) { return &store.SessionConfig{}, nil },
 		GetSessionOrganizationFunc: func(id string) (string, error) { return "org1", nil },
-		AppendFunc: func(e store.JournalEntry) error { return nil },
-		AppendOrgActivityFunc: func(id string, e store.JournalEntry) error { return nil },
-		IncrementOrgMetricFunc: func(id, m string, d uint64) error { return nil },
+		AppendFunc:                 func(e store.JournalEntry) error { return nil },
+		AppendOrgActivityFunc:      func(id string, e store.JournalEntry) error { return nil },
+		IncrementOrgMetricFunc:     func(id, m string, d uint64) error { return nil },
 	}
 	s := newTestServer(m)
-	
+
 	engine := core.NewEngine()
 	s.Engines["s1"] = engine
 	s.Configs["s1"] = &store.SessionConfig{}
@@ -152,6 +152,7 @@ func TestHandleExtractAndAssert(t *testing.T) {
 	body := extractAndAssertRequest{
 		LLMOutput: "some text",
 		ExtractionConfig: &extractor.ExtractionConfig{
+			Tier:                       extractor.TierFullLLM,
 			EnableSelection:            false,
 			EnableDecontextualisation:  false,
 			EnableCoverageVerification: false,
@@ -175,11 +176,11 @@ func TestHandleExtractAndAssert(t *testing.T) {
 
 func TestHandleCreateDecision(t *testing.T) {
 	m := &MockStore{
-		GetSessionOrganizationFunc: func(id string) (string, error) { return "org1", nil },
-		SaveDecisionFunc: func(d *store.Decision) error { return nil },
+		GetSessionOrganizationFunc:   func(id string) (string, error) { return "org1", nil },
+		SaveDecisionFunc:             func(d *store.Decision) error { return nil },
 		SaveDecisionDependenciesFunc: func(sid, did string, deps []store.DecisionDependency) error { return nil },
-		AppendFunc: func(e store.JournalEntry) error { return nil },
-		AppendOrgActivityFunc: func(id string, e store.JournalEntry) error { return nil },
+		AppendFunc:                   func(e store.JournalEntry) error { return nil },
+		AppendOrgActivityFunc:        func(id string, e store.JournalEntry) error { return nil },
 	}
 	s := newTestServer(m)
 	engine := core.NewEngine()
@@ -189,10 +190,10 @@ func TestHandleCreateDecision(t *testing.T) {
 	s.Configs["s1"] = &store.SessionConfig{}
 
 	body := map[string]interface{}{
-		"decision_id": "d1",
-		"subject_ref": "subj",
-		"target_ref": "target",
-		"decision_type": "action",
+		"decision_id":         "d1",
+		"subject_ref":         "subj",
+		"target_ref":          "target",
+		"decision_type":       "action",
 		"dependency_fact_ids": []string{"f1"},
 	}
 	b, _ := json.Marshal(body)

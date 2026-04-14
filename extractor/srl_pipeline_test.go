@@ -3,7 +3,6 @@ package extractor
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,21 +23,6 @@ func newMockSRLServer(t *testing.T, response SRLExtractResponse) *httptest.Serve
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
-	}))
-}
-
-func newMockValidationServer(t *testing.T, accept bool, reason string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/validate-dependency" {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ValidateDependencyResponse{
-			Accepted: accept,
-			Reason:   reason,
-		})
 	}))
 }
 
@@ -627,6 +611,3 @@ func TestTMSValidationAcceptsValidEdge(t *testing.T) {
 		t.Errorf("expected valid edge to be accepted, got rejected: %s", result.Reason)
 	}
 }
-
-// Suppress unused import warnings for test helpers.
-var _ = fmt.Sprintf

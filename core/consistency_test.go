@@ -7,7 +7,7 @@ import (
 func TestSemanticNegationMismatch(t *testing.T) {
 	a := &Fact{ID: "a", Payload: map[string]interface{}{"text": "the patient is responding well to the clinical treatment"}}
 	b := &Fact{ID: "b", Payload: map[string]interface{}{"text": "the patient is not responding well to the clinical treatment"}}
-	
+
 	if !semanticNegationMismatch(a, b) {
 		t.Errorf("expected mismatch")
 	}
@@ -21,7 +21,7 @@ func TestSemanticNegationMismatch(t *testing.T) {
 func TestContradictionIssueForFacts(t *testing.T) {
 	f1 := &Fact{ID: "f1"}
 	f2 := &Fact{ID: "f2"}
-	
+
 	_, ok := contradictionIssueForFacts(nil, f2)
 	if ok {
 		t.Error()
@@ -53,7 +53,7 @@ func TestContradictionIssueForFacts(t *testing.T) {
 	if !ok || issue.Type != "polarity_conflict" {
 		t.Error()
 	}
-	
+
 	// Test semantic negation conflict
 	f1.Payload = map[string]interface{}{"text": "the patient is responding well to the clinical treatment"}
 	f2.Payload = map[string]interface{}{"text": "the patient is not responding well to the clinical treatment"}
@@ -63,18 +63,18 @@ func TestContradictionIssueForFacts(t *testing.T) {
 	}
 }
 
-func TestGetMapString(t *testing.T) {
+func TestMetadataString_TrimsStringValues(t *testing.T) {
 	m := map[string]interface{}{"k1": " v1 ", "k2": 123}
-	if getMapString(m, "k1") != "v1" {
+	if MetadataString(m, "k1") != "v1" {
 		t.Error()
 	}
 }
 
-func TestGetMapStringSlice(t *testing.T) {
+func TestMapStringSlice(t *testing.T) {
 	m := map[string]interface{}{
 		"s1": []string{"a", "b"},
 	}
-	s1 := getMapStringSlice(m, "s1")
+	s1 := mapStringSlice(m, "s1")
 	if len(s1) != 2 || s1[0] != "a" {
 		t.Error()
 	}

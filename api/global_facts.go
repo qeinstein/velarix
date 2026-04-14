@@ -10,12 +10,7 @@ import (
 )
 
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	val := r.Context().Value(userRoleKey)
-	role := ""
-	if val != nil {
-		role = val.(string)
-	}
-	if role != "admin" {
+	if getUserRole(r) != "admin" {
 		http.Error(w, "forbidden: admin role required", http.StatusForbidden)
 		return false
 	}
@@ -41,15 +36,7 @@ func (s *Server) handleGlobalAssertFact(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
-	if fact.Payload != nil {
-		if p, ok := fact.Payload["_provenance"]; ok {
-			delete(fact.Payload, "_provenance")
-			if fact.Metadata == nil {
-				fact.Metadata = make(map[string]interface{})
-			}
-			fact.Metadata["_provenance"] = p
-		}
-	}
+	moveProvenanceFromPayloadToMetadata(&fact)
 
 	applyFactGovernance(&fact, s.loadPolicyControls(getOrgID(r)))
 

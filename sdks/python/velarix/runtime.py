@@ -1,4 +1,5 @@
 import json
+import logging
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +12,8 @@ SEMANTIC_MEMORY_SEARCH_TOOL = "semantic_memory_search"
 RECORD_REASONING_CHAIN_TOOL = "record_reasoning_chain"
 VERIFY_REASONING_CHAIN_TOOL = "verify_reasoning_chain"
 CONSISTENCY_CHECK_TOOL = "consistency_check"
+
+logger = logging.getLogger(__name__)
 
 
 def _report_issue_count(report: Any) -> int:
@@ -59,159 +62,208 @@ def build_system_instruction(context_markdown: str) -> str:
     )
 
 
+def _tool_record_observation() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": RECORD_OBSERVATION_TOOL,
+            "description": "Persist a new justified belief, observation, or derived plan into long-term memory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "A unique, slugified identifier."},
+                    "payload": {"type": "object", "description": "The JSON data associated with this fact."},
+                    "justifications": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"type": "string"}},
+                        "description": "List of lists of Fact IDs that justify this observation.",
+                    },
+                    "confidence": {"type": "number", "description": "Your confidence (0.0 to 1.0)."},
+                },
+                "required": ["id", "payload"],
+            },
+        },
+    }
+
+
+def _tool_record_perception() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": RECORD_PERCEPTION_TOOL,
+            "description": "Persist a neural or perceptual observation as a root belief with optional embedding metadata.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "payload": {"type": "object"},
+                    "confidence": {"type": "number"},
+                    "modality": {"type": "string"},
+                    "provider": {"type": "string"},
+                    "model": {"type": "string"},
+                    "embedding": {"type": "array", "items": {"type": "number"}},
+                    "metadata": {"type": "object"},
+                },
+                "required": ["id", "payload"],
+            },
+        },
+    }
+
+
+def _tool_explain_reasoning() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": EXPLAIN_REASONING_TOOL,
+            "description": (
+                "Call this tool when the user asks you to explain a decision, justify a recommendation, "
+                "or describe your reasoning at any point in the conversation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fact_id": {
+                        "type": "string",
+                        "description": "The specific belief/fact ID to explain. If omitted, explains the most recent decision.",
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "description": "ISO8601 timestamp; explain the reasoning state at that exact point in time, not the current state.",
+                    },
+                    "counterfactual_fact_id": {
+                        "type": "string",
+                        "description": "A fact ID to hypothetically remove. The explanation will describe what would have been different.",
+                    },
+                },
+            },
+        },
+    }
+
+
+def _tool_semantic_memory_search() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": SEMANTIC_MEMORY_SEARCH_TOOL,
+            "description": "Retrieve semantically related facts from the belief store.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "valid_only": {"type": "boolean"},
+                },
+                "required": ["query"],
+            },
+        },
+    }
+
+
+def _tool_record_reasoning_chain() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": RECORD_REASONING_CHAIN_TOOL,
+            "description": "Persist a multi-step reasoning chain with explicit evidence and output fact links.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chain_id": {"type": "string"},
+                    "model": {"type": "string"},
+                    "mode": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "kind": {"type": "string"},
+                                "content": {"type": "string"},
+                                "evidence_fact_ids": {"type": "array", "items": {"type": "string"}},
+                                "justification_fact_ids": {"type": "array", "items": {"type": "string"}},
+                                "output_fact_id": {"type": "string"},
+                                "contradicts_fact_ids": {"type": "array", "items": {"type": "string"}},
+                                "confidence": {"type": "number"},
+                            },
+                            "required": ["content"],
+                        },
+                    },
+                },
+                "required": ["steps"],
+            },
+        },
+    }
+
+
+def _tool_verify_reasoning_chain() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": VERIFY_REASONING_CHAIN_TOOL,
+            "description": "Audit a stored reasoning chain and optionally retract contradicted earlier facts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chain_id": {"type": "string"},
+                    "auto_retract": {"type": "boolean"},
+                },
+                "required": ["chain_id"],
+            },
+        },
+    }
+
+
+def _tool_consistency_check() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": CONSISTENCY_CHECK_TOOL,
+            "description": "Run a contradiction and belief-consistency scan over a set of facts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fact_ids": {"type": "array", "items": {"type": "string"}},
+                    "max_facts": {"type": "integer"},
+                    "include_invalid": {"type": "boolean"},
+                },
+            },
+        },
+    }
+
+
 def velarix_tools() -> List[Dict[str, Any]]:
     """Return the OpenAI tool schema set used by the shared Velarix runtime."""
     return [
-        {
-            "type": "function",
-            "function": {
-                "name": RECORD_OBSERVATION_TOOL,
-                "description": "Persist a new justified belief, observation, or derived plan into long-term memory.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string", "description": "A unique, slugified identifier."},
-                        "payload": {"type": "object", "description": "The JSON data associated with this fact."},
-                        "justifications": {
-                            "type": "array",
-                            "items": {"type": "array", "items": {"type": "string"}},
-                            "description": "List of lists of Fact IDs that justify this observation.",
-                        },
-                        "confidence": {"type": "number", "description": "Your confidence (0.0 to 1.0)."},
-                    },
-                    "required": ["id", "payload"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": RECORD_PERCEPTION_TOOL,
-                "description": "Persist a neural or perceptual observation as a root belief with optional embedding metadata.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"},
-                        "payload": {"type": "object"},
-                        "confidence": {"type": "number"},
-                        "modality": {"type": "string"},
-                        "provider": {"type": "string"},
-                        "model": {"type": "string"},
-                        "embedding": {"type": "array", "items": {"type": "number"}},
-                        "metadata": {"type": "object"},
-                    },
-                    "required": ["id", "payload"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": EXPLAIN_REASONING_TOOL,
-                "description": (
-                    "Call this tool when the user asks you to explain a decision, justify a recommendation, "
-                    "or describe your reasoning at any point in the conversation."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "fact_id": {
-                            "type": "string",
-                            "description": "The specific belief/fact ID to explain. If omitted, explains the most recent decision.",
-                        },
-                        "timestamp": {
-                            "type": "string",
-                            "description": "ISO8601 timestamp; explain the reasoning state at that exact point in time, not the current state.",
-                        },
-                        "counterfactual_fact_id": {
-                            "type": "string",
-                            "description": "A fact ID to hypothetically remove. The explanation will describe what would have been different.",
-                        },
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": SEMANTIC_MEMORY_SEARCH_TOOL,
-                "description": "Retrieve semantically related facts from the belief store.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"},
-                        "limit": {"type": "integer"},
-                        "valid_only": {"type": "boolean"},
-                    },
-                    "required": ["query"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": RECORD_REASONING_CHAIN_TOOL,
-                "description": "Persist a multi-step reasoning chain with explicit evidence and output fact links.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "chain_id": {"type": "string"},
-                        "model": {"type": "string"},
-                        "mode": {"type": "string"},
-                        "summary": {"type": "string"},
-                        "steps": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": {"type": "string"},
-                                    "kind": {"type": "string"},
-                                    "content": {"type": "string"},
-                                    "evidence_fact_ids": {"type": "array", "items": {"type": "string"}},
-                                    "justification_fact_ids": {"type": "array", "items": {"type": "string"}},
-                                    "output_fact_id": {"type": "string"},
-                                    "contradicts_fact_ids": {"type": "array", "items": {"type": "string"}},
-                                    "confidence": {"type": "number"},
-                                },
-                                "required": ["content"],
-                            },
-                        },
-                    },
-                    "required": ["steps"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": VERIFY_REASONING_CHAIN_TOOL,
-                "description": "Audit a stored reasoning chain and optionally retract contradicted earlier facts.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "chain_id": {"type": "string"},
-                        "auto_retract": {"type": "boolean"},
-                    },
-                    "required": ["chain_id"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": CONSISTENCY_CHECK_TOOL,
-                "description": "Run a contradiction and belief-consistency scan over a set of facts.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "fact_ids": {"type": "array", "items": {"type": "string"}},
-                        "max_facts": {"type": "integer"},
-                        "include_invalid": {"type": "boolean"},
-                    },
-                },
-            },
-        },
+        _tool_record_observation(),
+        _tool_record_perception(),
+        _tool_explain_reasoning(),
+        _tool_semantic_memory_search(),
+        _tool_record_reasoning_chain(),
+        _tool_verify_reasoning_chain(),
+        _tool_consistency_check(),
     ]
+
+
+def _pop_velarix_runtime_options(prepared: Dict[str, Any]) -> Dict[str, Any]:
+    query = str(prepared.pop("velarix_query", "") or _latest_user_query(prepared.get("messages")))
+    max_facts = int(prepared.pop("velarix_max_facts", 120))
+    max_chars = int(prepared.pop("velarix_max_context_chars", 12000))
+    strategy = str(prepared.pop("velarix_slice_strategy", "hybrid"))
+    return {
+        "query": query,
+        "max_facts": max_facts,
+        "max_chars": max_chars,
+        "strategy": strategy,
+    }
+
+
+def _apply_velarix_runtime_options(prepared: Dict[str, Any], context_markdown: str) -> Dict[str, Any]:
+    prepared["messages"] = inject_system_instruction(prepared.get("messages"), context_markdown)
+    prepared["tools"] = merge_tools(prepared.get("tools"))
+    if "tool_choice" not in prepared:
+        prepared["tool_choice"] = "auto"
+    return prepared
 
 
 def merge_tools(existing_tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -252,23 +304,16 @@ class VelarixChatRuntime:
     def prepare_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Attach a memory slice and Velarix tool definitions to a chat request."""
         prepared = dict(params)
-        query = str(prepared.pop("velarix_query", "") or _latest_user_query(prepared.get("messages")))
-        max_facts = int(prepared.pop("velarix_max_facts", 120))
-        max_chars = int(prepared.pop("velarix_max_context_chars", 12000))
-        strategy = str(prepared.pop("velarix_slice_strategy", "hybrid"))
+        opts = _pop_velarix_runtime_options(prepared)
         context_markdown = self.session.get_slice(
             format="markdown",
-            max_facts=max_facts,
-            query=query or None,
-            strategy=strategy,
+            max_facts=opts["max_facts"],
+            query=opts["query"] or None,
+            strategy=opts["strategy"],
             include_dependencies=True,
-            max_chars=max_chars,
+            max_chars=opts["max_chars"],
         )
-        prepared["messages"] = inject_system_instruction(prepared.get("messages"), context_markdown)
-        prepared["tools"] = merge_tools(prepared.get("tools"))
-        if "tool_choice" not in prepared:
-            prepared["tool_choice"] = "auto"
-        return prepared
+        return _apply_velarix_runtime_options(prepared, context_markdown)
 
     def process_response(self, response: Any) -> Any:
         """Persist any Velarix tool effects emitted by a model response."""
@@ -297,6 +342,7 @@ class VelarixChatRuntime:
                 elif name == CONSISTENCY_CHECK_TOOL:
                     self._resolve_consistency_check(tool_call)
             except Exception as exc:
+                logger.exception("Velarix tool processing failed", extra={"tool": name})
                 errors.append(f"{name}: {exc}")
         if errors and self.strict:
             raise RuntimeError("; ".join(errors))
@@ -429,23 +475,16 @@ class AsyncVelarixChatRuntime:
     async def prepare_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Attach a memory slice and Velarix tool definitions to an async chat request."""
         prepared = dict(params)
-        query = str(prepared.pop("velarix_query", "") or _latest_user_query(prepared.get("messages")))
-        max_facts = int(prepared.pop("velarix_max_facts", 120))
-        max_chars = int(prepared.pop("velarix_max_context_chars", 12000))
-        strategy = str(prepared.pop("velarix_slice_strategy", "hybrid"))
+        opts = _pop_velarix_runtime_options(prepared)
         context_markdown = await self.session.get_slice(
             format="markdown",
-            max_facts=max_facts,
-            query=query or None,
-            strategy=strategy,
+            max_facts=opts["max_facts"],
+            query=opts["query"] or None,
+            strategy=opts["strategy"],
             include_dependencies=True,
-            max_chars=max_chars,
+            max_chars=opts["max_chars"],
         )
-        prepared["messages"] = inject_system_instruction(prepared.get("messages"), context_markdown)
-        prepared["tools"] = merge_tools(prepared.get("tools"))
-        if "tool_choice" not in prepared:
-            prepared["tool_choice"] = "auto"
-        return prepared
+        return _apply_velarix_runtime_options(prepared, context_markdown)
 
     async def process_response(self, response: Any) -> Any:
         """Persist any Velarix tool effects emitted by an async model response."""
@@ -474,6 +513,7 @@ class AsyncVelarixChatRuntime:
                 elif name == CONSISTENCY_CHECK_TOOL:
                     await self._resolve_consistency_check(tool_call)
             except Exception as exc:
+                logger.exception("Velarix tool processing failed", extra={"tool": name})
                 errors.append(f"{name}: {exc}")
         if errors and self.strict:
             raise RuntimeError("; ".join(errors))
