@@ -1,6 +1,7 @@
 fastapi==0.115.0
 uvicorn==0.32.0
-spacy==3.7.6
-allennlp==2.10.1
-allennlp-models==2.10.1
-nltk==3.9.1
+spacy==3.5.4
+coreferee>=1.4.0
+gliner>=0.2.0
+torch
+requests>=2.32.0
