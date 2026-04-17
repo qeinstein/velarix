@@ -2,18 +2,21 @@
   "causal": [
     "because", "since", "as a result", "therefore", "consequently",
     "due to", "caused by", "led to", "resulted in", "triggered",
-    "enabled", "prevented"
+    "enabled", "prevented", "thus", "hence", "accordingly",
+    "for this reason", "on account of", "owing to"
   ],
   "temporal": [
     "after", "before", "when", "while", "since", "until",
-    "following", "prior to"
+    "following", "prior to", "subsequently", "thereafter",
+    "once", "as soon as", "by the time"
   ],
   "conditional": [
     "if", "unless", "provided that", "assuming", "given that",
-    "in the event that"
+    "in the event that", "on condition that", "only if"
   ],
   "contrastive": [
     "but", "however", "although", "despite", "nevertheless",
-    "whereas", "yet"
+    "whereas", "yet", "even though", "notwithstanding", "in contrast",
+    "on the other hand", "conversely"
   ]
 }
