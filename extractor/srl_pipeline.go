@@ -4,15 +4,87 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"velarix/core"
 )
+
+// ---------------------------------------------------------------------------
+// Circuit breaker — protects the Go server when the SRL Python pod is slow/down
+// ---------------------------------------------------------------------------
+
+type cbState int
+
+const (
+	cbClosed   cbState = iota // normal operation
+	cbOpen                    // tripping: reject calls immediately
+	cbHalfOpen                // probe: allow one call through
+)
+
+type circuitBreaker struct {
+	mu           sync.Mutex
+	state        cbState
+	failures     int
+	threshold    int
+	resetAfter   time.Duration
+	lastFailure  time.Time
+	halfOpenSent bool
+}
+
+var srlCB = &circuitBreaker{
+	threshold:  5,
+	resetAfter: 30 * time.Second,
+}
+
+func (cb *circuitBreaker) allow() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	switch cb.state {
+	case cbOpen:
+		if time.Since(cb.lastFailure) > cb.resetAfter {
+			cb.state = cbHalfOpen
+			cb.halfOpenSent = false
+		} else {
+			return false
+		}
+		fallthrough
+	case cbHalfOpen:
+		if cb.halfOpenSent {
+			return false
+		}
+		cb.halfOpenSent = true
+		return true
+	default:
+		return true
+	}
+}
+
+func (cb *circuitBreaker) success() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.failures = 0
+	cb.state = cbClosed
+	cb.halfOpenSent = false
+}
+
+func (cb *circuitBreaker) failure() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.failures++
+	cb.lastFailure = time.Now()
+	if cb.state == cbHalfOpen || cb.failures >= cb.threshold {
+		cb.state = cbOpen
+		cb.halfOpenSent = false
+		slog.Error("SRL circuit breaker opened: SRL service is unavailable", "failures", cb.failures)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // SRL Service Client — calls the Python SRL microservice
@@ -135,13 +207,26 @@ func (c *SRLServiceClient) Extract(ctx context.Context, text, sessionContext str
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	if !srlCB.allow() {
+		return nil, &ExtractionError{Cause: "srl_circuit_open", Detail: "SRL service circuit breaker is open; requests are temporarily rejected"}
+	}
+
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
+		srlCB.failure()
 		return nil, &ExtractionError{Cause: "srl_service_unreachable", Detail: err.Error()}
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 500 {
+		srlCB.failure()
+		return nil, &ExtractionError{
+			Cause:  "srl_service_error",
+			Detail: fmt.Sprintf("SRL service returned HTTP %d", resp.StatusCode),
+		}
+	}
 	if resp.StatusCode >= 300 {
+		// 4xx errors are client errors — don't penalise the circuit.
 		return nil, &ExtractionError{
 			Cause:  "srl_service_error",
 			Detail: fmt.Sprintf("SRL service returned HTTP %d", resp.StatusCode),
@@ -150,10 +235,15 @@ func (c *SRLServiceClient) Extract(ctx context.Context, text, sessionContext str
 
 	var result SRLExtractResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		srlCB.failure()
 		return nil, &ExtractionError{Cause: "srl_parse_error", Detail: err.Error()}
 	}
+	srlCB.success()
 	return &result, nil
 }
+
+// ErrSRLCircuitOpen is returned when the SRL circuit breaker is open.
+var ErrSRLCircuitOpen = errors.New("SRL circuit breaker open")
 
 // ---------------------------------------------------------------------------
 // RunSRLPipeline — Tier 1 entry point

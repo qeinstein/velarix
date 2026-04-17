@@ -632,6 +632,22 @@ type createSessionRequest struct {
 // Add an optional way to create a session record without asserting a fact.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
+
+	// Enforce per-plan session limit.
+	sub, _ := s.Store.GetBilling(orgID)
+	maxSessions, _ := planLimits(sub)
+	if maxSessions > 0 {
+		existing, _, _ := s.Store.ListOrgSessions(orgID, "", maxSessions+1)
+		if len(existing) >= maxSessions {
+			writeJSON(w, http.StatusPaymentRequired, map[string]interface{}{
+				"error": "session limit reached for your plan",
+				"limit": maxSessions,
+				"plan":  sub.Plan,
+			})
+			return
+		}
+	}
+
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	id := "s_" + hex.EncodeToString(b)

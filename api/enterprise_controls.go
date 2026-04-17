@@ -7,6 +7,23 @@ import (
 	"velarix/store"
 )
 
+// planLimits returns (maxSessions, maxFactsPerSession) for the org's plan.
+// Zero means "no limit enforced".
+func planLimits(sub *store.BillingSubscription) (maxSessions, maxFactsPerSession int) {
+	plan := "free"
+	if sub != nil {
+		plan = strings.ToLower(strings.TrimSpace(sub.Plan))
+	}
+	switch plan {
+	case "pro":
+		return 500, 0
+	case "enterprise":
+		return 0, 0 // unlimited
+	default: // free / trial
+		return 50, 0
+	}
+}
+
 func effectiveRateLimitConfig(org *store.Organization, sub *store.BillingSubscription) (int, time.Duration) {
 	limit := 60
 	window := time.Minute

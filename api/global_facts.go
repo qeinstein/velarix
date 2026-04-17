@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,8 +87,36 @@ func (s *Server) handleGlobalListFacts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "global truth is not enabled", http.StatusServiceUnavailable)
 		return
 	}
+
+	q := r.URL.Query()
+	limit := 100
+	offset := 0
+	if v := strings.TrimSpace(q.Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+	if v := strings.TrimSpace(q.Get("offset")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	all := s.GlobalTruth.ListGlobalFacts()
+	total := len(all)
+	if offset >= total {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"items": []*core.Fact{}, "total": total, "offset": offset, "limit": limit})
+		return
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"items": s.GlobalTruth.ListGlobalFacts(),
+		"items":  all[offset:end],
+		"total":  total,
+		"offset": offset,
+		"limit":  limit,
 	})
 }
 

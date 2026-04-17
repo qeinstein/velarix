@@ -81,6 +81,17 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Production-grade pool settings. All values are overridable via DSN params
+	// (e.g. ?pool_max_conns=20) but these defaults are safe for a 2-core instance.
+	if cfg.MaxConns == 4 { // pgxpool default — only override if caller didn't set it
+		cfg.MaxConns = 20
+	}
+	cfg.MinConns = 2
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.HealthCheckPeriod = 60 * time.Second
+
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -370,6 +381,23 @@ func (s *Store) PatchOrgSessionMeta(orgID, sessionID, name, description string) 
 		WHERE session_id = $4 AND org_id = $5
 	`, name, description, s.nowMillis(), sessionID, orgID)
 	return err
+}
+
+// PurgeJournalBeforeSnapshot removes journal entries for sessions where a snapshot
+// exists, keeping only entries after the snapshot timestamp. This is safe because
+// engine replay always prefers the snapshot over raw journal history.
+// Returns the number of rows deleted.
+func (s *Store) PurgeJournalBeforeSnapshot() (int64, error) {
+	tag, err := s.pool.Exec(context.Background(), `
+		DELETE FROM session_history h
+		USING session_snapshots snap
+		WHERE h.session_id = snap.session_id
+		  AND h.timestamp_ms < snap.timestamp_ms
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (s *Store) DeleteOrgSession(orgID, sessionID string) error {

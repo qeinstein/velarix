@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -26,7 +28,16 @@ func main() {
 
 	isLite := *liteFlag || os.Getenv("VELARIX_LITE") == "true"
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logLevel := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("VELARIX_LOG_LEVEL"))) {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "warn", "warning":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 	slog.SetDefault(logger)
 
 	tp, err := api.InitTracer()
@@ -40,14 +51,18 @@ func main() {
 		}()
 	}
 
-	slog.Info("Velarix | Epistemic Layer for AI Agents", "lite_mode", isLite)
-
 	encryptionKey := []byte(os.Getenv("VELARIX_ENCRYPTION_KEY"))
 	env := strings.ToLower(strings.TrimSpace(os.Getenv("VELARIX_ENV")))
 	if env == "" {
 		env = "prod"
 	}
 	devLike := env == "dev" || env == "test"
+
+	slog.Info("Velarix | Epistemic Layer for AI Agents",
+		"lite_mode", isLite,
+		"env", env,
+		"log_level", logLevel.String(),
+	)
 
 	if !isLite && len(encryptionKey) == 0 {
 		if !devLike {
@@ -87,6 +102,7 @@ func main() {
 	var runtimeStore store.RuntimeStore
 	var primaryStore store.ServerStore
 	var compositeClosers []store.RuntimeCloser
+	var redisUnavailable bool
 	if backend == "postgres" && !isLite {
 		pgStore, err := storepostgres.Open(context.Background(), postgresDSN)
 		if err != nil {
@@ -120,7 +136,7 @@ func main() {
 				// idempotency and rate-limiting rather than hard-exiting.
 				slog.Error("Failed to connect to Redis coordination store — falling back to primary store",
 					"redis_url", redisURL, "error", err)
-				slog.Info("Redis fallback active: idempotency and rate-limiting served by primary store")
+				redisUnavailable = true
 				// runtimeStore will be assigned below from primaryStore.
 			} else {
 				slog.Info("Redis coordination store connected", "redis_url", redisURL)
@@ -144,24 +160,41 @@ func main() {
 	globalTruth := core.NewGlobalTruth()
 
 	server := &api.Server{
-		Engines:     make(map[string]*core.Engine),
-		Configs:     make(map[string]*store.SessionConfig),
-		Versions:    make(map[string]int64),
-		LastAccess:  make(map[string]time.Time),
-		SliceCache:  make(map[string]*api.SliceCacheEntry),
-		Store:       runtimeStore,
-		GlobalTruth: globalTruth,
-		StartTime:   time.Now(),
-		LiteMode:    isLite,
+		Engines:          make(map[string]*core.Engine),
+		Configs:          make(map[string]*store.SessionConfig),
+		Versions:         make(map[string]int64),
+		LastAccess:       make(map[string]time.Time),
+		SliceCache:       make(map[string]*api.SliceCacheEntry),
+		Store:            runtimeStore,
+		GlobalTruth:      globalTruth,
+		StartTime:        time.Now(),
+		LiteMode:         isLite,
+		RedisUnavailable: redisUnavailable,
+	}
+	if redisUnavailable {
+		slog.Warn("Redis unavailable — rate limiting and idempotency served by primary store; limits are not shared across instances")
 	}
 
 	server.StartEvictionTicker()
 	server.StartRetentionTicker()
 	server.StartExpirySweepTicker()
+	server.StartSliceCachePurgeTicker()
+	server.StartPurgeJournalTicker()
 	if backend == "badger" {
 		server.StartBackupTicker()
 	}
 	runtimeStore.StartGC()
+
+	// Log active feature flags so operators can confirm config at a glance.
+	redisURL := strings.TrimSpace(os.Getenv("VELARIX_REDIS_URL"))
+	disableRedis := strings.EqualFold(strings.TrimSpace(os.Getenv("VELARIX_DISABLE_REDIS")), "true")
+	slog.Info("Feature flags",
+		"bootstrap_admin_key", strings.EqualFold(strings.TrimSpace(os.Getenv("VELARIX_ENABLE_BOOTSTRAP_ADMIN_KEY")), "true") || (env == "dev" || env == "test"),
+		"redis_enabled", redisURL != "" && !disableRedis,
+		"gliner_enabled", strings.EqualFold(strings.TrimSpace(os.Getenv("VELARIX_ENABLE_GLINER")), "true"),
+		"store_backend", backend,
+		"lite_mode", isLite,
+	)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -182,8 +215,31 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
-	if err := httpServer.ListenAndServe(); err != nil {
+
+	// Graceful shutdown: wait for SIGTERM/SIGINT, drain in-flight requests.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
 		slog.Error("Server failed", "error", err)
 		os.Exit(1)
+	case sig := <-quit:
+		slog.Info("Shutdown signal received", "signal", sig.String())
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("Graceful shutdown failed", "error", err)
+	} else {
+		slog.Info("Server shutdown complete")
 	}
 }

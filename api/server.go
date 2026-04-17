@@ -89,6 +89,9 @@ type Server struct {
 	GlobalTruth *core.GlobalTruth
 	StartTime   time.Time
 	LiteMode    bool
+	// RedisUnavailable is set at startup when Redis failed to connect; used to
+	// emit a one-time warning so operators know rate-limiting is on the primary store.
+	RedisUnavailable bool
 
 	writeLimiters sync.Map // org_id -> chan struct{}
 }
@@ -1454,6 +1457,52 @@ func (s *Server) StartBackupTicker() {
 	}()
 }
 
+// handlePurgeJournal is an admin-only endpoint that purges journal entries that
+// are covered by snapshots. This compacts storage without losing any fact state.
+func (s *Server) handlePurgeJournal(w http.ResponseWriter, r *http.Request) {
+	if getUserRole(r) != "admin" {
+		http.Error(w, "forbidden: admin role required", http.StatusForbidden)
+		return
+	}
+	type purger interface {
+		PurgeJournalBeforeSnapshot() (int64, error)
+	}
+	p, ok := s.Store.(purger)
+	if !ok {
+		http.Error(w, "journal purge is only supported with the Postgres backend", http.StatusNotImplemented)
+		return
+	}
+	n, err := p.PurgeJournalBeforeSnapshot()
+	if err != nil {
+		slog.Error("Journal purge failed", "error", err)
+		http.Error(w, "purge failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	slog.Info("Journal purge completed", "rows_deleted", n, "actor", getActorID(r))
+	writeJSON(w, http.StatusOK, map[string]interface{}{"rows_deleted": n})
+}
+
+// StartPurgeJournalTicker runs the journal purge weekly at night to keep
+// storage bounded without operator intervention.
+func (s *Server) StartPurgeJournalTicker() {
+	ticker := time.NewTicker(7 * 24 * time.Hour)
+	go func() {
+		for range ticker.C {
+			type purger interface {
+				PurgeJournalBeforeSnapshot() (int64, error)
+			}
+			if p, ok := s.Store.(purger); ok {
+				n, err := p.PurgeJournalBeforeSnapshot()
+				if err != nil {
+					slog.Error("Scheduled journal purge failed", "error", err)
+				} else if n > 0 {
+					slog.Info("Scheduled journal purge completed", "rows_deleted", n)
+				}
+			}
+		}
+	}()
+}
+
 func (s *Server) StartRetentionTicker() {
 	intervalMinutes := 60
 	if raw := strings.TrimSpace(os.Getenv("VELARIX_RETENTION_SWEEP_INTERVAL_MINUTES")); raw != "" {
@@ -1523,6 +1572,22 @@ func (s *Server) PerformExpirySweep() {
 	}
 }
 
+func (s *Server) StartSliceCachePurgeTicker() {
+	ticker := time.NewTicker(10 * time.Minute)
+	go func() {
+		for range ticker.C {
+			s.mu.Lock()
+			cutoff := time.Now().Add(-15 * time.Minute)
+			for key, entry := range s.SliceCache {
+				if entry.Timestamp.Before(cutoff) {
+					delete(s.SliceCache, key)
+				}
+			}
+			s.mu.Unlock()
+		}
+	}()
+}
+
 func (s *Server) StartExpirySweepTicker() {
 	intervalSeconds := 60
 	if raw := strings.TrimSpace(os.Getenv("VELARIX_EXPIRY_SWEEP_INTERVAL_SECONDS")); raw != "" {
@@ -1531,7 +1596,11 @@ func (s *Server) StartExpirySweepTicker() {
 		}
 	}
 
-	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
+	// Add ±10% jitter to avoid thundering-herd when many facts expire at the same wall-clock second.
+	jitter := time.Duration(float64(intervalSeconds)*0.1*float64(time.Second)) * time.Duration(1+time.Now().UnixNano()%3-1)
+	effective := time.Duration(intervalSeconds)*time.Second + jitter
+
+	ticker := time.NewTicker(effective)
 	go func() {
 		for range ticker.C {
 			s.PerformExpirySweep()
@@ -1955,6 +2024,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Admin Management Routes
 	mux.HandleFunc("GET /v1/org/backup", s.handleBackup)
+	mux.HandleFunc("POST /v1/admin/purge-journal", s.handlePurgeJournal)
 	mux.HandleFunc("POST /v1/org/restore", s.handleRestore)
 
 	// V1 API Routes
@@ -2137,5 +2207,20 @@ func (s *Server) Routes() http.Handler {
 	h = s.securityHeadersMiddleware(h)
 	h = s.enableCORS(h)
 	h = s.metricsAndLoggingMiddleware(h)
+	h = s.traceIDMiddleware(h)
 	return h
+}
+
+// traceIDMiddleware ensures every request has a trace ID in its context and
+// response headers before any other middleware sees it.
+func (s *Server) traceIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tid := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		if tid == "" {
+			tid = fmt.Sprintf("req-%d", time.Now().UnixNano())
+		}
+		ctx := context.WithValue(r.Context(), contextKey("trace_id"), tid)
+		w.Header().Set("X-Trace-Id", tid)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +18,70 @@ import (
 	"velarix/core"
 	"velarix/store"
 )
+
+// privateRanges are CIDR blocks that must never be reached by outbound webhook calls.
+var privateRanges []*net.IPNet
+
+func init() {
+	for _, cidr := range []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"::1/128",
+		"fc00::/7",
+		"169.254.0.0/16", // link-local / GCE metadata
+		"100.64.0.0/10",  // shared address space
+	} {
+		_, block, _ := net.ParseCIDR(cidr)
+		if block != nil {
+			privateRanges = append(privateRanges, block)
+		}
+	}
+}
+
+func isPrivateIP(ip net.IP) bool {
+	for _, block := range privateRanges {
+		if block.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateWebhookURL blocks SSRF by ensuring the resolved URL does not point at
+// private/loopback/link-local addresses. Returns an error if the URL is unsafe.
+func validateWebhookURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid webhook url: %w", err)
+	}
+	if u.Scheme != "https" && !isDevLikeEnv() {
+		return fmt.Errorf("webhook url must use https in production")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("webhook url has no host")
+	}
+	// If the host is a raw IP, validate directly.
+	if ip := net.ParseIP(host); ip != nil {
+		if isPrivateIP(ip) {
+			return fmt.Errorf("webhook url resolves to a private/reserved address")
+		}
+		return nil
+	}
+	// Otherwise resolve and check all A/AAAA records.
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("webhook url host resolution failed: %w", err)
+	}
+	for _, addr := range addrs {
+		if ip := net.ParseIP(addr); ip != nil && isPrivateIP(ip) {
+			return fmt.Errorf("webhook url resolves to a private/reserved address (%s)", addr)
+		}
+	}
+	return nil
+}
 
 type factVerifyRequest struct {
 	Status     string `json:"status"`
@@ -107,8 +174,12 @@ func (s *Server) maybeStartVerification(sessionID string, orgID string, engine *
 	if core.FactVerificationStatus(fact) == core.VerificationVerified {
 		return
 	}
-	url := verificationWebhookURL()
-	if url == "" {
+	webhookURL := verificationWebhookURL()
+	if webhookURL == "" {
+		return
+	}
+	if err := validateWebhookURL(webhookURL); err != nil {
+		slog.Error("verification webhook blocked: unsafe URL", "error", err)
 		return
 	}
 
@@ -129,7 +200,7 @@ func (s *Server) maybeStartVerification(sessionID string, orgID string, engine *
 		}
 		payload, _ := json.Marshal(body)
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(payload))
 		if err != nil {
 			return
 		}
