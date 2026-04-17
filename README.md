@@ -90,30 +90,47 @@ Example request body:
 }
 ```
 
-### Tiered Extraction Architecture
+### Delta — Extraction Pipeline
 
-Velarix supports three extraction tiers, selectable via `VELARIX_EXTRACTION_TIER` or the `extraction_config.Tier` field:
+Delta is Velarix's built-in fact extraction pipeline. It runs as a local Python sidecar (`extractor/srl_service/`) with zero LLM cost and sub-100ms latency.
 
-| Tier | Name | Pipeline | Cost | Latency |
-|------|------|----------|------|---------|
-| 1 | SRL (default) | spaCy + AllenNLP SRL via local Python service | Zero | ~50ms |
-| 2 | Hybrid | SRL first, LLM fallback for low-confidence sentences | Low | ~200ms |
-| 3 | Full LLM | Five-stage LLM pipeline (selection → decomposition → coverage → consistency) | Standard | ~3s |
+| Component | Library | Role |
+|-----------|---------|------|
+| Clause splitting | spaCy dep-parse | Breaks complex sentences into atomic clauses |
+| Coreference | coreferee (neural) or rule-based | Resolves pronouns across sentences |
+| NER | GLiNER `gliner_small-v2.1` or spaCy NER | Zero-shot entity tagging (GLiNER requires ≥800MB RAM headroom; set `VELARIX_ENABLE_GLINER=1`) |
+| Relation extraction | Enhanced dep-parse | SVO, passive, stative copular, xcomp patterns |
+| Dependency validation | Go TMS batch endpoint | Single HTTP call validates all edges |
 
-```json
-{
-  "extraction_config": {
-    "Tier": 1,
-    "SRLServiceURL": "http://localhost:8090"
-  }
-}
-```
+All models are pre-loaded at startup — no cold-start penalty on the first request.
 
-The SRL service runs as a sidecar (`extractor/srl_service/`). Start it with:
+**Benchmark results** (25-case suite, spaCy dep-parse + spaCy NER, CPU-only):
+
+| Metric | Result | Target |
+|--------|--------|--------|
+| Latency p50 | 35.6 ms | — |
+| Latency p95 | 54.7 ms | — |
+| Latency p99 | 56.3 ms | <100 ms ✓ |
+| Triple recall | 96.3% (26/27) | >93% ✓ |
+| Requests under 100ms | 100% | — |
+
+Start Delta:
 
 ```bash
-cd extractor/srl_service && pip install -r requirements.txt && python main.py
+cd extractor/srl_service
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+python -m coreferee install en
+python main.py
 ```
+
+Run the Delta benchmark:
+
+```bash
+cd extractor/srl_service && python benchmark.py
+```
+
+The `extraction_config.Tier` field is still accepted for backward compatibility. Tiers 2 (Hybrid) and 3 (Full LLM) remain available when `OPENAI_API_KEY` is set.
 
 ## Integration Surfaces
 
