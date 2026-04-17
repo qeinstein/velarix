@@ -342,6 +342,26 @@ func RunHybridPipeline(ctx context.Context, llm LLMClient, text string, sessionC
 // ValidateDependency — used by the internal Go endpoint
 // ---------------------------------------------------------------------------
 
+// BatchValidateDependencyRequest is the payload for POST /internal/validate-dependencies-batch.
+// It accepts multiple edges in a single call, replacing N serial validate-dependency calls.
+type BatchValidateDependencyRequest struct {
+	Edges []ValidateDependencyRequest `json:"edges"`
+}
+
+// BatchValidateDependencyResponse contains one result per input edge, in order.
+type BatchValidateDependencyResponse struct {
+	Results []ValidateDependencyResponse `json:"results"`
+}
+
+// ValidateDependenciesBatch validates multiple dependency edges in one call.
+func ValidateDependenciesBatch(req BatchValidateDependencyRequest) BatchValidateDependencyResponse {
+	results := make([]ValidateDependencyResponse, len(req.Edges))
+	for i, edge := range req.Edges {
+		results[i] = ValidateDependency(edge)
+	}
+	return BatchValidateDependencyResponse{Results: results}
+}
+
 // ValidateDependencyRequest is the payload for POST /internal/validate-dependency.
 type ValidateDependencyRequest struct {
 	ParentID string                   `json:"parent_id"`

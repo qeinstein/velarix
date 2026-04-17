@@ -1919,6 +1919,26 @@ func (s *Server) handleValidateDependency(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleValidateDependenciesBatch validates multiple dependency edges in a single
+// call. This replaces N serial /internal/validate-dependency calls from the SRL
+// extraction service, eliminating the per-edge HTTP round-trip overhead.
+func (s *Server) handleValidateDependenciesBatch(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
+	var req extractor.BatchValidateDependencyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(req.Edges) == 0 {
+		writeJSON(w, http.StatusOK, extractor.BatchValidateDependencyResponse{
+			Results: []extractor.ValidateDependencyResponse{},
+		})
+		return
+	}
+	resp := extractor.ValidateDependenciesBatch(req)
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -1931,6 +1951,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Internal-only endpoints (called by SRL extraction service, not exposed externally)
 	mux.HandleFunc("POST /internal/validate-dependency", s.handleValidateDependency)
+	mux.HandleFunc("POST /internal/validate-dependencies-batch", s.handleValidateDependenciesBatch)
 
 	// Admin Management Routes
 	mux.HandleFunc("GET /v1/org/backup", s.handleBackup)
