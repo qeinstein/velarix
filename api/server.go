@@ -94,6 +94,11 @@ type Server struct {
 	RedisUnavailable bool
 
 	writeLimiters sync.Map // org_id -> chan struct{}
+
+	// Stripe billing config (optional; billing endpoints return 503 when unset).
+	StripeSecretKey          string
+	StripeProPriceID         string
+	StripeEnterprisePriceID  string
 }
 
 func (s *Server) invalidateSliceCache(sessionID string) {
@@ -2063,6 +2068,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/invitations/accept", s.handleAcceptInvitation)
 	mux.HandleFunc("GET /v1/billing/subscription", s.handleGetBilling)
 	mux.HandleFunc("PATCH /v1/billing/subscription", s.handlePatchBilling)
+	mux.HandleFunc("POST /v1/billing/checkout-session", s.handleCreateCheckoutSession)
 	mux.HandleFunc("GET /v1/support/tickets", s.handleListTickets)
 	mux.HandleFunc("POST /v1/support/tickets", s.handleCreateTicket)
 	mux.HandleFunc("PATCH /v1/support/tickets/{id}", s.handlePatchTicket)

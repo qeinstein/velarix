@@ -4,6 +4,11 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 
+const PLANS = [
+  { id: "pro", label: "Pro", description: "Compliance export + human review" },
+  { id: "enterprise", label: "Enterprise", description: "Everything in Pro + priority support" },
+];
+
 type Org = {
   id: string;
   name: string;
@@ -33,6 +38,8 @@ export default function SettingsPage() {
   const [pwError, setPwError] = useState("");
 
   const [loading, setLoading] = useState(true);
+  const [upgrading, setUpgrading] = useState<string | null>(null);
+  const [upgradeError, setUpgradeError] = useState("");
 
   useEffect(() => {
     const fetchData = async () => {
@@ -105,6 +112,32 @@ export default function SettingsPage() {
       setPwError(err instanceof Error ? err.message : "Failed to change password");
     } finally {
       setSavingPw(false);
+    }
+  };
+
+  const handleUpgrade = async (plan: string) => {
+    setUpgradeError("");
+    setUpgrading(plan);
+    try {
+      const origin = window.location.origin;
+      const res = await apiFetch("/v1/billing/checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan,
+          success_url: `${origin}/checkout/success`,
+          cancel_url: `${origin}/dashboard/settings`,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "Failed to start checkout");
+      }
+      const { checkout_url } = await res.json() as { checkout_url: string };
+      window.location.href = checkout_url;
+    } catch (err) {
+      setUpgradeError(err instanceof Error ? err.message : "Failed to start checkout");
+      setUpgrading(null);
     }
   };
 
@@ -181,11 +214,30 @@ export default function SettingsPage() {
               <p className="font-mono text-sm">{billing?.billing_email || "—"}</p>
             </div>
           </div>
-          <div className="mt-6 border-t border-[var(--line)] pt-5">
-            <a href="mailto:hello@velarix.com" className="button-ghost inline-flex">
-              Manage billing
-            </a>
-          </div>
+          {upgradeError && (
+            <div className="mt-4 error-box">{upgradeError}</div>
+          )}
+
+          {billing?.plan !== "enterprise" && (
+            <div className="mt-6 border-t border-[var(--line)] pt-5 space-y-3">
+              <p className="field-label">Upgrade plan</p>
+              <div className="flex flex-wrap gap-3">
+                {PLANS.filter((p) => p.id !== billing?.plan).map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => void handleUpgrade(p.id)}
+                    disabled={upgrading !== null}
+                    className="button-solid disabled:opacity-60"
+                  >
+                    {upgrading === p.id ? "Redirecting…" : `Upgrade to ${p.label}`}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-[var(--muted)]">
+                You will be redirected to Stripe to complete payment securely.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

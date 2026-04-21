@@ -591,6 +591,23 @@ func (s *Store) SaveBilling(orgID string, sub *store.BillingSubscription) error 
 	return err
 }
 
+func (s *Store) IsStripeEventProcessed(eventID string) (bool, error) {
+	var count int
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT COUNT(1) FROM stripe_processed_events WHERE event_id = $1`, eventID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *Store) MarkStripeEventProcessed(eventID string) error {
+	_, err := s.pool.Exec(context.Background(),
+		`INSERT INTO stripe_processed_events (event_id, processed_at) VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING`,
+		eventID, time.Now().UnixMilli())
+	return err
+}
+
 func (s *Store) SaveTicket(orgID string, t *store.SupportTicket) error {
 	return s.saveOrgScopedDocument("support_tickets", "ticket_id", orgID, t.ID, t.UpdatedAt, t)
 }

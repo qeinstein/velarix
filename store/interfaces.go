@@ -129,10 +129,17 @@ type InvitationStore interface {
 	UpdateInvitation(orgID string, inv *Invitation) error
 }
 
-// BillingStore owns billing metadata.
+// StripeEventStore tracks processed Stripe event IDs for idempotency.
+type StripeEventStore interface {
+	IsStripeEventProcessed(eventID string) (bool, error)
+	MarkStripeEventProcessed(eventID string) error
+}
+
+// BillingStore owns billing metadata and Stripe event deduplication.
 type BillingStore interface {
 	GetBilling(orgID string) (*BillingSubscription, error)
 	SaveBilling(orgID string, sub *BillingSubscription) error
+	StripeEventStore
 }
 
 // TicketStore owns support-ticket metadata.

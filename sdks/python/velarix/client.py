@@ -15,6 +15,80 @@ class VelarixRuntimeError(Exception):
     pass
 
 
+class VelarixError(Exception):
+    """Base class for errors returned by the Velarix API."""
+    def __init__(self, message: str, status_code: int, response_body: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_body = response_body
+
+
+class AuthError(VelarixError):
+    """Raised on 401 — invalid, expired, or revoked API key."""
+    pass
+
+
+class PlanLimitError(VelarixError):
+    """Raised on 402 — the org has hit a limit enforced by its current plan.
+
+    Attributes:
+        plan: The org's current plan (e.g. "free").
+        limit: The numeric limit that was reached (e.g. 50 sessions), if provided.
+    """
+    def __init__(self, message: str, response_body: str = "", plan: str = "", limit: Optional[int] = None):
+        super().__init__(message, 402, response_body)
+        self.plan = plan
+        self.limit = limit
+
+
+class RateLimitError(VelarixError):
+    """Raised on 429 — requests are being throttled by the server.
+
+    Attributes:
+        retry_after: Seconds to wait before retrying, if the server provided it.
+    """
+    def __init__(self, message: str, response_body: str = "", retry_after: Optional[float] = None):
+        super().__init__(message, 429, response_body)
+        self.retry_after = retry_after
+
+
+def _raise_for_status(resp: Any) -> None:
+    """Raise a typed VelarixError for 4xx/5xx responses."""
+    status = resp.status_code
+    if status < 400:
+        return
+    try:
+        body = resp.text
+    except Exception:
+        body = ""
+    if status == 401:
+        raise AuthError("Unauthorized — check your API key.", status, body)
+    if status == 402:
+        plan = ""
+        limit = None
+        try:
+            data = resp.json()
+            plan = data.get("plan", "")
+            limit = data.get("limit")
+        except Exception:
+            pass
+        raise PlanLimitError(
+            f"Plan limit reached ({plan or 'unknown plan'}). Upgrade to continue.",
+            body, plan=plan, limit=limit,
+        )
+    if status == 429:
+        retry_after = None
+        ra = resp.headers.get("Retry-After")
+        if ra:
+            try:
+                retry_after = float(ra)
+            except ValueError:
+                pass
+        raise RateLimitError("Rate limit exceeded.", body, retry_after=retry_after)
+    # Generic fallback for 4xx/5xx
+    resp.raise_for_status()
+
+
 def _build_slice_params(
     format: str,
     max_facts: int,
@@ -163,7 +237,7 @@ class VelarixSession:
         self._clear_cache()
         data = {"id": fact_id, "is_root": True, "manual_status": float(confidence), "payload": payload or {}}
         resp = self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def derive(self, fact_id: str, justifications: List[List[str]], payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
@@ -171,7 +245,7 @@ class VelarixSession:
         self._clear_cache()
         data = {"id": fact_id, "is_root": False, "justification_sets": justifications, "payload": payload or {}}
         resp = self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def get_slice(
@@ -216,7 +290,7 @@ class VelarixSession:
             ),
             headers=self._headers(),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.text if format == "markdown" else resp.json()
         
         # Cache Update
@@ -232,13 +306,13 @@ class VelarixSession:
         if schema is not None: data["schema"] = schema
         if mode is not None: data["enforcement_mode"] = mode
         resp = self.client._request("POST", f"{self.base_url}/config", json=data, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def get_fact(self, fact_id: str) -> Dict[str, Any]:
         """Fetch one fact by ID."""
         resp = self.client._request("GET", f"{self.base_url}/facts/{fact_id}", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def verify_fact(
@@ -279,13 +353,13 @@ class VelarixSession:
             json=body,
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def get_history(self) -> List[Dict[str, Any]]:
         """Return the persisted journal for the session."""
         resp = self.client._request("GET", f"{self.base_url}/history", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def append_history(
@@ -304,7 +378,7 @@ class VelarixSession:
         if fact_id:
             body["fact_id"] = fact_id
         resp = self.client._request("POST", f"{self.base_url}/history", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def explain(
@@ -322,14 +396,14 @@ class VelarixSession:
         if counterfactual_fact_id:
             params["counterfactual_fact_id"] = counterfactual_fact_id
         resp = self.client._request("GET", f"{self.base_url}/explain", params=params, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def revalidate(self, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         """Replay session history and rebuild the current in-memory state."""
         self._clear_cache()
         resp = self.client._request("POST", f"{self.base_url}/revalidate", headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def extract_and_assert(
@@ -350,7 +424,7 @@ class VelarixSession:
             json=body,
             headers=self._headers(),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         self._clear_cache()
         return resp.json()
 
@@ -385,7 +459,7 @@ class VelarixSession:
         if metadata:
             body["metadata"] = metadata
         resp = self.client._request("POST", f"{self.base_url}/percepts", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def invalidate(
@@ -407,7 +481,7 @@ class VelarixSession:
         if body:
             kwargs["json"] = body
         resp = self.client._request("POST", f"{self.base_url}/facts/{fact_id}/invalidate", **kwargs)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def retract(
@@ -426,7 +500,7 @@ class VelarixSession:
         if force:
             body["force"] = True
         resp = self.client._request("POST", f"{self.base_url}/facts/{fact_id}/retract", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def review_fact(
@@ -448,14 +522,14 @@ class VelarixSession:
             json=body,
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def semantic_search(self, query: str, *, limit: int = 10, valid_only: bool = True) -> List[Dict[str, Any]]:
         """Run semantic search over session facts."""
         params = {"q": query, "limit": limit, "valid_only": str(valid_only).lower()}
         resp = self.client._request("GET", f"{self.base_url}/semantic-search", params=params, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def consistency_check(
@@ -472,19 +546,19 @@ class VelarixSession:
         if max_facts is not None:
             body["max_facts"] = max_facts
         resp = self.client._request("POST", f"{self.base_url}/consistency-check", json=body, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def record_reasoning_chain(self, chain: Dict[str, Any]) -> Dict[str, Any]:
         """Persist a reasoning chain."""
         resp = self.client._request("POST", f"{self.base_url}/reasoning-chains", json=chain, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def list_reasoning_chains(self) -> List[Dict[str, Any]]:
         """List stored reasoning chains for the session."""
         resp = self.client._request("GET", f"{self.base_url}/reasoning-chains", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json().get("items", [])
 
     def verify_reasoning_chain(self, chain_id: str, *, auto_retract: bool = False) -> Dict[str, Any]:
@@ -495,7 +569,7 @@ class VelarixSession:
             json={"auto_retract": auto_retract},
             headers=self._headers(),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def create_decision(
@@ -536,7 +610,7 @@ class VelarixSession:
         if metadata:
             body["metadata"] = metadata
         resp = self.client._request("POST", f"{self.base_url}/decisions", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def list_decisions(
@@ -559,13 +633,13 @@ class VelarixSession:
         if to_ms is not None:
             params["to"] = to_ms
         resp = self.client._request("GET", f"{self.base_url}/decisions", params=params, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json().get("items", [])
 
     def get_decision(self, decision_id: str) -> Dict[str, Any]:
         """Fetch one decision."""
         resp = self.client._request("GET", f"{self.base_url}/decisions/{decision_id}", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def recompute_decision(
@@ -588,7 +662,7 @@ class VelarixSession:
             json=body,
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def execute_check(self, decision_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
@@ -598,7 +672,7 @@ class VelarixSession:
             f"{self.base_url}/decisions/{decision_id}/execute-check",
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def execute_decision(
@@ -626,19 +700,19 @@ class VelarixSession:
             json=body,
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def get_decision_lineage(self, decision_id: str) -> Dict[str, Any]:
         """Fetch the stored dependency lineage for a decision."""
         resp = self.client._request("GET", f"{self.base_url}/decisions/{decision_id}/lineage", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def get_decision_why_blocked(self, decision_id: str) -> Dict[str, Any]:
         """Explain why a decision is blocked."""
         resp = self.client._request("GET", f"{self.base_url}/decisions/{decision_id}/why-blocked", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def record_decision(self, kind: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
@@ -679,19 +753,19 @@ class VelarixGlobalFacts:
         if valid_until is not None:
             data["valid_until"] = int(valid_until)
         resp = self.client._request("POST", self.base_url, json=data, headers=self.client.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def retract(self, fact_id: str) -> Dict[str, Any]:
         if not fact_id:
             raise ValueError("fact_id is required")
         resp = self.client._request("DELETE", f"{self.base_url}/{fact_id}", headers=self.client.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def list(self) -> List[Dict[str, Any]]:
         resp = self.client._request("GET", self.base_url, headers=self.client.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()
         if isinstance(data, dict) and "items" in data:
             return data["items"]
@@ -705,7 +779,7 @@ class VelarixGlobalFacts:
             f"{self.client.base_url}/v1/org/sessions/{self.session_id}",
             headers=self._headers(),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         self._clear_cache()
         return resp.json()
 
@@ -732,10 +806,11 @@ class VelarixClient:
             self.sidecar.start()
             self.base_url = self.sidecar.url
         else:
-            self.base_url = (base_url or "http://localhost:8080").rstrip("/")
-            
-        self.api_key = api_key
-        self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            resolved_url = base_url or os.environ.get("VELARIX_BASE_URL") or "http://localhost:8080"
+            self.base_url = resolved_url.rstrip("/")
+
+        self.api_key = api_key or os.environ.get("VELARIX_API_KEY")
+        self.headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         self.max_retries = max(0, int(max_retries))
         self.retry_backoff_base = float(retry_backoff_base)
         self.retry_backoff_max = float(retry_backoff_max)
@@ -794,16 +869,41 @@ class VelarixClient:
         session.set_config()
         return session
 
+    def get_billing(self) -> Dict[str, Any]:
+        """Return the org's current billing subscription.
+
+        Keys include ``plan`` (free/pro/enterprise), ``status``, ``seats``,
+        ``features``, ``billing_email``, and ``current_period_end`` (Unix ms).
+
+        Raises:
+            AuthError: if the API key is invalid.
+        """
+        resp = self._request("GET", f"{self.base_url}/v1/billing/subscription", headers=self.headers)
+        _raise_for_status(resp)
+        data: Dict[str, Any] = resp.json()
+        self._cached_plan = data.get("plan", "free")
+        return data
+
+    @property
+    def plan(self) -> str:
+        """The org's active plan name (free/pro/enterprise).
+
+        Returns the cached value from the last ``get_billing()`` call, or
+        ``"unknown"`` if ``get_billing()`` has not been called yet. Call
+        ``get_billing()`` explicitly to populate or refresh this value.
+        """
+        return getattr(self, "_cached_plan", None) or "unknown"
+
     def get_sessions(self) -> List[Dict[str, Any]]:
         """List org sessions visible to the caller."""
         resp = self._request("GET", f"{self.base_url}/v1/sessions", headers=self.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def get_usage(self) -> Dict[str, Any]:
         """Fetch org usage counters."""
         resp = self._request("GET", f"{self.base_url}/v1/org/usage", headers=self.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     def list_org_decisions(
@@ -826,7 +926,7 @@ class VelarixClient:
         if to_ms is not None:
             params["to"] = to_ms
         resp = self._request("GET", f"{self.base_url}/v1/org/decisions", params=params, headers=self.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json().get("items", [])
 
 class AsyncVelarixSession:
@@ -859,7 +959,7 @@ class AsyncVelarixSession:
         self._clear_cache()
         data = {"id": fact_id, "is_root": True, "manual_status": float(confidence), "payload": payload or {}}
         resp = await self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def derive(self, fact_id: str, justifications: List[List[str]], payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
@@ -867,7 +967,7 @@ class AsyncVelarixSession:
         self._clear_cache()
         data = {"id": fact_id, "is_root": False, "justification_sets": justifications, "payload": payload or {}}
         resp = await self.client._request("POST", f"{self.base_url}/facts", json=data, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def get_slice(
@@ -912,7 +1012,7 @@ class AsyncVelarixSession:
             ),
             headers=self._headers(),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.text if format == "markdown" else resp.json()
         
         # Cache Update
@@ -928,13 +1028,13 @@ class AsyncVelarixSession:
         if schema is not None: data["schema"] = schema
         if mode is not None: data["enforcement_mode"] = mode
         resp = await self.client._request("POST", f"{self.base_url}/config", json=data, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def get_fact(self, fact_id: str) -> Dict[str, Any]:
         """Fetch one fact by ID."""
         resp = await self.client._request("GET", f"{self.base_url}/facts/{fact_id}", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def verify_fact(
@@ -975,13 +1075,13 @@ class AsyncVelarixSession:
             json=body,
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def get_history(self) -> List[Dict[str, Any]]:
         """Return the persisted journal for the session."""
         resp = await self.client._request("GET", f"{self.base_url}/history", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def append_history(
@@ -1000,7 +1100,7 @@ class AsyncVelarixSession:
         if fact_id:
             body["fact_id"] = fact_id
         resp = await self.client._request("POST", f"{self.base_url}/history", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def explain(
@@ -1018,14 +1118,14 @@ class AsyncVelarixSession:
         if counterfactual_fact_id:
             params["counterfactual_fact_id"] = counterfactual_fact_id
         resp = await self.client._request("GET", f"{self.base_url}/explain", params=params, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def revalidate(self, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         """Replay session history and rebuild the current in-memory state."""
         self._clear_cache()
         resp = await self.client._request("POST", f"{self.base_url}/revalidate", headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def extract_and_assert(
@@ -1046,7 +1146,7 @@ class AsyncVelarixSession:
             json=body,
             headers=self._headers(),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         self._clear_cache()
         return resp.json()
 
@@ -1081,7 +1181,7 @@ class AsyncVelarixSession:
         if metadata:
             body["metadata"] = metadata
         resp = await self.client._request("POST", f"{self.base_url}/percepts", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def invalidate(
@@ -1103,7 +1203,7 @@ class AsyncVelarixSession:
         if body:
             kwargs["json"] = body
         resp = await self.client._request("POST", f"{self.base_url}/facts/{fact_id}/invalidate", **kwargs)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def retract(
@@ -1122,7 +1222,7 @@ class AsyncVelarixSession:
         if force:
             body["force"] = True
         resp = await self.client._request("POST", f"{self.base_url}/facts/{fact_id}/retract", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def review_fact(
@@ -1144,14 +1244,14 @@ class AsyncVelarixSession:
             json=body,
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def semantic_search(self, query: str, *, limit: int = 10, valid_only: bool = True) -> List[Dict[str, Any]]:
         """Run semantic search over session facts."""
         params = {"q": query, "limit": limit, "valid_only": str(valid_only).lower()}
         resp = await self.client._request("GET", f"{self.base_url}/semantic-search", params=params, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def consistency_check(
@@ -1168,19 +1268,19 @@ class AsyncVelarixSession:
         if max_facts is not None:
             body["max_facts"] = max_facts
         resp = await self.client._request("POST", f"{self.base_url}/consistency-check", json=body, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def record_reasoning_chain(self, chain: Dict[str, Any]) -> Dict[str, Any]:
         """Persist a reasoning chain."""
         resp = await self.client._request("POST", f"{self.base_url}/reasoning-chains", json=chain, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def list_reasoning_chains(self) -> List[Dict[str, Any]]:
         """List stored reasoning chains for the session."""
         resp = await self.client._request("GET", f"{self.base_url}/reasoning-chains", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json().get("items", [])
 
     async def verify_reasoning_chain(self, chain_id: str, *, auto_retract: bool = False) -> Dict[str, Any]:
@@ -1191,7 +1291,7 @@ class AsyncVelarixSession:
             json={"auto_retract": auto_retract},
             headers=self._headers(),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def create_decision(
@@ -1232,7 +1332,7 @@ class AsyncVelarixSession:
         if metadata:
             body["metadata"] = metadata
         resp = await self.client._request("POST", f"{self.base_url}/decisions", json=body, headers=self._idem_headers(idempotency_key))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def list_decisions(
@@ -1255,13 +1355,13 @@ class AsyncVelarixSession:
         if to_ms is not None:
             params["to"] = to_ms
         resp = await self.client._request("GET", f"{self.base_url}/decisions", params=params, headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json().get("items", [])
 
     async def get_decision(self, decision_id: str) -> Dict[str, Any]:
         """Fetch one decision."""
         resp = await self.client._request("GET", f"{self.base_url}/decisions/{decision_id}", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def recompute_decision(
@@ -1284,7 +1384,7 @@ class AsyncVelarixSession:
             json=body,
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def execute_check(self, decision_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
@@ -1294,7 +1394,7 @@ class AsyncVelarixSession:
             f"{self.base_url}/decisions/{decision_id}/execute-check",
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def execute_decision(
@@ -1322,19 +1422,19 @@ class AsyncVelarixSession:
             json=body,
             headers=self._idem_headers(idempotency_key),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def get_decision_lineage(self, decision_id: str) -> Dict[str, Any]:
         """Fetch the stored dependency lineage for a decision."""
         resp = await self.client._request("GET", f"{self.base_url}/decisions/{decision_id}/lineage", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def get_decision_why_blocked(self, decision_id: str) -> Dict[str, Any]:
         """Explain why a decision is blocked."""
         resp = await self.client._request("GET", f"{self.base_url}/decisions/{decision_id}/why-blocked", headers=self._headers())
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def record_decision(self, kind: str, payload: Optional[Dict[str, Any]] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
@@ -1375,19 +1475,19 @@ class AsyncVelarixGlobalFacts:
         if valid_until is not None:
             data["valid_until"] = int(valid_until)
         resp = await self.client._request("POST", self.base_url, json=data, headers=self.client.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def retract(self, fact_id: str) -> Dict[str, Any]:
         if not fact_id:
             raise ValueError("fact_id is required")
         resp = await self.client._request("DELETE", f"{self.base_url}/{fact_id}", headers=self.client.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def list(self) -> List[Dict[str, Any]]:
         resp = await self.client._request("GET", self.base_url, headers=self.client.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()
         if isinstance(data, dict) and "items" in data:
             return data["items"]
@@ -1401,7 +1501,7 @@ class AsyncVelarixGlobalFacts:
             f"{self.client.base_url}/v1/org/sessions/{self.session_id}",
             headers=self._headers(),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         self._clear_cache()
         return resp.json()
 
@@ -1422,11 +1522,12 @@ class AsyncVelarixClient:
         self.embed_mode = embed_mode
         self.sidecar: Optional[SidecarManager] = None
         self._base_url_arg = base_url
-        self.api_key = api_key
+        self.api_key = api_key or os.environ.get("VELARIX_API_KEY")
         self.binary_path = binary_path
         self.cache_ttl = cache_ttl
-        self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        self.base_url = (base_url or "http://localhost:8080").rstrip("/")
+        self.headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        resolved_url = base_url or os.environ.get("VELARIX_BASE_URL") or "http://localhost:8080"
+        self.base_url = resolved_url.rstrip("/")
         self.max_retries = max(0, int(max_retries))
         self.retry_backoff_base = float(retry_backoff_base)
         self.retry_backoff_max = float(retry_backoff_max)
@@ -1484,16 +1585,40 @@ class AsyncVelarixClient:
         await session.set_config()
         return session
 
+    async def get_billing(self) -> Dict[str, Any]:
+        """Return the org's current billing subscription.
+
+        Keys include ``plan`` (free/pro/enterprise), ``status``, ``seats``,
+        ``features``, ``billing_email``, and ``current_period_end`` (Unix ms).
+
+        Raises:
+            AuthError: if the API key is invalid.
+        """
+        resp = await self._request("GET", f"{self.base_url}/v1/billing/subscription", headers=self.headers)
+        _raise_for_status(resp)
+        data: Dict[str, Any] = resp.json()
+        self._cached_plan = data.get("plan", "free")
+        return data
+
+    @property
+    def plan(self) -> str:
+        """The org's active plan name (free/pro/enterprise).
+
+        Returns the cached value if ``get_billing()`` has been called already.
+        Use ``await get_billing()`` to refresh it.
+        """
+        return getattr(self, "_cached_plan", None) or "unknown"
+
     async def get_sessions(self) -> List[Dict[str, Any]]:
         """List org sessions visible to the caller."""
         resp = await self._request("GET", f"{self.base_url}/v1/sessions", headers=self.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def get_usage(self) -> Dict[str, Any]:
         """Fetch org usage counters."""
         resp = await self._request("GET", f"{self.base_url}/v1/org/usage", headers=self.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def list_org_decisions(
@@ -1516,5 +1641,5 @@ class AsyncVelarixClient:
         if to_ms is not None:
             params["to"] = to_ms
         resp = await self._request("GET", f"{self.base_url}/v1/org/decisions", params=params, headers=self.headers)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json().get("items", [])

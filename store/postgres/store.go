@@ -69,6 +69,7 @@ var backupTableOrder = []string{
 	"semantic_fact_embeddings",
 	"idempotency_records",
 	"rate_limits",
+	"stripe_processed_events",
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {

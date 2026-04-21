@@ -558,6 +558,8 @@ func (m *MockStore) SaveBilling(orgID string, sub *store.BillingSubscription) er
 	}
 	return nil
 }
+func (m *MockStore) IsStripeEventProcessed(_ string) (bool, error) { return false, nil }
+func (m *MockStore) MarkStripeEventProcessed(_ string) error       { return nil }
 func (m *MockStore) SaveTicket(orgID string, t *store.SupportTicket) error {
 	if m.SaveTicketFunc != nil {
 		return m.SaveTicketFunc(orgID, t)

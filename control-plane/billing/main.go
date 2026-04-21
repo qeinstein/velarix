@@ -80,21 +80,37 @@ func main() {
 			return
 		}
 
+		already, err := billingStore.IsStripeEventProcessed(event.ID)
+		if err != nil {
+			slog.Error("idempotency check failed", "event_id", event.ID, "error", err)
+			http.Error(w, "idempotency check failed", http.StatusInternalServerError)
+			return
+		}
+		if already {
+			slog.Info("duplicate Stripe event ignored", "event_id", event.ID)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		switch event.Type {
 		case "customer.subscription.created", "customer.subscription.updated":
 			if err := handleSubscriptionEvent(billingStore, event, false); err != nil {
 				slog.Error("billing update failed", "event_type", event.Type, "error", err)
-				http.Error(w, "billing update failed", http.StatusAccepted)
+				http.Error(w, "billing update failed", http.StatusInternalServerError)
 				return
 			}
 		case "customer.subscription.deleted":
 			if err := handleSubscriptionEvent(billingStore, event, true); err != nil {
 				slog.Error("billing cancellation failed", "error", err)
-				http.Error(w, "billing cancellation failed", http.StatusAccepted)
+				http.Error(w, "billing cancellation failed", http.StatusInternalServerError)
 				return
 			}
 		default:
 			slog.Info("Unhandled Stripe event type", "event_type", event.Type)
+		}
+
+		if err := billingStore.MarkStripeEventProcessed(event.ID); err != nil {
+			slog.Error("failed to mark event processed", "event_id", event.ID, "error", err)
 		}
 
 		w.WriteHeader(http.StatusOK)

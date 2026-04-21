@@ -80,6 +80,9 @@ func (m *mockBillingStore) SaveBilling(orgID string, billing *store.BillingSubsc
 	return nil
 }
 
+func (m *mockBillingStore) IsStripeEventProcessed(_ string) (bool, error) { return false, nil }
+func (m *mockBillingStore) MarkStripeEventProcessed(_ string) error       { return nil }
+
 func TestHandleSubscriptionEvent_UpsertAndDelete_PersistsBillingSubscription(t *testing.T) {
 	ms := &mockBillingStore{}
 

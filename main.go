@@ -160,16 +160,19 @@ func main() {
 	globalTruth := core.NewGlobalTruth()
 
 	server := &api.Server{
-		Engines:          make(map[string]*core.Engine),
-		Configs:          make(map[string]*store.SessionConfig),
-		Versions:         make(map[string]int64),
-		LastAccess:       make(map[string]time.Time),
-		SliceCache:       make(map[string]*api.SliceCacheEntry),
-		Store:            runtimeStore,
-		GlobalTruth:      globalTruth,
-		StartTime:        time.Now(),
-		LiteMode:         isLite,
-		RedisUnavailable: redisUnavailable,
+		Engines:                 make(map[string]*core.Engine),
+		Configs:                 make(map[string]*store.SessionConfig),
+		Versions:                make(map[string]int64),
+		LastAccess:              make(map[string]time.Time),
+		SliceCache:              make(map[string]*api.SliceCacheEntry),
+		Store:                   runtimeStore,
+		GlobalTruth:             globalTruth,
+		StartTime:               time.Now(),
+		LiteMode:                isLite,
+		RedisUnavailable:        redisUnavailable,
+		StripeSecretKey:         strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
+		StripeProPriceID:        strings.TrimSpace(os.Getenv("STRIPE_PRO_PRICE_ID")),
+		StripeEnterprisePriceID: strings.TrimSpace(os.Getenv("STRIPE_ENTERPRISE_PRICE_ID")),
 	}
 	if redisUnavailable {
 		slog.Warn("Redis unavailable — rate limiting and idempotency served by primary store; limits are not shared across instances")

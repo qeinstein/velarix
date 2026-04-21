@@ -1820,6 +1820,28 @@ type IdempotencyRecord struct {
 	CreatedAt   int64             `json:"created_at"`
 }
 
+func (s *BadgerStore) stripeEventKey(eventID string) []byte {
+	return []byte(fmt.Sprintf("stripe:evt:%s", eventID))
+}
+
+func (s *BadgerStore) IsStripeEventProcessed(eventID string) (bool, error) {
+	err := s.db.View(func(txn *badger.Txn) error {
+		_, err := txn.Get(s.stripeEventKey(eventID))
+		return err
+	})
+	if err == badger.ErrKeyNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *BadgerStore) MarkStripeEventProcessed(eventID string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		val := []byte(fmt.Sprintf("%d", time.Now().UnixMilli()))
+		return txn.Set(s.stripeEventKey(eventID), val)
+	})
+}
+
 func (s *BadgerStore) idempotencyKey(orgID string, keyHash string) []byte {
 	return []byte(fmt.Sprintf("org:%s:idem:%s", orgID, keyHash))
 }
