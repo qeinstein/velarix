@@ -1,0 +1,16 @@
+Notes for velarix
+
+The interception of openai lib requires us to be able to intercept properly, stop the llm from generating response without our layer feeding it, it needs to know what's right, what's wrong, we should be able to stop it from doing nonsense
+
+also how we're determining which dependency relies on whicH
+
+the extraction pipleine and dependdenvy mapping, requires alot of rigorous work
+
+
+Also how are we drawing stuffs deep in the knowledge base? like when the llm needs an info but it's deep in the knowledge base, how is it properly queried in an extremely short period of time?
+
+Optimise for speed and precision!
+
+execute check should run after every llm text generation
+
+audit the core engine on edge cases and other places on edge cases too
