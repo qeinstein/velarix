@@ -1,7 +1,9 @@
 import json
 import os
+import random
 import socket
 import subprocess
+import threading
 import time
 import signal
 import asyncio
@@ -214,6 +216,7 @@ class VelarixSession:
         self.session_id = session_id
         self.base_url = f"{client.base_url}/v1/s/{session_id}"
         self._slice_cache: Dict[Tuple[str, int], Tuple[float, Any]] = {}
+        self._cache_lock = threading.Lock()
 
     def _headers(self):
         return self.client.headers
@@ -224,7 +227,8 @@ class VelarixSession:
         return h
 
     def _clear_cache(self):
-        self._slice_cache.clear()
+        with self._cache_lock:
+            self._slice_cache.clear()
 
     def observe(
         self,
@@ -271,10 +275,11 @@ class VelarixSession:
             max_chars=max_chars,
         )
         if self.client.cache_ttl > 0:
-            if cache_key in self._slice_cache:
-                timestamp, data = self._slice_cache[cache_key]
-                if time.time() - timestamp < self.client.cache_ttl:
-                    return data
+            with self._cache_lock:
+                if cache_key in self._slice_cache:
+                    timestamp, cached = self._slice_cache[cache_key]
+                    if time.time() - timestamp < self.client.cache_ttl:
+                        return cached
 
         resp = self.client._request(
             "GET",
@@ -292,11 +297,11 @@ class VelarixSession:
         )
         _raise_for_status(resp)
         data = resp.text if format == "markdown" else resp.json()
-        
-        # Cache Update
+
         if self.client.cache_ttl > 0:
-            self._slice_cache[cache_key] = (time.time(), data)
-            
+            with self._cache_lock:
+                self._slice_cache[cache_key] = (time.time(), data)
+
         return data
 
     def set_config(self, schema: Optional[str] = None, mode: Optional[str] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
@@ -721,6 +726,83 @@ class VelarixSession:
             raise ValueError("kind is required")
         return self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
+    def get_config(self) -> Dict[str, Any]:
+        """Retrieve the current session configuration (schema, mode)."""
+        resp = self.client._request("GET", f"{self.base_url}/config", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_graph(self) -> Dict[str, Any]:
+        """Return the full belief DAG for visualisation."""
+        resp = self.client._request("GET", f"{self.base_url}/graph", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Return a concise natural-language summary of the session's current belief state."""
+        resp = self.client._request("GET", f"{self.client.base_url}/v1/s/{self.session_id}/summary", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def list_facts(self) -> List[Dict[str, Any]]:
+        """List all facts in the session."""
+        resp = self.client._request("GET", f"{self.base_url}/facts", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_impact(self, fact_id: str) -> Dict[str, Any]:
+        """Return all facts whose validity depends on the given fact."""
+        resp = self.client._request("GET", f"{self.base_url}/facts/{fact_id}/impact", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_explanations(self) -> List[Dict[str, Any]]:
+        """Return all stored explanation records for this session."""
+        resp = self.client._request("GET", f"{self.base_url}/explanations", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_history_page(self, *, cursor: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+        """Fetch a paginated page of session history entries.
+
+        Returns a dict with ``items`` (list) and ``next_cursor`` (str or None).
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = self.client._request("GET", f"{self.base_url}/history/page", params=params, headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def create_export_job(self, *, format: str = "json", **kwargs: Any) -> Dict[str, Any]:
+        """Create an async export job for this session.
+
+        Args:
+            format: ``"json"`` or ``"csv"``.
+        """
+        body: Dict[str, Any] = {"format": format, **kwargs}
+        resp = self.client._request("POST", f"{self.base_url}/export-jobs", json=body, headers=self._idem_headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def list_export_jobs(self) -> List[Dict[str, Any]]:
+        """List all export jobs for this session."""
+        resp = self.client._request("GET", f"{self.base_url}/export-jobs", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_export_job(self, job_id: str) -> Dict[str, Any]:
+        """Poll an export job by ID."""
+        resp = self.client._request("GET", f"{self.base_url}/export-jobs/{job_id}", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    def download_export_job(self, job_id: str) -> bytes:
+        """Download the completed export job result as raw bytes."""
+        resp = self.client._request("GET", f"{self.base_url}/export-jobs/{job_id}/download", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.content
+
 class VelarixGlobalFacts:
     """Org-wide global facts shared across all sessions."""
 
@@ -829,6 +911,7 @@ class VelarixClient:
                 if attempt >= self.max_retries:
                     raise
                 delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+                delay *= (0.5 + random.random())  # ±50% jitter
                 time.sleep(delay)
                 continue
 
@@ -843,6 +926,7 @@ class VelarixClient:
                     delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
             else:
                 delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+            delay *= (0.5 + random.random())  # ±50% jitter
             time.sleep(delay)
 
         return resp  # pragma: no cover
@@ -928,6 +1012,286 @@ class VelarixClient:
         resp = self._request("GET", f"{self.base_url}/v1/org/decisions", params=params, headers=self.headers)
         _raise_for_status(resp)
         return resp.json().get("items", [])
+
+    # ------------------------------------------------------------------ #
+    # User / account                                                       #
+    # ------------------------------------------------------------------ #
+
+    def get_me(self) -> Dict[str, Any]:
+        """Return the current authenticated user's profile."""
+        resp = self._request("GET", f"{self.base_url}/v1/me", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def change_password(self, current_password: str, new_password: str) -> Dict[str, Any]:
+        """Change the authenticated user's password."""
+        resp = self._request("POST", f"{self.base_url}/v1/me/change-password", json={"current_password": current_password, "new_password": new_password}, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_onboarding(self) -> Dict[str, Any]:
+        """Return the current user's onboarding state."""
+        resp = self._request("GET", f"{self.base_url}/v1/me/onboarding", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def update_onboarding(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update the current user's onboarding state."""
+        resp = self._request("POST", f"{self.base_url}/v1/me/onboarding", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Organisation                                                         #
+    # ------------------------------------------------------------------ #
+
+    def get_org(self) -> Dict[str, Any]:
+        """Return the current organisation record."""
+        resp = self._request("GET", f"{self.base_url}/v1/org", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def update_org(self, **fields: Any) -> Dict[str, Any]:
+        """Patch top-level org fields (e.g. ``name``)."""
+        resp = self._request("PATCH", f"{self.base_url}/v1/org", json=fields, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_org_settings(self) -> Dict[str, Any]:
+        """Return detailed org settings."""
+        resp = self._request("GET", f"{self.base_url}/v1/org/settings", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def update_org_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Patch org settings."""
+        resp = self._request("PATCH", f"{self.base_url}/v1/org/settings", json=settings, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_usage_timeseries(self, metric: str, *, from_ms: int, to_ms: int, bucket_ms: int = 60000) -> List[Dict[str, Any]]:
+        """Fetch usage metric timeseries data."""
+        params = {"metric": metric, "from": from_ms, "to": to_ms, "bucket_ms": bucket_ms}
+        resp = self._request("GET", f"{self.base_url}/v1/org/usage/timeseries", params=params, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_usage_breakdown(self) -> Dict[str, Any]:
+        """Fetch org usage breakdown by endpoint and status code."""
+        resp = self._request("GET", f"{self.base_url}/v1/org/usage/breakdown", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_org_activity(self, *, cursor: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+        """Fetch the org activity journal (paginated)."""
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = self._request("GET", f"{self.base_url}/v1/org/activity", params=params, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_access_logs(self, *, cursor: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+        """Fetch org access logs (paginated)."""
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = self._request("GET", f"{self.base_url}/v1/org/access-logs", params=params, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def org_search(self, query: str, *, limit: int = 20) -> List[Dict[str, Any]]:
+        """Full-text search across the org's sessions and facts."""
+        resp = self._request("GET", f"{self.base_url}/v1/org/search", params={"q": query, "limit": limit}, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def get_compliance_export(self) -> bytes:
+        """Download the full org compliance export as raw bytes."""
+        resp = self._request("GET", f"{self.base_url}/v1/org/compliance-export", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.content
+
+    # ------------------------------------------------------------------ #
+    # Notifications                                                        #
+    # ------------------------------------------------------------------ #
+
+    def list_notifications(self, *, cursor: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+        """List org notifications."""
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = self._request("GET", f"{self.base_url}/v1/org/notifications", params=params, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def mark_notification_read(self, notification_id: str) -> Dict[str, Any]:
+        """Mark a notification as read."""
+        resp = self._request("POST", f"{self.base_url}/v1/org/notifications/{notification_id}/read", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Integrations                                                         #
+    # ------------------------------------------------------------------ #
+
+    def list_integrations(self) -> List[Dict[str, Any]]:
+        """List all configured third-party integrations."""
+        resp = self._request("GET", f"{self.base_url}/v1/org/integrations", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def create_integration(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new integration."""
+        resp = self._request("POST", f"{self.base_url}/v1/org/integrations", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def update_integration(self, integration_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update an existing integration."""
+        resp = self._request("PATCH", f"{self.base_url}/v1/org/integrations/{integration_id}", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def delete_integration(self, integration_id: str) -> Dict[str, Any]:
+        """Delete an integration."""
+        resp = self._request("DELETE", f"{self.base_url}/v1/org/integrations/{integration_id}", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Team                                                                 #
+    # ------------------------------------------------------------------ #
+
+    def list_org_users(self) -> List[str]:
+        """List email addresses of all users in the org."""
+        resp = self._request("GET", f"{self.base_url}/v1/org/users", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def list_invitations(self) -> List[Dict[str, Any]]:
+        """List all pending and accepted invitations."""
+        resp = self._request("GET", f"{self.base_url}/v1/org/invitations", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def create_invitation(self, email: str, role: str = "member") -> Dict[str, Any]:
+        """Invite a user to the org by email."""
+        resp = self._request("POST", f"{self.base_url}/v1/org/invitations", json={"email": email, "role": role}, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def revoke_invitation(self, invitation_id: str) -> Dict[str, Any]:
+        """Revoke a pending invitation."""
+        resp = self._request("POST", f"{self.base_url}/v1/org/invitations/{invitation_id}/revoke", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # API keys                                                             #
+    # ------------------------------------------------------------------ #
+
+    def generate_key(self, *, label: str = "", expires_in_days: Optional[int] = None) -> Dict[str, Any]:
+        """Generate a new API key. The plain-text key is only returned once."""
+        body: Dict[str, Any] = {"label": label}
+        if expires_in_days is not None:
+            body["expires_in_days"] = expires_in_days
+        resp = self._request("POST", f"{self.base_url}/v1/keys/generate", json=body, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def list_keys(self) -> List[Dict[str, Any]]:
+        """List all API keys for the org (metadata only — no plain-text keys)."""
+        resp = self._request("GET", f"{self.base_url}/v1/keys", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def revoke_key(self, key_id: str) -> Dict[str, Any]:
+        """Permanently revoke an API key."""
+        resp = self._request("DELETE", f"{self.base_url}/v1/keys/{key_id}", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def rotate_key(self, key_id: str) -> Dict[str, Any]:
+        """Rotate an API key, returning a new plain-text key. The old key is revoked."""
+        resp = self._request("POST", f"{self.base_url}/v1/keys/{key_id}/rotate", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Support tickets                                                      #
+    # ------------------------------------------------------------------ #
+
+    def list_tickets(self) -> List[Dict[str, Any]]:
+        """List all support tickets for the org."""
+        resp = self._request("GET", f"{self.base_url}/v1/support/tickets", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def create_ticket(self, subject: str, body: str, **kwargs: Any) -> Dict[str, Any]:
+        """Open a new support ticket."""
+        payload = {"subject": subject, "body": body, **kwargs}
+        resp = self._request("POST", f"{self.base_url}/v1/support/tickets", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def update_ticket(self, ticket_id: str, **fields: Any) -> Dict[str, Any]:
+        """Update a support ticket."""
+        resp = self._request("PATCH", f"{self.base_url}/v1/support/tickets/{ticket_id}", json=fields, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Policies                                                             #
+    # ------------------------------------------------------------------ #
+
+    def list_policies(self) -> List[Dict[str, Any]]:
+        """List all governance policies."""
+        resp = self._request("GET", f"{self.base_url}/v1/policies", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def create_policy(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new policy."""
+        resp = self._request("POST", f"{self.base_url}/v1/policies", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def update_policy(self, policy_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update an existing policy."""
+        resp = self._request("PATCH", f"{self.base_url}/v1/policies/{policy_id}", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def delete_policy(self, policy_id: str) -> Dict[str, Any]:
+        """Delete a policy."""
+        resp = self._request("DELETE", f"{self.base_url}/v1/policies/{policy_id}", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Admin                                                                #
+    # ------------------------------------------------------------------ #
+
+    def backup(self) -> bytes:
+        """Download a full org backup as raw bytes (admin only)."""
+        resp = self._request("GET", f"{self.base_url}/v1/org/backup", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.content
+
+    def restore(self, data: bytes, content_type: str = "application/json") -> Dict[str, Any]:
+        """Restore org data from a backup blob (admin only)."""
+        h = dict(self.headers)
+        h["Content-Type"] = content_type
+        resp = self._request("POST", f"{self.base_url}/v1/org/restore", data=data, headers=h)
+        _raise_for_status(resp)
+        return resp.json()
+
+    def purge_journal(self) -> Dict[str, Any]:
+        """Purge the session journal (admin only — irreversible)."""
+        resp = self._request("POST", f"{self.base_url}/v1/admin/purge-journal", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
 
 class AsyncVelarixSession:
     """An asynchronous context-bound session for interacting with Velarix."""
@@ -1443,6 +1807,76 @@ class AsyncVelarixSession:
             raise ValueError("kind is required")
         return await self.append_history("decision_record", {"kind": kind, **(payload or {})}, idempotency_key=idempotency_key)
 
+    async def get_config(self) -> Dict[str, Any]:
+        """Retrieve the current session configuration."""
+        resp = await self.client._request("GET", f"{self.base_url}/config", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_graph(self) -> Dict[str, Any]:
+        """Return the full belief DAG for visualisation."""
+        resp = await self.client._request("GET", f"{self.base_url}/graph", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_summary(self) -> Dict[str, Any]:
+        """Return a concise natural-language summary of the session's current belief state."""
+        resp = await self.client._request("GET", f"{self.client.base_url}/v1/s/{self.session_id}/summary", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def list_facts(self) -> List[Dict[str, Any]]:
+        """List all facts in the session."""
+        resp = await self.client._request("GET", f"{self.base_url}/facts", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_impact(self, fact_id: str) -> Dict[str, Any]:
+        """Return all facts whose validity depends on the given fact."""
+        resp = await self.client._request("GET", f"{self.base_url}/facts/{fact_id}/impact", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_explanations(self) -> List[Dict[str, Any]]:
+        """Return all stored explanation records for this session."""
+        resp = await self.client._request("GET", f"{self.base_url}/explanations", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_history_page(self, *, cursor: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+        """Fetch a paginated page of session history entries."""
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = await self.client._request("GET", f"{self.base_url}/history/page", params=params, headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def create_export_job(self, *, format: str = "json", **kwargs: Any) -> Dict[str, Any]:
+        """Create an async export job for this session."""
+        body: Dict[str, Any] = {"format": format, **kwargs}
+        resp = await self.client._request("POST", f"{self.base_url}/export-jobs", json=body, headers=self._idem_headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def list_export_jobs(self) -> List[Dict[str, Any]]:
+        """List all export jobs for this session."""
+        resp = await self.client._request("GET", f"{self.base_url}/export-jobs", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_export_job(self, job_id: str) -> Dict[str, Any]:
+        """Poll an export job by ID."""
+        resp = await self.client._request("GET", f"{self.base_url}/export-jobs/{job_id}", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def download_export_job(self, job_id: str) -> bytes:
+        """Download the completed export job result as raw bytes."""
+        resp = await self.client._request("GET", f"{self.base_url}/export-jobs/{job_id}/download", headers=self._headers())
+        _raise_for_status(resp)
+        return resp.content
+
 class AsyncVelarixGlobalFacts:
     """Org-wide global facts shared across all sessions (async)."""
 
@@ -1544,6 +1978,7 @@ class AsyncVelarixClient:
                 if attempt >= self.max_retries:
                     raise
                 delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+                delay *= (0.5 + random.random())  # ±50% jitter
                 await asyncio.sleep(delay)
                 continue
 
@@ -1558,6 +1993,7 @@ class AsyncVelarixClient:
                     delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
             else:
                 delay = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** attempt))
+            delay *= (0.5 + random.random())  # ±50% jitter
             await asyncio.sleep(delay)
 
         return resp  # pragma: no cover
@@ -1643,3 +2079,249 @@ class AsyncVelarixClient:
         resp = await self._request("GET", f"{self.base_url}/v1/org/decisions", params=params, headers=self.headers)
         _raise_for_status(resp)
         return resp.json().get("items", [])
+
+    # ------------------------------------------------------------------ #
+    # User / account                                                       #
+    # ------------------------------------------------------------------ #
+
+    async def get_me(self) -> Dict[str, Any]:
+        """Return the current authenticated user's profile."""
+        resp = await self._request("GET", f"{self.base_url}/v1/me", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def change_password(self, current_password: str, new_password: str) -> Dict[str, Any]:
+        """Change the authenticated user's password."""
+        resp = await self._request("POST", f"{self.base_url}/v1/me/change-password", json={"current_password": current_password, "new_password": new_password}, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_onboarding(self) -> Dict[str, Any]:
+        """Return the current user's onboarding state."""
+        resp = await self._request("GET", f"{self.base_url}/v1/me/onboarding", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def update_onboarding(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update the current user's onboarding state."""
+        resp = await self._request("POST", f"{self.base_url}/v1/me/onboarding", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Organisation                                                         #
+    # ------------------------------------------------------------------ #
+
+    async def get_org(self) -> Dict[str, Any]:
+        resp = await self._request("GET", f"{self.base_url}/v1/org", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def update_org(self, **fields: Any) -> Dict[str, Any]:
+        resp = await self._request("PATCH", f"{self.base_url}/v1/org", json=fields, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_org_settings(self) -> Dict[str, Any]:
+        resp = await self._request("GET", f"{self.base_url}/v1/org/settings", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def update_org_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self._request("PATCH", f"{self.base_url}/v1/org/settings", json=settings, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_usage_timeseries(self, metric: str, *, from_ms: int, to_ms: int, bucket_ms: int = 60000) -> List[Dict[str, Any]]:
+        params = {"metric": metric, "from": from_ms, "to": to_ms, "bucket_ms": bucket_ms}
+        resp = await self._request("GET", f"{self.base_url}/v1/org/usage/timeseries", params=params, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_usage_breakdown(self) -> Dict[str, Any]:
+        resp = await self._request("GET", f"{self.base_url}/v1/org/usage/breakdown", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_org_activity(self, *, cursor: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = await self._request("GET", f"{self.base_url}/v1/org/activity", params=params, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_access_logs(self, *, cursor: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = await self._request("GET", f"{self.base_url}/v1/org/access-logs", params=params, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def org_search(self, query: str, *, limit: int = 20) -> List[Dict[str, Any]]:
+        resp = await self._request("GET", f"{self.base_url}/v1/org/search", params={"q": query, "limit": limit}, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def get_compliance_export(self) -> bytes:
+        resp = await self._request("GET", f"{self.base_url}/v1/org/compliance-export", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.content
+
+    # ------------------------------------------------------------------ #
+    # Notifications                                                        #
+    # ------------------------------------------------------------------ #
+
+    async def list_notifications(self, *, cursor: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = await self._request("GET", f"{self.base_url}/v1/org/notifications", params=params, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def mark_notification_read(self, notification_id: str) -> Dict[str, Any]:
+        resp = await self._request("POST", f"{self.base_url}/v1/org/notifications/{notification_id}/read", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Integrations                                                         #
+    # ------------------------------------------------------------------ #
+
+    async def list_integrations(self) -> List[Dict[str, Any]]:
+        resp = await self._request("GET", f"{self.base_url}/v1/org/integrations", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def create_integration(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self._request("POST", f"{self.base_url}/v1/org/integrations", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def update_integration(self, integration_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self._request("PATCH", f"{self.base_url}/v1/org/integrations/{integration_id}", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def delete_integration(self, integration_id: str) -> Dict[str, Any]:
+        resp = await self._request("DELETE", f"{self.base_url}/v1/org/integrations/{integration_id}", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Team                                                                 #
+    # ------------------------------------------------------------------ #
+
+    async def list_org_users(self) -> List[str]:
+        resp = await self._request("GET", f"{self.base_url}/v1/org/users", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def list_invitations(self) -> List[Dict[str, Any]]:
+        resp = await self._request("GET", f"{self.base_url}/v1/org/invitations", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def create_invitation(self, email: str, role: str = "member") -> Dict[str, Any]:
+        resp = await self._request("POST", f"{self.base_url}/v1/org/invitations", json={"email": email, "role": role}, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def revoke_invitation(self, invitation_id: str) -> Dict[str, Any]:
+        resp = await self._request("POST", f"{self.base_url}/v1/org/invitations/{invitation_id}/revoke", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # API keys                                                             #
+    # ------------------------------------------------------------------ #
+
+    async def generate_key(self, *, label: str = "", expires_in_days: Optional[int] = None) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"label": label}
+        if expires_in_days is not None:
+            body["expires_in_days"] = expires_in_days
+        resp = await self._request("POST", f"{self.base_url}/v1/keys/generate", json=body, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def list_keys(self) -> List[Dict[str, Any]]:
+        resp = await self._request("GET", f"{self.base_url}/v1/keys", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def revoke_key(self, key_id: str) -> Dict[str, Any]:
+        resp = await self._request("DELETE", f"{self.base_url}/v1/keys/{key_id}", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def rotate_key(self, key_id: str) -> Dict[str, Any]:
+        resp = await self._request("POST", f"{self.base_url}/v1/keys/{key_id}/rotate", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Support tickets                                                      #
+    # ------------------------------------------------------------------ #
+
+    async def list_tickets(self) -> List[Dict[str, Any]]:
+        resp = await self._request("GET", f"{self.base_url}/v1/support/tickets", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def create_ticket(self, subject: str, body: str, **kwargs: Any) -> Dict[str, Any]:
+        payload = {"subject": subject, "body": body, **kwargs}
+        resp = await self._request("POST", f"{self.base_url}/v1/support/tickets", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def update_ticket(self, ticket_id: str, **fields: Any) -> Dict[str, Any]:
+        resp = await self._request("PATCH", f"{self.base_url}/v1/support/tickets/{ticket_id}", json=fields, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Policies                                                             #
+    # ------------------------------------------------------------------ #
+
+    async def list_policies(self) -> List[Dict[str, Any]]:
+        resp = await self._request("GET", f"{self.base_url}/v1/policies", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def create_policy(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self._request("POST", f"{self.base_url}/v1/policies", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def update_policy(self, policy_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self._request("PATCH", f"{self.base_url}/v1/policies/{policy_id}", json=payload, headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def delete_policy(self, policy_id: str) -> Dict[str, Any]:
+        resp = await self._request("DELETE", f"{self.base_url}/v1/policies/{policy_id}", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Admin                                                                #
+    # ------------------------------------------------------------------ #
+
+    async def backup(self) -> bytes:
+        resp = await self._request("GET", f"{self.base_url}/v1/org/backup", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.content
+
+    async def restore(self, data: bytes, content_type: str = "application/json") -> Dict[str, Any]:
+        h = dict(self.headers)
+        h["Content-Type"] = content_type
+        resp = await self._request("POST", f"{self.base_url}/v1/org/restore", content=data, headers=h)
+        _raise_for_status(resp)
+        return resp.json()
+
+    async def purge_journal(self) -> Dict[str, Any]:
+        resp = await self._request("POST", f"{self.base_url}/v1/admin/purge-journal", headers=self.headers)
+        _raise_for_status(resp)
+        return resp.json()

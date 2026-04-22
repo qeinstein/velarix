@@ -26,11 +26,17 @@ __pycache__/
 node_modules/
 sdks/typescript/node_modules/
 
-# Fluxx(Files i dont want to push but don't want to delete)
+# Internal Scratchpads (Not for Repo)
+Me.txt
+Notes for velarix.txt
+Velarix.txt
 todo.txt
 
-# web
+# Web & Build Artifacts
 web/.next/
+web/dev.log
+web/tsconfig.tsbuildinfo
 
-#
+# Tooling
+.claude/
 CLAUDE.md

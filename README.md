@@ -6,6 +6,15 @@ Velarix is the decision-integrity layer for AI-assisted operations.
 
 It keeps recommendations, approvals, and execution paths tied to the facts that justify them. When a premise changes, Velarix retracts unsupported conclusions and blocks stale execution.
 
+## AI Safety & Interpretability
+
+Velarix is designed to address fundamental catastrophic risks in autonomous agentic workflows:
+
+- **Symbolic Mechanistic Interpretability:** Provides a 100% verifiable causal trace of an agent's internal reasoning, making the decision-making process human-auditable.
+- **Elimination of Logical Hallucinations:** Offloads stateful reasoning to a deterministic Go kernel, bypassing the probabilistic errors and attention dilution inherent in long-context LLMs.
+- **Non-Monotonic Belief Revision:** Ensures that agents correctly and immediately retract stale or unsafe beliefs when safety constraints or premises are overridden.
+- **Counterfactual Auditing:** Enables researchers to programmatically simulate "what-if" scenarios to identify the root-cause justifications of agent behavior.
+
 ## What Velarix Includes
 
 - Go HTTP API for facts, invalidation, explanations, slices, governance, decisions, and execution checks

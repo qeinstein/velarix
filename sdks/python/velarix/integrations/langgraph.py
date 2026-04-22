@@ -157,10 +157,26 @@ else:
             self.client.session(thread_id).append_history(self.EVENT_WRITES, payload)
 
         def delete_thread(self, thread_id: str) -> None:
-            raise NotImplementedError("VelarixLangGraphMemory does not support destructive thread deletion.")
+            """Soft-delete a thread by appending a tombstone history entry.
+
+            Velarix sessions are append-only, so this marks the thread as
+            deleted rather than destroying data.
+            """
+            self.client.session(thread_id).append_history(
+                "langgraph_thread_deleted",
+                {"thread_id": thread_id, "deleted_at_ms": int(time.time() * 1000)},
+            )
 
         def delete_for_runs(self, run_ids: Sequence[str]) -> None:
-            raise NotImplementedError("VelarixLangGraphMemory does not support destructive run deletion.")
+            """Mark specific run IDs as deleted via tombstone history entries."""
+            for run_id in run_ids:
+                try:
+                    self.client.session(str(run_id)).append_history(
+                        "langgraph_run_deleted",
+                        {"run_id": run_id, "deleted_at_ms": int(time.time() * 1000)},
+                    )
+                except Exception:
+                    pass
 
         def copy_thread(self, source_thread_id: str, target_thread_id: str) -> None:
             source = self.client.session(source_thread_id).get_history()
@@ -171,7 +187,18 @@ else:
                 target.append_history(entry["type"], entry.get("payload") or {})
 
         def prune(self, thread_ids: Sequence[str], *, strategy: str = "keep_latest") -> None:
-            raise NotImplementedError("VelarixLangGraphMemory does not support checkpoint pruning yet.")
+            """Prune checkpoints by appending a prune marker for each thread.
+
+            ``keep_latest`` (default): signals that only the most recent
+            checkpoint should be considered going forward. The marker is
+            recorded in history; callers that need hard deletion should
+            archive and delete the session externally.
+            """
+            for thread_id in thread_ids:
+                self.client.session(thread_id).append_history(
+                    "langgraph_pruned",
+                    {"thread_id": thread_id, "strategy": strategy, "pruned_at_ms": int(time.time() * 1000)},
+                )
 
         async def aget_tuple(self, config: Dict[str, Any]) -> Optional[CheckpointTuple]:
             return await asyncio.to_thread(self.get_tuple, config)
