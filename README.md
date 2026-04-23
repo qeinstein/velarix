@@ -1,7 +1,5 @@
 # Velarix: Decision Integrity for AI Agents
 
-**[NEW] View the Formal Technical Specification for the Velarix Engine here: [Technical_Spec.pdf](Technical_Spec.pdf)**
-
 ![Velarix](https://img.shields.io/badge/Status-Alpha-orange) ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 
 Velarix is the decision-integrity layer for AI-assisted operations.
