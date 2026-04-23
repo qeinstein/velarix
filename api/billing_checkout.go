@@ -8,8 +8,8 @@ import (
 	"time"
 
 	stripe "github.com/stripe/stripe-go/v76"
-	stripecustomer "github.com/stripe/stripe-go/v76/customer"
 	stripesession "github.com/stripe/stripe-go/v76/checkout/session"
+	stripecustomer "github.com/stripe/stripe-go/v76/customer"
 
 	"velarix/store"
 )

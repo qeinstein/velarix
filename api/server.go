@@ -96,9 +96,9 @@ type Server struct {
 	writeLimiters sync.Map // org_id -> chan struct{}
 
 	// Stripe billing config (optional; billing endpoints return 503 when unset).
-	StripeSecretKey          string
-	StripeProPriceID         string
-	StripeEnterprisePriceID  string
+	StripeSecretKey         string
+	StripeProPriceID        string
+	StripeEnterprisePriceID string
 }
 
 func (s *Server) invalidateSliceCache(sessionID string) {
